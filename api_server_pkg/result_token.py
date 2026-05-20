@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -18,6 +19,29 @@ from pipeline import kakao_formatter
 from . import state
 
 router = APIRouter()
+
+
+# Stage 1 게이트 bucket 중 *비-판정* 버킷만 결과 페이지에 노출.
+# - normal / scam_news_edu / undetermined → 콘텐츠 타입 정보 (Identity Boundary 안전)
+# - scam_attempt / suspicious_insufficient → 노출 X ("사기 시도다" 판정에 해당)
+SAFE_CONTENT_TYPE_BUCKETS: frozenset[str] = frozenset(
+    {"normal", "scam_news_edu", "undetermined"}
+)
+
+
+def _safe_content_type(gate: dict[str, Any] | None) -> dict[str, str] | None:
+    """게이트 metadata → 결과 응답의 `content_type` 필드.
+
+    안전 버킷(normal/scam_news_edu/undetermined)만 통과. 사기 시도/의심 버킷은
+    Identity Boundary 상 노출 안 함 (판정성 정보).
+    """
+    if not gate:
+        return None
+    bucket = str(gate.get("bucket") or "").strip()
+    if bucket not in SAFE_CONTENT_TYPE_BUCKETS:
+        return None
+    label_ko = str(gate.get("label_ko") or "").strip() or bucket
+    return {"bucket": bucket, "label_ko": label_ko}
 
 
 def get_public_base_url() -> str:
@@ -162,11 +186,28 @@ async def get_result_by_token(token: str) -> dict[str, Any]:
             info = flag_rationale(key)
             if info:
                 flag_info[key] = info
+
+    # Stage 1 게이트 안전 버킷만 content_type 으로 노출 (DB metadata 기반).
+    # 사기 시도/의심 버킷은 Identity Boundary 상 결과 페이지에 표시 안 함.
+    content_type: dict[str, str] | None = None
+    run_id = (entry["result"] or {}).get("analysis_run_id")
+    if run_id:
+        try:
+            detail = await asyncio.to_thread(repository.get_run_detail, run_id)
+            if detail:
+                meta = (detail.get("run") or {}).get("metadata") or {}
+                content_type = _safe_content_type(meta.get("gate"))
+        except Exception as exc:
+            logging.getLogger("token").debug(
+                "content_type lookup 실패 (run_id=%s): %s", run_id, exc,
+            )
+
     return {
         "result": entry["result"],
         "user_context": entry.get("user_context"),
         "input_type": entry.get("input_type"),
         "chat_history": entry.get("chat_history") or [],
         "flag_rationale": flag_info,
+        "content_type": content_type,
         "expires_at": entry["expires_at"],
     }
