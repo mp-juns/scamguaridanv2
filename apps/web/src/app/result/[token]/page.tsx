@@ -126,13 +126,7 @@ function contentTypeBadge(
       chip: "border-emerald-500/40 bg-emerald-700/20 text-emerald-200",
     };
   }
-  if (bucket === "undetermined") {
-    return {
-      icon: "❔",
-      label: "판단 불가 (입력이 짧거나 모호)",
-      chip: "border-slate-500/40 bg-slate-700/30 text-slate-200",
-    };
-  }
+  // undetermined 는 Phase 2 가 실행된 버킷이므로 기존 scam_type 표시를 가리지 않는다.
   return null;
 }
 

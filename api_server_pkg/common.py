@@ -161,4 +161,13 @@ def run_pipeline(payload: AnalyzeRequest) -> dict:
     run_id = persist_run(pipeline, normalized_payload, source, report_dict)
     if run_id:
         report_dict["analysis_run_id"] = run_id
+
+    # Stage 1 게이트 안전 버킷만 content_type 으로 노출 — Identity Boundary.
+    # 사기 시도/의심 버킷은 *판정성* 정보라 절대 노출하지 않음 (helper 가 None 반환).
+    if pipeline.last_gate_result is not None:
+        from .result_token import _safe_content_type
+        content_type = _safe_content_type(pipeline.last_gate_result.to_dict())
+        if content_type:
+            report_dict["content_type"] = content_type
+
     return report_dict
