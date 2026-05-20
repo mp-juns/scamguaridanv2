@@ -20,6 +20,17 @@ type DetectedSignalDict = {
   description?: string;
 };
 
+// Stage 3 — 검출 신호 그룹핑 레이어 (UI 표시용 보조 필드, optional).
+// 세부 detected_signals 와 학술·법적 rationale 매핑은 그대로 유지된다.
+type SignalGroupDict = {
+  group_id?: string;
+  label_ko?: string;
+  description?: string;
+  summary?: string;
+  count?: number;
+  flags?: string[];
+};
+
 type EntityDict = {
   label?: string;
   text?: string;
@@ -59,6 +70,8 @@ type ReportDict = {
   entities?: EntityDict[];
   // Identity Boundary (CLAUDE.md): score / risk_level 필드 *없음*. detected_signals 만.
   detected_signals?: DetectedSignalDict[];
+  // Stage 3 — 검출 신호 그룹핑(표시용). 없으면 detected_signals 만 표시로 fallback.
+  signal_groups?: SignalGroupDict[];
   summary?: string;
   disclaimer?: string;
   llm_assessment?: LLMAssessment | null;
@@ -167,6 +180,8 @@ export default async function ResultPage({ params }: PageProps) {
 
   const { result, user_context, input_type, chat_history, expires_at } = data;
   const signals = result.detected_signals ?? [];
+  // Stage 3 그룹핑 — 없으면(legacy 응답·빈 배열) detected_signals 표시로 자연 fallback.
+  const signalGroups = result.signal_groups ?? [];
   const detection = detectionStyle(signals.length);
   const inputLabel = INPUT_TYPE_LABEL[input_type] ?? input_type;
   const llm = result.llm_assessment ?? null;
@@ -287,6 +302,48 @@ export default async function ResultPage({ params }: PageProps) {
                 </li>
               ))}
             </ol>
+          </section>
+        )}
+
+        {/* Stage 3 — 신호 그룹 요약 (detected_signals 보다 먼저). 그룹 없으면 자연 생략. */}
+        {signalGroups.length > 0 && (
+          <section className="rounded-2xl border border-slate-700 bg-slate-900/60 p-6">
+            <h2 className="mb-3 text-lg font-semibold text-slate-100">
+              📊 위험 신호 그룹 요약 ({signalGroups.length}그룹)
+            </h2>
+            <p className="mb-4 text-sm text-slate-400">
+              검출된 신호를 의미별로 묶어 본 요약입니다. 각 신호의 학술·법적 근거는
+              아래 “검출된 위험 신호” 섹션을 참고하세요.
+            </p>
+            <ul className="space-y-3">
+              {signalGroups.map((g, idx) => (
+                <li key={g.group_id ?? idx} className="rounded bg-slate-800/60 p-4">
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="text-base font-semibold text-slate-100">
+                      {g.label_ko ?? g.group_id ?? "기타"}
+                    </span>
+                    <span className="rounded bg-slate-700/60 px-2 py-0.5 text-xs text-slate-300">
+                      {g.count ?? (g.flags?.length ?? 0)}개
+                    </span>
+                  </div>
+                  {g.summary && (
+                    <p className="mt-1 text-sm text-slate-300">{g.summary}</p>
+                  )}
+                  {(g.flags?.length ?? 0) > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {(g.flags ?? []).map((f, fidx) => (
+                        <span
+                          key={fidx}
+                          className="rounded-full border border-slate-600 bg-slate-950/40 px-2 py-0.5 font-mono text-xs text-slate-400"
+                        >
+                          {f}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
           </section>
         )}
 

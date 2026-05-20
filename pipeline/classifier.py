@@ -20,6 +20,8 @@ from pipeline.config import (
     KEYWORD_BOOST_WEIGHT,
     KEYWORD_NO_MATCH_PENALTY,
     MODELS,
+    STAGE2_CANDIDATE_TOP_N,
+    STAGE2_DOMINANCE_GAP,
     get_runtime_scam_taxonomy,
 )
 from pipeline import active_models
@@ -219,3 +221,27 @@ def _classify_finetuned(text: str, finetuned: dict) -> ClassificationResult:
         all_scores=all_scores,
         is_uncertain=top[1] < CLASSIFICATION_THRESHOLD,
     )
+
+
+def candidate_scam_types(
+    all_scores: dict[str, float],
+    top_n: int = STAGE2_CANDIDATE_TOP_N,
+    dominance_gap: float = STAGE2_DOMINANCE_GAP,
+) -> list[str]:
+    """Stage 2 — multi-label 추출 라우팅용 후보 유형 list 를 만든다.
+
+    - all_scores 가 비어 있으면 [] — 호출부가 기존 top-1 라우팅으로 fallback.
+    - top1 - top2 점수 차가 dominance_gap 이상이면 top-1 이 충분히 우세 → [top-1].
+    - 그 외 → 상위 top_n 개.
+
+    scam_type 필드 자체는 바꾸지 않는다 — 이건 *엔티티 추출 라우팅* 용 후보일 뿐이고
+    외부 응답에는 노출하지 않는다.
+    """
+    if not all_scores:
+        return []
+    ranked = sorted(all_scores.items(), key=lambda kv: -kv[1])
+    if len(ranked) == 1:
+        return [ranked[0][0]]
+    if ranked[0][1] - ranked[1][1] >= dominance_gap:
+        return [ranked[0][0]]
+    return [name for name, _ in ranked[:top_n]]

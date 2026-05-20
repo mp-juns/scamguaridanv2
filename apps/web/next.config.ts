@@ -7,7 +7,12 @@ const BACKEND_URL = process.env.SCAMGUARDIAN_API_URL || "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
-  allowedDevOrigins: ["111.91.153.117", "scamguardian.tail7e5dfc.ts.net"],
+  allowedDevOrigins: [
+    "111.91.153.117",
+    "scamguardian.tail7e5dfc.ts.net",
+    "scribble-failing-ludicrous.ngrok-free.dev",
+    "*.ngrok-free.dev",
+  ],
   async rewrites() {
     // Next.js 의 /api/{analyze,analyze-upload,admin,result,auth} 는 자체 핸들러가
     // 우선 매칭되므로 (filesystem > rewrites), 아래 rule 은 *Next 에 없는* 백엔드

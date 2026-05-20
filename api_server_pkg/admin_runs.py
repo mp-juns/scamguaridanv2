@@ -181,8 +181,9 @@ async def admin_run_detail(run_id: str) -> dict[str, Any]:
     summary="정답 라벨 저장 (upsert)",
     description=(
         "검수자의 정답 라벨을 저장. 기존 annotation 있으면 덮어쓰기.\n\n"
-        "**Body** (`HumanAnnotationRequest`): scam_type_gt, entities_gt, triggered_flags_gt, "
-        "transcript_corrected_text(선택), stt_quality(1~5), notes."
+        "**Body** (`HumanAnnotationRequest`): content_label, scam_type_gt(scam_attempt 일 때만 필수), "
+        "entities_gt, triggered_flags_gt, transcript_corrected_text(선택), stt_quality(1~5), notes, "
+        "sample_kind, source_ref. content_label 미지정 시 학습 로더가 fallback 적용."
     ),
     responses={**_ADMIN_RESPONSES, 404: {"description": "run not found"}},
 )
@@ -204,6 +205,9 @@ async def admin_save_annotation(run_id: str, payload: HumanAnnotationRequest) ->
             transcript_corrected_text=payload.transcript_corrected_text,
             stt_quality=payload.stt_quality,
             notes=payload.notes,
+            content_label=payload.content_label,
+            sample_kind=payload.sample_kind,
+            source_ref=payload.source_ref,
         )
         return {"ok": True, "annotation": annotation}
     except HTTPException:

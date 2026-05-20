@@ -85,23 +85,6 @@ function formatPercent(value: number) {
   }).format(value);
 }
 
-function scoreDeltaLabel(score: number) {
-  return score > 0 ? `+${score}` : `${score}`;
-}
-
-function riskClasses(level: string) {
-  switch (level) {
-    case "매우 위험":
-      return "bg-rose-500/15 text-rose-200 ring-1 ring-rose-500/30";
-    case "위험":
-      return "bg-amber-500/15 text-amber-100 ring-1 ring-amber-500/30";
-    case "주의":
-      return "bg-yellow-500/15 text-yellow-100 ring-1 ring-yellow-500/30";
-    default:
-      return "bg-emerald-500/15 text-emerald-100 ring-1 ring-emerald-500/30";
-  }
-}
-
 function entityKey(entity: Entity, index: number) {
   return `${entity.label}-${entity.text}-${entity.start ?? "na"}-${entity.end ?? "na"}-${index}`;
 }
@@ -466,26 +449,18 @@ export default function Home() {
                   </div>
                 </div>
 
+                {/* Identity Boundary: 판정(verdict) 없음 — 검출 요약만 노출 */}
                 <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
-                  <div className="text-sm text-slate-400">에이전트 결론</div>
-                  <div className="mt-2 text-xl font-semibold text-white">
-                    {report.agent_verdict ?? (report.is_scam ? "사기 의심" : "비사기 가능성 높음")}
+                  <div className="text-sm text-slate-400">검출 요약</div>
+                  <div className="mt-2 text-base font-medium leading-7 text-white">
+                    {report.summary ??
+                      `위험 신호 ${(report.detected_signals ?? []).length}개가 검출되었습니다.`}
                   </div>
-                  <div className="mt-3 space-y-2">
-                    {(report.agent_reasoning ?? []).slice(0, 5).map((reason, index) => (
-                      <div
-                        className="rounded-xl bg-white/5 px-3 py-2 text-xs leading-6 text-slate-300"
-                        key={`${reason}-${index}`}
-                      >
-                        {index + 1}. {reason}
-                      </div>
-                    ))}
-                    {!(report.agent_reasoning ?? []).length ? (
-                      <div className="rounded-xl bg-white/5 px-3 py-2 text-xs leading-6 text-slate-400">
-                        근거 요약이 아직 없습니다.
-                      </div>
-                    ) : null}
-                  </div>
+                  {report.disclaimer ? (
+                    <div className="mt-3 rounded-xl bg-white/5 px-3 py-2 text-xs leading-6 text-slate-400">
+                      {report.disclaimer}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">

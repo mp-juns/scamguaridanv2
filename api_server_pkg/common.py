@@ -87,6 +87,13 @@ def persist_run(
     }
     if user_context:
         metadata["user_context"] = user_context
+    # Stage 1 게이트 결과 — 내부 metadata 에만 (외부 응답 schema 에는 노출 안 함).
+    # 어드민에서 게이트 정확도 측정·라벨링에 사용.
+    if pipeline.last_gate_result is not None:
+        metadata["gate"] = pipeline.last_gate_result.to_dict()
+    # Stage 2 multi-label 추출 후보 — 내부 metadata 에만 (외부 응답 비노출).
+    if pipeline.last_candidate_scam_types:
+        metadata["candidate_scam_types"] = pipeline.last_candidate_scam_types
 
     run_id = repository.save_analysis_run(
         input_source=source,

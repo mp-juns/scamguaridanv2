@@ -54,6 +54,7 @@ BASE_LABELS: list[str] = [
     "웹사이트 주소",
     "금액",
     "날짜 또는 기간",
+    "명제",
 ]
 
 # ──────────────────────────────────────────────
@@ -225,6 +226,108 @@ LABEL_SETS: dict[str, list[str]] = {
 }
 
 # ──────────────────────────────────────────────
+# Stage 1 콘텐츠 게이트 (내부 라우팅 전용)
+#
+# Identity Boundary: 게이트 결과는 *외부 API 응답에 노출하지 않는다*. 파이프라인
+# 실행 강도 라우팅 + 라벨링 metadata 에만 쓴다. 검출(detection)이 아니라 내부
+# 라우팅 신호다. 게이트가 normal 로 오판해도 룰 기반 신호검출은 항상 수행된다.
+# ──────────────────────────────────────────────
+GATE_NORMAL = "normal"
+GATE_SCAM_ATTEMPT = "scam_attempt"
+GATE_SCAM_NEWS_EDU = "scam_news_edu"
+GATE_SUSPICIOUS_INSUFFICIENT = "suspicious_insufficient"
+GATE_UNDETERMINED = "undetermined"
+
+GATE_BUCKETS: list[str] = [
+    GATE_NORMAL,
+    GATE_SCAM_ATTEMPT,
+    GATE_SCAM_NEWS_EDU,
+    GATE_SUSPICIOUS_INSUFFICIENT,
+    GATE_UNDETERMINED,
+]
+
+# 한국어 라벨 — 내부 로그·라벨링 metadata 용 (외부 응답엔 안 나감)
+GATE_LABELS_KO: dict[str, str] = {
+    GATE_NORMAL: "정상",
+    GATE_SCAM_ATTEMPT: "사기 시도",
+    GATE_SCAM_NEWS_EDU: "사기 뉴스·교육",
+    GATE_SUSPICIOUS_INSUFFICIENT: "의심되지만 불충분",
+    GATE_UNDETERMINED: "판단 불가",
+}
+
+# bucket 별 실행 강도. 룰 기반 신호검출은 *항상* 수행하므로 표에 없다.
+#   run_scam_type      : Stage 2 유형 분류 수행 여부
+#   serper_max_entities: Serper 교차검증 대상 엔티티 상한 (0 = OFF)
+#   use_llm            : LLM 보조 검출 수행 여부
+# 이 profile 은 호출자 인자(use_llm·skip_verification)를 *상한선으로 줄이기만* 한다.
+GATE_EXECUTION_PROFILE: dict[str, dict[str, Any]] = {
+    GATE_NORMAL:                  {"run_scam_type": False, "serper_max_entities": 0,  "use_llm": False},
+    GATE_SCAM_NEWS_EDU:           {"run_scam_type": False, "serper_max_entities": 0,  "use_llm": False},
+    GATE_SUSPICIOUS_INSUFFICIENT: {"run_scam_type": True,  "serper_max_entities": 8,  "use_llm": True},
+    GATE_UNDETERMINED:            {"run_scam_type": True,  "serper_max_entities": 8,  "use_llm": True},
+    GATE_SCAM_ATTEMPT:            {"run_scam_type": True,  "serper_max_entities": 15, "use_llm": True},
+}
+
+# 게이트 분류 실패·예외 시 fallback bucket — 검출 누락 방지를 위해 풀에 가까운
+# 파이프라인을 도는 UNDETERMINED 로 보낸다 (사기로 *단정*하지 않으면서 안전).
+GATE_FALLBACK_BUCKET = GATE_UNDETERMINED
+
+# 이 글자 수 미만이면 LLM 호출 없이 바로 UNDETERMINED (방향조차 못 정함)
+GATE_MIN_CHARS = 10
+
+# ──────────────────────────────────────────────
+# 학습/라벨링 데이터 — content_label + sample_kind
+#
+# content_label: 인간 라벨러가 매기는 콘텐츠 성격 ground truth. Stage 1 게이트
+# 분류기의 출력 공간(GATE_BUCKETS)과 *반드시 동일한 어휘* — 게이트를 훈련하는
+# 라벨이므로. 별도 어휘를 두지 않고 GATE_BUCKETS 를 그대로 재사용한다.
+# ──────────────────────────────────────────────
+CONTENT_LABELS: list[str] = list(GATE_BUCKETS)
+
+# sample_kind: 샘플의 출처·성격. 학습 정책 분기 + 합성 샘플 추적용.
+SAMPLE_KIND_REAL_SCAM = "real_scam_message"            # 실제 사기 문자/대화/통화 스크립트
+SAMPLE_KIND_SYNTHETIC_SCAM = "synthetic_scam_message"  # 뉴스/사례 기반 재구성 메시지형 샘플
+SAMPLE_KIND_SCAM_NEWS_EDU = "scam_news_education"       # 뉴스/예방/교육 콘텐츠
+SAMPLE_KIND_NORMAL = "normal_content"                  # 정상 콘텐츠
+SAMPLE_KIND_REVIEW = "review_needed"                   # 판단 보류
+
+SAMPLE_KINDS: list[str] = [
+    SAMPLE_KIND_REAL_SCAM,
+    SAMPLE_KIND_SYNTHETIC_SCAM,
+    SAMPLE_KIND_SCAM_NEWS_EDU,
+    SAMPLE_KIND_NORMAL,
+    SAMPLE_KIND_REVIEW,
+]
+
+# 학습 정책 — 어떤 content_label 이 어떤 학습에 들어가나
+#   scam_type 분류기: scam_attempt 만 (label = scam_type)
+#   content gate 분류기: normal / scam_attempt / scam_news_edu (label = content_label)
+#   suspicious_insufficient / undetermined: 기본 학습셋 제외 → review queue
+CONTENT_LABEL_SCAM_TYPE_TARGET: str = GATE_SCAM_ATTEMPT
+CONTENT_LABELS_FOR_GATE_TRAINING: list[str] = [
+    GATE_NORMAL, GATE_SCAM_ATTEMPT, GATE_SCAM_NEWS_EDU,
+]
+CONTENT_LABELS_REVIEW_ONLY: list[str] = [
+    GATE_SUSPICIOUS_INSUFFICIENT, GATE_UNDETERMINED,
+]
+
+# ──────────────────────────────────────────────
+# Stage 2 — multi-label 추출 라우팅
+#
+# scam_type 단일 강제 분류는 복합 스캠("코인+로맨스")의 한쪽 엔티티를 통째로
+# 놓친다. all_scores 의 상위 N개 후보 유형 LABEL_SET 을 합집합으로 추출 대상에
+# 넣는다. scam_type 필드 자체는 바뀌지 않음 — top-1 문자열 유지. 후보(candidate)
+# 는 *엔티티 추출 라우팅* 에만 쓰이고 외부 응답에는 노출하지 않는다.
+# ──────────────────────────────────────────────
+STAGE2_CANDIDATE_TOP_N: int = 3
+# top1 - top2 점수 차가 이 이상이면 top-1 이 충분히 우세 → top-1 단독 라우팅
+STAGE2_DOMINANCE_GAP: float = 0.30
+
+# 공통 위험 엔티티 라벨 — scam_type 과 무관하게 *항상* 추출 대상에 포함.
+# 개인정보 요구·계좌 이체·악성 URL 은 모든 사기 유형에 공통인 위험 신호다.
+COMMON_RISK_LABELS: list[str] = ["개인정보 항목", "계좌번호", "악성 URL"]
+
+# ──────────────────────────────────────────────
 # SLIMER D&G: 레이블별 정의(Definition) + 가이드라인(Guideline)
 # GLiNER 레이블 자체에는 넣지 않고, 검증·스코어링에서 판단 기준으로 활용
 # ──────────────────────────────────────────────
@@ -257,6 +360,10 @@ LABEL_DEFINITIONS: dict[str, dict[str, str]] = {
     "날짜 또는 기간": {
         "definition": "언급된 날짜, 마감일, 기간",
         "guideline": "긴박감 조성용 기한 포함",
+    },
+    "명제": {
+        "definition": "사실 여부를 판단할 수 있는 단언·주장 (예: 'X는 Y다', 'A가 B를 보장한다')",
+        "guideline": "기관·인물·금액·날짜 등 다른 라벨로 커버되지 않는 절 단위 주장. 화자가 사실로 단언하는 진술. 의문문·감탄문 제외. 검증 가능한 claim 위주.",
     },
     # --- 투자 사기 특화 ---
     "수익 퍼센트": {
