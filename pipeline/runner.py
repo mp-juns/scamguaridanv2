@@ -236,6 +236,11 @@ class ScamGuardianPipeline:
         self.last_apk_bytecode_result: apk_analyzer.APKBytecodeReport | None = None
         self.last_apk_dynamic_result: apk_analyzer.APKDynamicReport | None = None
         pipeline_start = time.time()
+        # 글로벌 kill switch — SCAMGUARDIAN_LLM_ENABLED=0 이면 어떤 진입점(웹/카카오/CLI)에서도
+        # LLM 보조 검출 비활성. 진입점 코드가 use_llm=True 를 강제하더라도 여기서 끈다.
+        if use_llm and os.environ.get("SCAMGUARDIAN_LLM_ENABLED", "1") == "0":
+            self._debug("LLM 보조 검출 비활성: SCAMGUARDIAN_LLM_ENABLED=0")
+            use_llm = False
         # effective_use_llm / effective_use_rag 는 Phase 1.5 게이트 후 확정된다.
         self._debug(
             "analyze() 시작: "
