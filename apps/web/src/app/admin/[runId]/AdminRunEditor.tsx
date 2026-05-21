@@ -81,6 +81,9 @@ type RunDetailResponse = {
     transcript_corrected_text?: string | null;
     stt_quality?: number | null;
     notes?: string | null;
+    content_label?: string | null;
+    sample_kind?: string | null;
+    source_ref?: string | null;
   } | null;
   options: {
     scam_types: string[];
@@ -108,6 +111,48 @@ const VIDEO_SUFFIXES = new Set([".mp4", ".mov", ".webm", ".mkv"]);
 const AUDIO_SUFFIXES = new Set([".mp3", ".m4a", ".wav", ".ogg", ".aac"]);
 const IMAGE_SUFFIXES = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"]);
 const PDF_SUFFIXES = new Set([".pdf"]);
+
+// content_label — Stage 1 게이트와 동일 어휘. scam_type 보다 먼저 선택하는 기준 라벨.
+const SCAM_ATTEMPT = "scam_attempt";
+const CONTENT_LABEL_OPTIONS: { value: string; label: string }[] = [
+  { value: "normal", label: "정상 (normal)" },
+  { value: "scam_attempt", label: "사기 시도 (scam_attempt)" },
+  { value: "scam_news_edu", label: "사기 뉴스·교육 (scam_news_edu)" },
+  { value: "suspicious_insufficient", label: "의심·불충분 (suspicious_insufficient)" },
+  { value: "undetermined", label: "판단 불가 (undetermined)" },
+];
+const CONTENT_LABEL_VALUES = CONTENT_LABEL_OPTIONS.map((o) => o.value);
+
+const SAMPLE_KIND_OPTIONS: { value: string; label: string }[] = [
+  { value: "real_scam_message", label: "실제 사기 메시지 (real_scam_message)" },
+  { value: "synthetic_scam_message", label: "합성 사기 메시지 (synthetic_scam_message)" },
+  { value: "scam_news_education", label: "뉴스·교육 (scam_news_education)" },
+  { value: "normal_content", label: "정상 콘텐츠 (normal_content)" },
+  { value: "review_needed", label: "검수 필요 (review_needed)" },
+];
+
+// 기존 annotation 에 content_label 이 없을 때 fallback (백엔드 resolve_content_label 과 동일).
+function resolveContentLabel(contentLabel: string, scamType: string): string {
+  const cl = (contentLabel ?? "").trim();
+  if (CONTENT_LABEL_VALUES.includes(cl)) return cl;
+  const st = (scamType ?? "").trim();
+  if (st && st !== "정상 대화") return SCAM_ATTEMPT;
+  return "undetermined";
+}
+
+// sample_kind 미지정 시 content_label 로 추정.
+function inferSampleKind(contentLabel: string): string {
+  switch (contentLabel) {
+    case "scam_attempt":
+      return "real_scam_message";
+    case "scam_news_edu":
+      return "scam_news_education";
+    case "normal":
+      return "normal_content";
+    default:
+      return "review_needed";
+  }
+}
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value.trim());
@@ -230,6 +275,9 @@ export default function AdminRunEditor({ runId }: { runId: string }) {
   const [transcriptCorrectedText, setTranscriptCorrectedText] = useState("");
   const [sttQuality, setSttQuality] = useState<string>("");
   const [notes, setNotes] = useState("");
+  const [contentLabel, setContentLabel] = useState("");
+  const [sampleKind, setSampleKind] = useState("");
+  const [sourceRef, setSourceRef] = useState("");
 
   const [draftLoading, setDraftLoading] = useState(false);
   const [draftError, setDraftError] = useState("");
@@ -269,6 +317,19 @@ export default function AdminRunEditor({ runId }: { runId: string }) {
           data.options.scam_types[0] ??
           "";
         setScamType(initialScamType);
+        // content_label 우선 — 없으면 scam_type 으로 fallback (화면 깨짐 방지).
+        const initialContentLabel = resolveContentLabel(
+          data.annotation?.content_label ?? "",
+          data.annotation?.scam_type_gt ??
+            data.run.classification_scanner.scam_type ??
+            "",
+        );
+        setContentLabel(initialContentLabel);
+        setSampleKind(
+          (data.annotation?.sample_kind ?? "").trim() ||
+            inferSampleKind(initialContentLabel),
+        );
+        setSourceRef(data.annotation?.source_ref ?? "");
         setLabeler(data.annotation?.labeler ?? "");
         setTranscriptCorrectedText(
           data.annotation?.transcript_corrected_text ?? data.run.transcript_text,
@@ -319,6 +380,9 @@ export default function AdminRunEditor({ runId }: { runId: string }) {
     return detail.options.label_sets[scamType] ?? [];
   }, [detail, scamType]);
 
+  // scam_type 선택은 content_label == scam_attempt 일 때만 활성.
+  const isScamAttempt = contentLabel === SCAM_ATTEMPT;
+
   async function saveAnnotation() {
     setSaving(true);
     setError("");
@@ -332,7 +396,11 @@ export default function AdminRunEditor({ runId }: { runId: string }) {
         },
         body: JSON.stringify({
           labeler: labeler.trim() || null,
-          scam_type_gt: scamType,
+          content_label: contentLabel,
+          sample_kind: sampleKind,
+          source_ref: sourceRef.trim() || null,
+          // scam_type 은 content_label == scam_attempt 일 때만 — API validator 와 일치.
+          scam_type_gt: contentLabel === SCAM_ATTEMPT ? scamType : "",
           entities_gt: entities
             .filter((item) => item.enabled && item.text.trim() && item.label.trim())
             .map((item) => ({
@@ -407,6 +475,8 @@ export default function AdminRunEditor({ runId }: { runId: string }) {
   function applyDraft() {
     if (!draft || !detail) return;
 
+    // AI 초안은 scam_type 기반 — 적용 시 content_label 을 scam_attempt 로 둔다.
+    setContentLabel(SCAM_ATTEMPT);
     if (detail.options.scam_types.includes(draft.scam_type)) {
       setScamType(draft.scam_type);
     }
@@ -836,11 +906,53 @@ export default function AdminRunEditor({ runId }: { runId: string }) {
         <div className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur">
           <div className="mb-4 text-lg font-semibold text-white">정답 라벨 편집</div>
 
+          {/* 1단계: content_label — scam_type 보다 먼저 선택하는 기준 라벨 */}
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="space-y-2 text-sm text-slate-300">
-              <span className="block">정답 스캠 유형</span>
+              <span className="block">콘텐츠 라벨 (content_label)</span>
               <select
                 className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none focus:border-cyan-400/50"
+                onChange={(event) => setContentLabel(event.target.value)}
+                value={contentLabel}
+              >
+                {CONTENT_LABEL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="space-y-2 text-sm text-slate-300">
+              <span className="block">샘플 종류 (sample_kind)</span>
+              <select
+                className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none focus:border-cyan-400/50"
+                onChange={(event) => setSampleKind(event.target.value)}
+                value={sampleKind}
+              >
+                {SAMPLE_KIND_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {/* 2단계: scam_type — content_label == scam_attempt 일 때만 활성 */}
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <label className="space-y-2 text-sm text-slate-300">
+              <span className="block">
+                정답 스캠 유형
+                {isScamAttempt ? null : (
+                  <span className="ml-2 text-xs text-slate-500">
+                    — content_label 이 scam_attempt 일 때만 선택
+                  </span>
+                )}
+              </span>
+              <select
+                className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none focus:border-cyan-400/50 disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={!isScamAttempt}
                 onChange={(event) => setScamType(event.target.value)}
                 value={scamType}
               >
@@ -862,6 +974,21 @@ export default function AdminRunEditor({ runId }: { runId: string }) {
               />
             </label>
           </div>
+
+          <label className="mt-4 block space-y-2 text-sm text-slate-300">
+            <span className="block">
+              출처 참조 (source_ref)
+              <span className="ml-2 text-xs text-slate-500">
+                — synthetic 샘플의 원본 뉴스 URL 등 (선택)
+              </span>
+            </span>
+            <input
+              className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none focus:border-cyan-400/50"
+              onChange={(event) => setSourceRef(event.target.value)}
+              placeholder="https://news.example.com/..."
+              value={sourceRef}
+            />
+          </label>
 
           <label className="mt-4 block space-y-2 text-sm text-slate-300">
             <span className="block">교정 transcript</span>
@@ -1037,6 +1164,14 @@ export default function AdminRunEditor({ runId }: { runId: string }) {
             플래그 추가
           </button>
         </div>
+
+        {contentLabel === "scam_news_edu" ? (
+          <div className="mb-4 rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-xs leading-5 text-amber-100">
+            ⚠️ 이 콘텐츠는 <strong>사기 뉴스·교육(scam_news_edu)</strong>입니다. 아래 플래그는
+            “보도·교육에서 <strong>언급된</strong> 위험 신호”이며, 현재 입력이 실제로 실행 중인
+            사기 신호가 아닙니다.
+          </div>
+        ) : null}
 
         <div className="space-y-3">
           {flags.map((flag) => {

@@ -14,8 +14,13 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from pipeline import apk_analyzer, classifier, extractor, llm_assessor, rag, safety, sandbox, signal_detector, stt, verifier
-from pipeline.config import CLASSIFICATION_THRESHOLD, RAG_TOP_K
+from pipeline import apk_analyzer, classifier, extractor, gate, llm_assessor, rag, safety, sandbox, signal_detector, stt, verifier
+from pipeline.config import (
+    CLASSIFICATION_THRESHOLD,
+    COMMON_RISK_LABELS,
+    RAG_TOP_K,
+    get_runtime_scam_taxonomy,
+)
 from pipeline.signal_detector import DetectionReport
 
 
@@ -24,6 +29,27 @@ class StepLog:
     name: str
     duration_ms: float
     detail: Any = None
+
+
+def _all_label_union() -> list[str]:
+    """모든 scam_type LABEL_SET + 공통 위험 라벨의 합집합 (분류 skip 시 사용)."""
+    runtime = get_runtime_scam_taxonomy()["label_sets"]
+    union = {lbl for labels in runtime.values() for lbl in labels}
+    union.update(COMMON_RISK_LABELS)
+    return sorted(union)
+
+
+def _extraction_label_set(candidates: list[str]) -> list[str]:
+    """Stage 2 — 공통 위험 라벨 + candidate scam_type 들의 LABEL_SET 합집합.
+
+    top-1 이 '투자 사기' 여도 개인정보 항목·악성 URL 같은 공통 위험 라벨이 항상
+    추출 대상에 포함된다 (COMMON_RISK_LABELS).
+    """
+    runtime = get_runtime_scam_taxonomy()["label_sets"]
+    labels: set[str] = set(COMMON_RISK_LABELS)
+    for scam_type in candidates:
+        labels.update(runtime.get(scam_type, []))
+    return sorted(labels)
 
 
 class ScamGuardianPipeline:
@@ -47,6 +73,8 @@ class ScamGuardianPipeline:
         self.last_llm_assessment: llm_assessor.LLMAssessment | None = None
         self.last_similar_cases: list[dict[str, Any]] = []
         self.last_report: DetectionReport | None = None
+        self.last_gate_result: gate.GateResult | None = None
+        self.last_candidate_scam_types: list[str] = []
 
     def _debug(self, message: str):
         if self.debug:
@@ -85,10 +113,12 @@ class ScamGuardianPipeline:
         self.last_classification = result
         return result
 
-    def extract(self, text: str, scam_type: str) -> list[extractor.Entity]:
+    def extract(
+        self, text: str, scam_type: str, labels: list[str] | None = None,
+    ) -> list[extractor.Entity]:
         t0 = time.time()
-        self._debug(f"extract() 시작: scam_type={scam_type}")
-        entities = extractor.extract(text, scam_type)
+        self._debug(f"extract() 시작: scam_type={scam_type}, labels={'union' if labels else 'by_type'}")
+        entities = extractor.extract(text, scam_type, labels=labels)
         self._log_step("추출", t0, {"entity_count": len(entities)})
         self._debug(f"extract() 완료: entity_count={len(entities)}")
         self.last_entities = entities
@@ -198,16 +228,23 @@ class ScamGuardianPipeline:
         self.last_llm_assessment = None
         self.last_similar_cases = []
         self.last_report = None
+        self.last_gate_result = None
+        self.last_candidate_scam_types = []
         self.last_safety_result: safety.SafetyResult | None = None
         self.last_sandbox_result: sandbox.SandboxResult | None = None
         self.last_apk_static_result: apk_analyzer.APKStaticReport | None = None
         self.last_apk_bytecode_result: apk_analyzer.APKBytecodeReport | None = None
         self.last_apk_dynamic_result: apk_analyzer.APKDynamicReport | None = None
         pipeline_start = time.time()
-        effective_use_rag = use_llm and use_rag
+        # 글로벌 kill switch — SCAMGUARDIAN_LLM_ENABLED=0 이면 어떤 진입점(웹/카카오/CLI)에서도
+        # LLM 보조 검출 비활성. 진입점 코드가 use_llm=True 를 강제하더라도 여기서 끈다.
+        if use_llm and os.environ.get("SCAMGUARDIAN_LLM_ENABLED", "1") == "0":
+            self._debug("LLM 보조 검출 비활성: SCAMGUARDIAN_LLM_ENABLED=0")
+            use_llm = False
+        # effective_use_llm / effective_use_rag 는 Phase 1.5 게이트 후 확정된다.
         self._debug(
             "analyze() 시작: "
-            f"skip_verification={skip_verification}, use_llm={use_llm}, use_rag={effective_use_rag}"
+            f"skip_verification={skip_verification}, use_llm={use_llm}, use_rag={use_rag}"
         )
 
         # ════════════════════════════════
@@ -404,18 +441,59 @@ class ScamGuardianPipeline:
             print(f"      ← 전사: {preview}")
 
         # ════════════════════════════════
-        # Phase 2: 스캠 유형 분류 (mDeBERTa)
+        # Phase 1.5: 콘텐츠 게이트 (Stage 1 — 내부 라우팅 전용)
+        # 게이트 결과는 외부 응답에 노출하지 않는다 (Identity Boundary). 파이프라인
+        # 실행 강도 라우팅 + 내부 metadata 에만 쓴다. self.last_gate_result 로 노출.
         # ════════════════════════════════
-        print("[Phase 2] 스캠 유형 분류 중...")
-        print(f"      → mDeBERTa NLI 모델에 {len(text)}자 전송")
-        classification = self.classify(text)
-        classifier_original = classification
+        print("[Phase 1.5] 콘텐츠 게이트 분류 중...")
+        gate_start = time.time()
+        gate_result = gate.classify_gate(text)
+        self.last_gate_result = gate_result
+        gate_profile = gate_result.execution_profile()
+        self._log_step(
+            "Gate",
+            gate_start,
+            {"bucket": gate_result.bucket, "source": gate_result.source},
+        )
+        print(
+            f"      ← {gate_result.label_ko} ({gate_result.bucket}) | "
+            f"scam_type={'O' if gate_profile['run_scam_type'] else 'skip'} "
+            f"serper≤{gate_profile['serper_max_entities']} "
+            f"llm={'O' if gate_profile['use_llm'] else 'skip'}"
+        )
+
+        # 게이트 profile 은 호출자 인자를 *상한선으로 줄이기만* 한다.
+        effective_use_llm = use_llm and gate_profile["use_llm"]
+        effective_use_rag = effective_use_llm and use_rag
+
+        # ════════════════════════════════
+        # Phase 2: 스캠 유형 분류 (mDeBERTa) — 게이트 profile 에 따라
+        # ════════════════════════════════
         scam_type_source = "classifier"
         scam_type_reason = ""
-        top3 = sorted(classification.all_scores.items(), key=lambda x: x[1], reverse=True)[:3]
-        top3_str = ", ".join(f"{k}({v:.1%})" for k, v in top3)
-        print(f"      ← 판정: {classification.scam_type} (신뢰도: {classification.confidence:.1%})")
-        print(f"      ← Top3: {top3_str}")
+        if gate_profile["run_scam_type"]:
+            print("[Phase 2] 스캠 유형 분류 중...")
+            print(f"      → mDeBERTa NLI 모델에 {len(text)}자 전송")
+            classification = self.classify(text)
+            top3 = sorted(classification.all_scores.items(), key=lambda x: x[1], reverse=True)[:3]
+            top3_str = ", ".join(f"{k}({v:.1%})" for k, v in top3)
+            print(f"      ← 판정: {classification.scam_type} (신뢰도: {classification.confidence:.1%})")
+            print(f"      ← Top3: {top3_str}")
+        else:
+            print(f"[Phase 2] 스캠 유형 분류 skip (게이트: {gate_result.label_ko})")
+            classification = classifier.ClassificationResult(
+                scam_type="", confidence=0.0, all_scores={}, is_uncertain=True,
+            )
+            self.last_classification = classification
+        classifier_original = classification
+
+        # Stage 2: multi-label 추출 라우팅 후보 (all_scores 기반).
+        # scam_type 필드는 top-1 문자열 그대로 유지 — 후보는 엔티티 추출 라우팅에만
+        # 쓰이고 외부 응답에는 노출하지 않는다 (self.last_candidate_scam_types → 내부 metadata).
+        candidate_scam_types = classifier.candidate_scam_types(classification.all_scores)
+        self.last_candidate_scam_types = candidate_scam_types
+        if candidate_scam_types:
+            print(f"      ← Stage 2 추출 후보 유형: {', '.join(candidate_scam_types)}")
 
         # ════════════════════════════════
         # Phase 3: 병렬 실행 (LLM통합 + 엔티티추출 + RAG)
@@ -427,7 +505,14 @@ class ScamGuardianPipeline:
         similar_cases: list[dict[str, Any]] = []
 
         def _task_extract():
-            return self.extract(text, classification.scam_type)
+            if not candidate_scam_types:
+                # all_scores 없음 (게이트가 분류 skip 등) → 기존 top-1 라우팅 fallback.
+                if classification.scam_type:
+                    return self.extract(text, classification.scam_type)
+                return self.extract(text, "", labels=_all_label_union())
+            # Stage 2 multi-label: 공통 위험 라벨 + top-N 후보 LABEL_SET 합집합.
+            labels = _extraction_label_set(candidate_scam_types)
+            return self.extract(text, classification.scam_type, labels=labels)
 
         def _task_llm_unified():
             return llm_assessor.analyze_unified(
@@ -441,8 +526,8 @@ class ScamGuardianPipeline:
             # 항상 엔티티 추출
             future_extract = executor.submit(_task_extract)
 
-            # LLM 통합 호출 (use_llm일 때만)
-            future_llm = executor.submit(_task_llm_unified) if use_llm else None
+            # LLM 통합 호출 (게이트 profile 로 게이팅된 effective_use_llm)
+            future_llm = executor.submit(_task_llm_unified) if effective_use_llm else None
 
             # RAG (use_rag일 때만)
             future_rag = executor.submit(_task_rag) if effective_use_rag else None
@@ -497,14 +582,22 @@ class ScamGuardianPipeline:
             print(f"      ← 엔티티 병합 후 총 {len(merged_entities)}개")
 
         # ════════════════════════════════
-        # Phase 4: 교차 검증 (내부 병렬) + 스코어링
+        # Phase 4: 신호 검출 — 룰 기반(항상) + Serper 교차검증(게이트 profile)
         # ════════════════════════════════
+        # 룰 기반 신호검출은 게이트 bucket·skip_verification 과 무관하게 *항상* 수행.
+        # 게이트가 normal 로 오판해도 검출 누락이 없도록.
+        rule_results = verifier.detect_rule_signals(merged_entities)
+        rule_triggered = sum(1 for r in rule_results if r.triggered)
+        print(f"[Phase 4] 룰 기반 신호검출: {len(rule_results)}건 중 {rule_triggered}건 검출")
+
+        serper_results: list[verifier.VerificationResult] = []
+        serper_cap = gate_profile["serper_max_entities"]
         if skip_verification:
-            print("[Phase 4] 교차 검증 건너뜀 (skip_verification=True)")
-            verification_results: list[verifier.VerificationResult] = []
+            print("[Phase 4] Serper 교차검증 건너뜀 (skip_verification=True)")
+        elif serper_cap <= 0:
+            print(f"[Phase 4] Serper 교차검증 건너뜀 (게이트: {gate_result.label_ko})")
         else:
-            # 검증 대상 엔티티를 스코어 상위 15개로 제한 (라벨당 최대 2개)
-            MAX_VERIFY_ENTITIES = 15
+            # 검증 대상 엔티티를 스코어 상위 serper_cap 개로 제한 (라벨당 최대 2개)
             seen_labels: dict[str, int] = {}
             verify_entities: list[extractor.Entity] = []
             for e in sorted(merged_entities, key=lambda x: -x.score):
@@ -513,25 +606,28 @@ class ScamGuardianPipeline:
                     continue
                 seen_labels[e.label] = count + 1
                 verify_entities.append(e)
-                if len(verify_entities) >= MAX_VERIFY_ENTITIES:
+                if len(verify_entities) >= serper_cap:
                     break
 
-            print("[Phase 4] 교차 검증 중 (Serper API, 병렬)...")
+            print("[Phase 4] Serper 교차검증 중 (병렬)...")
             print(
-                f"      → 엔티티 {len(verify_entities)}개 (전체 {len(merged_entities)}개 중), "
-                f"scam_type={classification.scam_type}"
+                f"      → 엔티티 {len(verify_entities)}개 (전체 {len(merged_entities)}개 중, "
+                f"상한 {serper_cap}), scam_type={classification.scam_type}"
             )
-            verification_results = self.verify(
+            serper_results = self.verify(
                 verify_entities,
                 classification.scam_type,
                 transcript=text,
             )
-            triggered = sum(1 for r in verification_results if r.triggered)
-            print(f"      ← {len(verification_results)}건 검증, {triggered}건 신호 검출")
-            for r in verification_results:
-                if r.triggered:
-                    reason = r.evidence_snippets[0][:60] if r.evidence_snippets else ""
-                    print(f"         🚩 {r.flag} {reason}")
+            print(f"      ← Serper 검증 {len(serper_results)}건")
+
+        verification_results = rule_results + serper_results
+        triggered = sum(1 for r in verification_results if r.triggered)
+        print(f"      ← 총 {len(verification_results)}건 검증, {triggered}건 신호 검출")
+        for r in verification_results:
+            if r.triggered:
+                reason = r.evidence_snippets[0][:60] if r.evidence_snippets else ""
+                print(f"         🚩 {r.flag} {reason}")
 
         # ════════════════════════════════
         # Phase 5: 검출 신호 종합 (점수·등급 산정 X)

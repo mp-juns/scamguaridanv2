@@ -96,9 +96,16 @@ def _ensure_schema() -> None:
                 triggered_flags_gt JSONB NOT NULL,
                 transcript_corrected_text TEXT,
                 stt_quality INTEGER,
-                notes TEXT NOT NULL DEFAULT ''
+                notes TEXT NOT NULL DEFAULT '',
+                content_label TEXT,
+                sample_kind TEXT,
+                source_ref TEXT
             )
             """,
+            # content_label 재설계 마이그레이션 — 기존 테이블에 컬럼 추가 (idempotent)
+            "ALTER TABLE human_annotations ADD COLUMN IF NOT EXISTS content_label TEXT",
+            "ALTER TABLE human_annotations ADD COLUMN IF NOT EXISTS sample_kind TEXT",
+            "ALTER TABLE human_annotations ADD COLUMN IF NOT EXISTS source_ref TEXT",
             f"""
             CREATE TABLE IF NOT EXISTS transcript_embeddings (
                 run_id UUID PRIMARY KEY REFERENCES analysis_runs(id) ON DELETE CASCADE,
@@ -468,7 +475,10 @@ def get_run_detail(run_id: str) -> dict[str, Any] | None:
             triggered_flags_gt,
             transcript_corrected_text,
             stt_quality,
-            notes
+            notes,
+            content_label,
+            sample_kind,
+            source_ref
         FROM human_annotations
         WHERE run_id = %s
     """
@@ -512,6 +522,9 @@ def get_run_detail(run_id: str) -> dict[str, Any] | None:
             "transcript_corrected_text": annotation_row["transcript_corrected_text"],
             "stt_quality": annotation_row["stt_quality"],
             "notes": annotation_row["notes"] or "",
+            "content_label": annotation_row["content_label"] or "",
+            "sample_kind": annotation_row["sample_kind"] or "",
+            "source_ref": annotation_row["source_ref"],
         }
 
     return {"run": run, "annotation": annotation}
@@ -527,6 +540,9 @@ def upsert_human_annotation(
     transcript_corrected_text: str | None = None,
     stt_quality: int | None = None,
     notes: str = "",
+    content_label: str = "",
+    sample_kind: str = "",
+    source_ref: str | None = None,
 ) -> dict[str, Any]:
     if get_db_backend() == "sqlite":
         return sqlite_repository.upsert_human_annotation(
@@ -538,6 +554,9 @@ def upsert_human_annotation(
             transcript_corrected_text=transcript_corrected_text,
             stt_quality=stt_quality,
             notes=notes,
+            content_label=content_label,
+            sample_kind=sample_kind,
+            source_ref=source_ref,
         )
     _ensure_schema()
     query = """
@@ -549,8 +568,11 @@ def upsert_human_annotation(
             triggered_flags_gt,
             transcript_corrected_text,
             stt_quality,
-            notes
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            notes,
+            content_label,
+            sample_kind,
+            source_ref
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (run_id)
         DO UPDATE SET
             updated_at = NOW(),
@@ -560,7 +582,10 @@ def upsert_human_annotation(
             triggered_flags_gt = EXCLUDED.triggered_flags_gt,
             transcript_corrected_text = EXCLUDED.transcript_corrected_text,
             stt_quality = EXCLUDED.stt_quality,
-            notes = EXCLUDED.notes
+            notes = EXCLUDED.notes,
+            content_label = EXCLUDED.content_label,
+            sample_kind = EXCLUDED.sample_kind,
+            source_ref = EXCLUDED.source_ref
         RETURNING
             run_id,
             created_at,
@@ -571,7 +596,10 @@ def upsert_human_annotation(
             triggered_flags_gt,
             transcript_corrected_text,
             stt_quality,
-            notes
+            notes,
+            content_label,
+            sample_kind,
+            source_ref
     """
     params = (
         run_id,
@@ -582,6 +610,9 @@ def upsert_human_annotation(
         transcript_corrected_text,
         stt_quality,
         notes,
+        content_label,
+        sample_kind,
+        source_ref,
     )
     with _connect() as conn:
         row = conn.execute(query, params).fetchone()
@@ -597,6 +628,9 @@ def upsert_human_annotation(
         "transcript_corrected_text": row["transcript_corrected_text"],
         "stt_quality": row["stt_quality"],
         "notes": row["notes"] or "",
+        "content_label": row["content_label"] or "",
+        "sample_kind": row["sample_kind"] or "",
+        "source_ref": row["source_ref"],
     }
 
 
@@ -616,7 +650,10 @@ def fetch_annotated_pairs(scam_type: str | None = None) -> list[dict[str, Any]]:
             ha.entities_gt,
             ha.triggered_flags_gt,
             ha.transcript_corrected_text,
-            ha.stt_quality
+            ha.stt_quality,
+            ha.content_label,
+            ha.sample_kind,
+            ha.source_ref
         FROM analysis_runs ar
         INNER JOIN human_annotations ha ON ha.run_id = ar.id
         WHERE (%s IS NULL OR ha.scam_type_gt = %s)
@@ -638,6 +675,9 @@ def fetch_annotated_pairs(scam_type: str | None = None) -> list[dict[str, Any]]:
             "triggered_flags_gt": row["triggered_flags_gt"] or [],
             "transcript_corrected_text": row["transcript_corrected_text"],
             "stt_quality": row["stt_quality"],
+            "content_label": row["content_label"] or "",
+            "sample_kind": row["sample_kind"] or "",
+            "source_ref": row["source_ref"],
         }
         for row in rows
     ]

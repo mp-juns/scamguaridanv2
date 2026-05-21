@@ -58,6 +58,13 @@ type RagContext = {
   similar_cases: RagSimilarCase[];
 };
 
+// Stage 1 게이트 안전 버킷만 노출 (Identity Boundary).
+// scam_attempt / suspicious_insufficient 는 백엔드에서 절대 전달되지 않음.
+type ContentType = {
+  bucket?: string;        // normal | scam_news_edu | undetermined
+  label_ko?: string;
+};
+
 type AnalysisReport = {
   scam_type: string;
   classification_confidence: number;
@@ -73,7 +80,32 @@ type AnalysisReport = {
   llm_assessment?: LlmAssessment | null;
   rag_context?: RagContext | null;
   analysis_run_id?: string;
+  // Stage 1 안전 버킷 — 없으면 기존 scam_type 표시로 자연 fallback.
+  content_type?: ContentType | null;
 };
+
+function contentTypeBadge(
+  ct: ContentType | null | undefined,
+): { icon: string; label: string; chip: string } | null {
+  const bucket = (ct?.bucket ?? "").trim();
+  if (bucket === "scam_news_edu") {
+    return {
+      icon: "🗞️",
+      label: "사기 보도·교육 콘텐츠",
+      chip: "border-sky-500/40 bg-sky-700/20 text-sky-200",
+    };
+  }
+  if (bucket === "normal") {
+    return {
+      icon: "✅",
+      label: "정상 콘텐츠",
+      chip: "border-emerald-500/40 bg-emerald-700/20 text-emerald-200",
+    };
+  }
+  // undetermined 는 Phase 2 (scam_type 분류) 가 실행된 버킷이라
+  // scam_type 카드를 대체하지 않고 기존 결과 그대로 보여준다.
+  return null;
+}
 
 const EXAMPLE_INPUT =
   "일론 머스크가 화성 이민 프로젝트에 300만원 투자하면 연 30% 수익을 보장한다고 합니다. 문의는 010-1234-5678로 하라고 합니다.";
@@ -83,23 +115,6 @@ function formatPercent(value: number) {
     style: "percent",
     maximumFractionDigits: 1,
   }).format(value);
-}
-
-function scoreDeltaLabel(score: number) {
-  return score > 0 ? `+${score}` : `${score}`;
-}
-
-function riskClasses(level: string) {
-  switch (level) {
-    case "매우 위험":
-      return "bg-rose-500/15 text-rose-200 ring-1 ring-rose-500/30";
-    case "위험":
-      return "bg-amber-500/15 text-amber-100 ring-1 ring-amber-500/30";
-    case "주의":
-      return "bg-yellow-500/15 text-yellow-100 ring-1 ring-yellow-500/30";
-    default:
-      return "bg-emerald-500/15 text-emerald-100 ring-1 ring-emerald-500/30";
-  }
 }
 
 function entityKey(entity: Entity, index: number) {
@@ -443,17 +458,33 @@ export default function Home() {
             </div>
 
             {report ? (
+              (() => {
+                const ctBadge = contentTypeBadge(report.content_type);
+                return (
               <div className="space-y-5">
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
-                    <div className="text-sm text-slate-400">스캠 유형</div>
-                    <div className="mt-2 text-2xl font-semibold text-white">
-                      {report.scam_type}
+                  {ctBadge ? (
+                    <div className={`rounded-2xl border bg-slate-950/40 p-4 ${ctBadge.chip}`}>
+                      <div className="text-sm opacity-80">콘텐츠 분류 (사기 판정 X)</div>
+                      <div className="mt-2 text-2xl font-semibold">
+                        <span className="mr-2">{ctBadge.icon}</span>
+                        {ctBadge.label}
+                      </div>
+                      <div className="mt-2 text-xs opacity-70">
+                        Stage 1 게이트 안전 버킷 — scam_type 분류·검증 단계 skip
+                      </div>
                     </div>
-                    <div className="mt-2 text-sm text-slate-300">
-                      신뢰도 {formatPercent(report.classification_confidence)}
+                  ) : (
+                    <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                      <div className="text-sm text-slate-400">스캠 유형</div>
+                      <div className="mt-2 text-2xl font-semibold text-white">
+                        {(report.scam_type ?? "").trim() || "미분류"}
+                      </div>
+                      <div className="mt-2 text-sm text-slate-300">
+                        신뢰도 {formatPercent(report.classification_confidence)}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
                     <div className="text-sm text-slate-400">검출된 위험 신호</div>
@@ -466,26 +497,18 @@ export default function Home() {
                   </div>
                 </div>
 
+                {/* Identity Boundary: 판정(verdict) 없음 — 검출 요약만 노출 */}
                 <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
-                  <div className="text-sm text-slate-400">에이전트 결론</div>
-                  <div className="mt-2 text-xl font-semibold text-white">
-                    {report.agent_verdict ?? (report.is_scam ? "사기 의심" : "비사기 가능성 높음")}
+                  <div className="text-sm text-slate-400">검출 요약</div>
+                  <div className="mt-2 text-base font-medium leading-7 text-white">
+                    {report.summary ??
+                      `위험 신호 ${(report.detected_signals ?? []).length}개가 검출되었습니다.`}
                   </div>
-                  <div className="mt-3 space-y-2">
-                    {(report.agent_reasoning ?? []).slice(0, 5).map((reason, index) => (
-                      <div
-                        className="rounded-xl bg-white/5 px-3 py-2 text-xs leading-6 text-slate-300"
-                        key={`${reason}-${index}`}
-                      >
-                        {index + 1}. {reason}
-                      </div>
-                    ))}
-                    {!(report.agent_reasoning ?? []).length ? (
-                      <div className="rounded-xl bg-white/5 px-3 py-2 text-xs leading-6 text-slate-400">
-                        근거 요약이 아직 없습니다.
-                      </div>
-                    ) : null}
-                  </div>
+                  {report.disclaimer ? (
+                    <div className="mt-3 rounded-xl bg-white/5 px-3 py-2 text-xs leading-6 text-slate-400">
+                      {report.disclaimer}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
@@ -584,12 +607,16 @@ export default function Home() {
                   </div>
                 ) : null}
 
-                {report.is_uncertain ? (
+                {/* 콘텐츠가 안전 버킷(뉴스·정상·판단불가)이면 신뢰도 경고 숨김 —
+                    confidence 0% 는 Phase 2 skip 의 결과지 분류 실패가 아님. */}
+                {report.is_uncertain && !ctBadge ? (
                   <div className="rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
                     분류 신뢰도가 낮아서 결과가 부정확할 수 있습니다.
                   </div>
                 ) : null}
               </div>
+                );
+              })()
             ) : (
               <div className="rounded-2xl border border-dashed border-white/10 bg-slate-950/20 p-6 text-sm leading-7 text-slate-400">
                 아직 결과가 없습니다. 왼쪽 폼에서 입력을 넣고 분석을 실행하세요.

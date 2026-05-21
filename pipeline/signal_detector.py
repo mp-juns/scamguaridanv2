@@ -29,6 +29,7 @@ from pipeline.config import (
     LLM_FLAG_DETECTION_CONFIDENCE_THRESHOLD,
 )
 from pipeline.extractor import Entity
+from pipeline.flag_groups import group_detected_flags
 from pipeline.llm_assessor import LLMAssessment
 from pipeline.verifier import VerificationResult
 
@@ -90,6 +91,9 @@ class DetectionReport:
     detected_signals: list[DetectedSignal] = field(default_factory=list)
     summary: str = ""
     disclaimer: str = _DEFAULT_DISCLAIMER
+    # Stage 3 — UI/보고서 표시용 그룹핑 레이어 (기존 detected_signals 와 무관, 보조 필드).
+    # 세부 flag 와 학술/법적 rationale 매핑은 detected_signals 에 그대로 보존.
+    signal_groups: list[dict[str, Any]] = field(default_factory=list)
 
     # 검증 상세 (디버깅/감사용)
     all_verifications: list[dict[str, Any]] = field(default_factory=list)
@@ -116,6 +120,7 @@ class DetectionReport:
             "detected_signals": [s.to_dict() for s in self.detected_signals],
             "summary": self.summary,
             "disclaimer": self.disclaimer,
+            "signal_groups": self.signal_groups,
             "verification_count": len(self.all_verifications),
             "llm_assessment": self.llm_assessment,
             "rag_context": self.rag_context,
@@ -378,6 +383,7 @@ def detect(
         entities=[e.to_dict() for e in entities],
         detected_signals=detected,
         summary=summary,
+        signal_groups=group_detected_flags(detected),
         all_verifications=[vr.to_dict() for vr in verification_results],
         llm_assessment=llm_assessment.to_dict() if llm_assessment is not None else None,
         rag_context=rag_context,

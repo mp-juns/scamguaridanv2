@@ -209,9 +209,16 @@ __marimo__/
 # 로컬 DB / 인증서 / 테스트 스크래치 (2025-04-28 정리)
 .scamguardian/scamguardian.sqlite3
 .scamguardian/*.db
+.scamguardian/*.bak.*
+*.sqlite3.bak.*
 *.tail*.crt
 *.tail*.key
 testing_script.txt
+
+# 라벨링 작업용 로컬 export (transcript — 커밋 금지)
+data/run_drafts*.jsonl
+data/run_drafts*.md
+data/*.reviewed.jsonl
 
 # AI Hub 다운로드 (대용량 + 라이선스 — 커밋 금지)
 data/aihub/

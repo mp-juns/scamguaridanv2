@@ -4,6 +4,168 @@ milestone 단위 변경 로그. 누적 append, 최신이 위.
 
 ---
 
+## 2026-05-20 — 학습·평가 파이프라인 (dataset summary + gate/scam_type/signals 평가 + baseline 비교)
+
+**무엇**: 3단계 캐스케이드 + content_label 재구조화의 *정량 비교*를 위한 평가 스크립트.
+
+- `training/splits.py` 신설 — `group_train_val_test_split()` (default 70/15/15).
+  같은 `source_ref` 샘플은 한 fold 로 묶임 → **leakage 방지**. content_label 분포는
+  best-effort 균형 (그리디 결손 기반 배정).
+- `training/dataset_summary.py` 신설 — `summarize_dataset()`. content_label /
+  sample_kind / scam_type(scam_attempt 만) / 출처 / 학습 제외 카운트.
+- `training/eval_gate.py` 신설 — `evaluate_gate()`. 3-class (normal/scam_attempt/
+  scam_news_edu) 한정, suspicious/undetermined 자동 제외. accuracy + per-class
+  P/R/F1 + macro/weighted F1 + confusion matrix.
+- `training/eval_scam_type.py` 신설 — `evaluate_scam_type()`. content_label ==
+  scam_attempt 만, top-1/top-3 accuracy + macro/weighted F1 + per-class.
+- `training/eval_signals.py` 신설 — 3-mode:
+    - `evaluate_flags()`: 세부 flag P/R/F1 (per-flag + micro).
+    - `evaluate_groups()`: flag_groups 단위 P/R/F1.
+    - `compare_label_coverage()`: **baseline vs current** 추출 라벨셋 커버리지 비교.
+      Stage 2 의 COMMON_RISK_LABELS + top-N 합집합이 실제로 개인정보 항목·악성 URL
+      커버리지를 끌어올리는지 정량화. 핵심 라벨별·전체 Δ 출력.
+
+**검증**: pytest **282개 통과** (training_eval 21 신규, 회귀 0). leakage·제외 정책
+모두 테스트로 강제.
+
+**샘플 출력**: 데모 코퍼스에서 baseline 0% → current 100% (개인정보 항목·악성 URL).
+
+---
+
+## 2026-05-20 — Stage 3 검출 신호 그룹핑 레이어 (3단계 캐스케이드 3/3)
+
+**무엇**: 51개 세부 flag 를 11개 그룹으로 묶는 **표시 레이어** 추가. 세부 flag·
+rationale 매핑은 *완전히 그대로 유지* — Stage 3 는 보조 view 일 뿐, 내부 검출이나
+학술 근거 매핑을 대체하지 않는다.
+
+**왜**: 51개 flag 가 UI 에서 평탄하게 나오면 사용자가 패턴을 못 읽는다. ~11개
+의미 그룹("사칭", "개인정보 요구", "금전 요구" 등)으로 묶어 보여주되, 그룹 아래의
+세부 flag·근거는 그대로 노출.
+
+- `pipeline/flag_groups.py` 신설 — `FLAG_GROUPS`(11종) + `group_detected_flags()`.
+  매핑 안 된 flag 는 `other_signals` 그룹으로 누락 없이 보존.
+- `pipeline/signal_detector.py` — `DetectionReport.signal_groups` 필드 추가
+  (default `[]`, optional). `detect()` 가 자동으로 populate. `to_dict()` 에 포함.
+
+**보존**: `DETECTED_FLAGS`(51), `FLAG_RATIONALE`, `FLAG_LABELS_KO` 전부 그대로.
+기존 `detected_signals` 응답 구조 불변 — `signal_groups` 는 *추가* 필드, optional.
+기존 소비자는 무시해도 동작 보장 (default `[]`).
+
+**출력 예시**:
+```json
+{
+  "group_id": "personal_sensitive_request",
+  "label_ko": "개인정보·민감정보 요구",
+  "description": "주민번호·비밀번호·OTP·자격증명 등 민감 정보 요구",
+  "summary": "개인정보 또는 자격증명 제공을 요구하는 신호",
+  "count": 2,
+  "flags": ["personal_info_request", "sandbox_password_form_detected"]
+}
+```
+
+**결과**: pytest 261개 통과 (flag_groups 22 신규, 회귀 0). end-to-end 스모크로
+실제 응답에 `signal_groups` 정상 노출 확인.
+
+---
+
+## 2026-05-20 — Stage 2 multi-label 추출 라우팅 (3단계 캐스케이드 2/3)
+
+**무엇**: scam_type 단일 강제 분류로 복합 스캠의 한쪽 엔티티를 놓치던 문제를 해결.
+`all_scores` 상위 N개 후보 유형의 LABEL_SET 을 합집합으로 추출 대상에 넣는다.
+
+**왜**: top-1 이 "투자 사기" 면 투자 사기 LABEL_SET 만 추출 → 같은 메시지의 "주민번호
+요구"(개인정보 항목)를 통째로 놓침. = 검출 누락(recall 손실).
+
+- `pipeline/config.py` — `STAGE2_CANDIDATE_TOP_N`(3) / `STAGE2_DOMINANCE_GAP`(0.30) /
+  `COMMON_RISK_LABELS`(개인정보 항목·계좌번호·악성 URL).
+- `pipeline/classifier.py` — `candidate_scam_types(all_scores)`. top1-top2 차가
+  dominance_gap 이상이면 top-1 단독, 아니면 top-N. all_scores 없으면 [].
+- `pipeline/runner.py` — Phase 2 후 candidate 생성. extractor 라벨 = COMMON_RISK_LABELS
+  + top-N 후보 LABEL_SET 합집합. all_scores 없으면 기존 top-1 라우팅 fallback.
+- `api_server_pkg/common.py` — candidate_scam_types 를 내부 metadata 에만 저장.
+
+**불변**: `scam_type` 필드는 top-1 문자열 그대로 (list 로 안 바꿈). candidate_scam_types
+는 외부 응답 schema(`to_dict`)에 노출 안 함 — 추출 라우팅 + 내부 metadata 전용.
+
+**결과**: pytest 239개 통과 (stage2 12 신규, 회귀 0). end-to-end 스모크 — top-1 투자
+사기 입력에서 `개인정보 항목`("주민번호") 추출 확인 (Stage 2 이전엔 누락).
+
+---
+
+## 2026-05-20 — Admin 라벨링 UI content_label 반영
+
+**무엇**: `AdminRunEditor.tsx` 에 content_label 데이터 구조를 반영.
+
+- content_label select 를 scam_type 보다 **먼저** 배치 (기준 라벨).
+- scam_type select 는 `content_label == scam_attempt` 일 때만 활성 (그 외 disabled).
+  저장 시 scam_attempt 가 아니면 `scam_type_gt=""` 전송 — API validator 와 일치.
+- sample_kind select(5종) + source_ref 입력 필드 추가.
+- `scam_news_edu` 선택 시 정답 플래그 섹션에 "보도/교육에서 언급된 위험 신호"
+  안내 배너 표시.
+- 기존 annotation 에 content_label 없으면 `resolveContentLabel` fallback (백엔드와 동일).
+- 저장 payload 에 content_label/sample_kind/source_ref 포함.
+
+**검증**: AdminRunEditor.tsx tsc·eslint 통과 (clean). 백엔드 pytest 227개 통과.
+
+---
+
+## 2026-05-20 — 학습/라벨링 데이터 content_label 재구조화
+
+**무엇**: 학습 데이터를 "유튜브 뉴스 단순 라벨링" 중심에서 **content_label(콘텐츠
+성격) + sample_kind(샘플 출처)** 구조로 재정의. scam_attempt / scam_news_edu /
+normal 을 명확히 분리.
+
+**왜**: 뉴스 원문은 "사기에 대한 설명"이지 "사기 유도"가 아님. 뉴스를 scam_attempt
+로 학습하면 "사기·피해·경찰" 단어만 보고 오탐. scam_type 분류기는 사기 시도
+샘플만 학습해야 함.
+
+- `pipeline/config.py` — `CONTENT_LABELS`(=GATE_BUCKETS) / `SAMPLE_KINDS` /
+  학습 정책 상수.
+- `db/sqlite_repository.py`·`db/repository.py` — `human_annotations` 에
+  `content_label`/`sample_kind`/`source_ref` 컬럼 + 마이그레이션 (sqlite ALTER
+  try/except, postgres ADD COLUMN IF NOT EXISTS). 기존 필드 전부 유지.
+- `training/data.py` — content_label 중심 로더 재설계:
+  `load_classifier_dataset`(scam_attempt 만), `load_content_gate_dataset`
+  (normal/scam_attempt/scam_news_edu), `load_review_queue`(suspicious/undetermined).
+  content_label 없는 구 데이터는 fallback (scam_type 명확→scam_attempt, 아니면
+  undetermined).
+- `api_server_pkg/models.py` — `HumanAnnotationRequest` 에 content_label/sample_kind/
+  source_ref. scam_type_gt 는 scam_attempt 일 때만 필수 (조건부 validator).
+- `docs/labeling_guide.md` 신설 — 뉴스 처리 규칙 + synthetic 샘플 구조 + JSONL 스키마.
+- `data/labeling_samples.example.jsonl` — 예시 5종.
+
+**호환성**: 외부 API 응답 schema 불변. 기존 scam_type_gt/entities_gt/triggered_flags_gt
+전부 유지. Admin UI 변경은 다음 패스.
+
+**결과**: pytest 227개 통과 (training_data 19 신규, 회귀 0).
+
+---
+
+## 2026-05-20 — Stage 1 콘텐츠 게이트 (3단계 캐스케이드 1/3)
+
+**무엇**: 12개 사기유형 단일 강제 분류 앞단에 콘텐츠 게이트를 추가. 입력을 5 bucket
+(`정상`/`사기 시도`/`사기 뉴스·교육`/`의심되지만 불충분`/`판단 불가`)으로 분류해
+파이프라인 실행 강도를 라우팅한다.
+
+**왜**: (1) 정상·뉴스/교육 콘텐츠가 12개 중 하나로 강제 분류돼 오탐 → 게이트가 먼저
+거름. (2) 비싼 단계(Serper·LLM)를 bucket 별로 조절해 헛수고 절감.
+
+- `pipeline/gate.py` 신설 — `classify_gate()`. Claude Haiku 1회 + 짧은 입력 fast-path
+  + 호출 실패 시 `undetermined` fallback (게이트는 죽지 않음).
+- `pipeline/config.py` — `GATE_BUCKETS` / `GATE_EXECUTION_PROFILE` (bucket→실행 강도).
+- `pipeline/verifier.py` — 룰 기반 신호검출(`detect_rule_signals`)을 Serper 검증
+  (`verify`)과 분리. 룰 검출은 모든 gate bucket 에서 항상 실행.
+- `pipeline/runner.py` — Phase 1.5 게이트 단계. profile 은 호출자 인자를 상한선으로만
+  적용. 분류 skip 시 extractor 는 전체 라벨셋 합집합 사용.
+- `api_server_pkg/common.py` — 게이트 결과를 내부 DB metadata 에만 기록.
+
+**Identity Boundary**: 게이트 결과는 외부 응답 schema(`detected_signals`/`scam_type`)에
+노출하지 않는다 — 검출(detection)이 아니라 내부 라우팅 신호.
+
+**결과**: pytest 208개 통과 (gate 18 + verifier 6 신규, 회귀 0). end-to-end 스모크 확인.
+
+---
+
 ## 2026-05-05 — APK 검출 4-tier 구현 (정적 Lv1 + Lv2 + 동적 Lv3 인터페이스)
 
 **무엇**: VirusTotal (Tier 1) 단독 → 4-tier APK 검출 architecture. zero-day 보이스피싱 APK 대응.

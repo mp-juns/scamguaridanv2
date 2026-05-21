@@ -20,6 +20,17 @@ type DetectedSignalDict = {
   description?: string;
 };
 
+// Stage 3 — 검출 신호 그룹핑 레이어 (UI 표시용 보조 필드, optional).
+// 세부 detected_signals 와 학술·법적 rationale 매핑은 그대로 유지된다.
+type SignalGroupDict = {
+  group_id?: string;
+  label_ko?: string;
+  description?: string;
+  summary?: string;
+  count?: number;
+  flags?: string[];
+};
+
 type EntityDict = {
   label?: string;
   text?: string;
@@ -59,6 +70,8 @@ type ReportDict = {
   entities?: EntityDict[];
   // Identity Boundary (CLAUDE.md): score / risk_level 필드 *없음*. detected_signals 만.
   detected_signals?: DetectedSignalDict[];
+  // Stage 3 — 검출 신호 그룹핑(표시용). 없으면 detected_signals 만 표시로 fallback.
+  signal_groups?: SignalGroupDict[];
   summary?: string;
   disclaimer?: string;
   llm_assessment?: LLMAssessment | null;
@@ -77,14 +90,45 @@ type ChatTurnDict = { role?: string; message?: string };
 
 type FlagRationaleEntry = { rationale?: string; source?: string };
 
+// Stage 1 게이트 안전 버킷만 결과 페이지에 노출 (Identity Boundary).
+// scam_attempt / suspicious_insufficient 는 백엔드에서 절대 전달되지 않음.
+type ContentTypeDict = {
+  bucket?: string;        // normal | scam_news_edu | undetermined
+  label_ko?: string;
+};
+
 type ResultPayload = {
   result: ReportDict;
   user_context: UserContextDict | null;
   input_type: string;
   chat_history: ChatTurnDict[];
   flag_rationale?: Record<string, FlagRationaleEntry>;
+  content_type?: ContentTypeDict | null;
   expires_at: number;
 };
+
+// 안전 버킷별 결과 페이지 헤더 배지 스타일·문구.
+function contentTypeBadge(
+  ct: ContentTypeDict | null | undefined,
+): { icon: string; label: string; chip: string } | null {
+  const bucket = (ct?.bucket ?? "").trim();
+  if (bucket === "scam_news_edu") {
+    return {
+      icon: "🗞️",
+      label: "사기 보도·교육 콘텐츠",
+      chip: "border-sky-500/40 bg-sky-700/20 text-sky-200",
+    };
+  }
+  if (bucket === "normal") {
+    return {
+      icon: "✅",
+      label: "정상 콘텐츠",
+      chip: "border-emerald-500/40 bg-emerald-700/20 text-emerald-200",
+    };
+  }
+  // undetermined 는 Phase 2 가 실행된 버킷이므로 기존 scam_type 표시를 가리지 않는다.
+  return null;
+}
 
 // 검출 신호 개수에 따른 색·아이콘. 등급 매기기 X — 단순 시각 변별.
 function detectionStyle(signalCount: number): { color: string; icon: string; title: string } {
@@ -167,6 +211,10 @@ export default async function ResultPage({ params }: PageProps) {
 
   const { result, user_context, input_type, chat_history, expires_at } = data;
   const signals = result.detected_signals ?? [];
+  // Stage 3 그룹핑 — 없으면(legacy 응답·빈 배열) detected_signals 표시로 자연 fallback.
+  const signalGroups = result.signal_groups ?? [];
+  // Stage 1 안전 버킷 배지 (사기 시도/의심 버킷은 백엔드 단계에서 이미 걸러짐).
+  const ctBadge = contentTypeBadge(data.content_type);
   const detection = detectionStyle(signals.length);
   const inputLabel = INPUT_TYPE_LABEL[input_type] ?? input_type;
   const llm = result.llm_assessment ?? null;
@@ -174,13 +222,28 @@ export default async function ResultPage({ params }: PageProps) {
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,#111827_0%,#020617_60%,#000000_100%)] px-4 py-8 text-slate-100 sm:px-6 sm:py-10">
       <div className="mx-auto w-full max-w-4xl space-y-6">
-        {/* 헤더 */}
+        {/* 헤더 — 안전 버킷이면 콘텐츠 타입 배지로, 아니면 scam_type 표시 */}
         <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
+          <div className="space-y-2">
             <p className="text-sm text-slate-400">ScamGuardian 검출 결과</p>
-            <h1 className="text-2xl font-bold text-slate-100">
-              {result.scam_type ?? "미분류"} <span className="text-base text-slate-500">(추정 유형)</span>
-            </h1>
+            {ctBadge ? (
+              <div className="space-y-2">
+                <h1 className="text-2xl font-bold text-slate-100">
+                  <span className="mr-2">{ctBadge.icon}</span>
+                  {ctBadge.label}
+                </h1>
+                <span
+                  className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs ${ctBadge.chip}`}
+                >
+                  콘텐츠 분류 (사기 판정 X)
+                </span>
+              </div>
+            ) : (
+              <h1 className="text-2xl font-bold text-slate-100">
+                {(result.scam_type ?? "").trim() || "미분류"}{" "}
+                <span className="text-base text-slate-500">(추정 유형)</span>
+              </h1>
+            )}
           </div>
           <p className="text-xs text-slate-500">{fmtExpires(expires_at)} · {inputLabel}</p>
         </header>
@@ -287,6 +350,48 @@ export default async function ResultPage({ params }: PageProps) {
                 </li>
               ))}
             </ol>
+          </section>
+        )}
+
+        {/* Stage 3 — 신호 그룹 요약 (detected_signals 보다 먼저). 그룹 없으면 자연 생략. */}
+        {signalGroups.length > 0 && (
+          <section className="rounded-2xl border border-slate-700 bg-slate-900/60 p-6">
+            <h2 className="mb-3 text-lg font-semibold text-slate-100">
+              📊 위험 신호 그룹 요약 ({signalGroups.length}그룹)
+            </h2>
+            <p className="mb-4 text-sm text-slate-400">
+              검출된 신호를 의미별로 묶어 본 요약입니다. 각 신호의 학술·법적 근거는
+              아래 “검출된 위험 신호” 섹션을 참고하세요.
+            </p>
+            <ul className="space-y-3">
+              {signalGroups.map((g, idx) => (
+                <li key={g.group_id ?? idx} className="rounded bg-slate-800/60 p-4">
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="text-base font-semibold text-slate-100">
+                      {g.label_ko ?? g.group_id ?? "기타"}
+                    </span>
+                    <span className="rounded bg-slate-700/60 px-2 py-0.5 text-xs text-slate-300">
+                      {g.count ?? (g.flags?.length ?? 0)}개
+                    </span>
+                  </div>
+                  {g.summary && (
+                    <p className="mt-1 text-sm text-slate-300">{g.summary}</p>
+                  )}
+                  {(g.flags?.length ?? 0) > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {(g.flags ?? []).map((f, fidx) => (
+                        <span
+                          key={fidx}
+                          className="rounded-full border border-slate-600 bg-slate-950/40 px-2 py-0.5 font-mono text-xs text-slate-400"
+                        >
+                          {f}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
           </section>
         )}
 

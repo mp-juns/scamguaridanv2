@@ -1,3 +1,99 @@
+# 3단계 캐스케이드 — 콘텐츠 게이트 + multi-label 라우팅 (2026-05-19)
+
+목적: 12개 사기유형 단일 강제 분류의 두 결함 해결 —
+(1) 정상·뉴스/교육 콘텐츠도 12개 중 하나로 강제 → 헛수고·오탐
+(2) 복합 스캠("코인+로맨스")을 단일 유형으로 강제 → 한쪽 엔티티 검출 누락
+
+1단계(게이트) → 2단계(유형) → 3단계(신호) 캐스케이드.
+
+## 확정 사항
+- **1단계 5-bucket 게이트는 외부 API 응답에 노출 X** — 내부 라우팅 + 라벨링 metadata 에만.
+- 외부 응답 schema 불변: `detected_signals[]` + `scam_type` context. CLAUDE.md Identity Boundary 개정 X.
+- 1단계는 **절대 hard-skip 안 함** — 게이트 오판 시 검출 누락 방지. 룰 기반 신호검출은 항상 돎,
+  비싼 단계(Serper·LLM)만 가지치기 (아래 라우팅 표).
+
+## 확정 (2026-05-19)
+- 1단계 게이트 구현: **Claude Haiku** (context_chat.classify_intent 패턴, 실패 시 fallback)
+- 2단계 유형: 12개 전부 유지 + "기타 사기" 추가. 건강식품·부동산은 코드 삭제 X —
+  데이터 부족 시 학습 정책에서만 `other_scam` 으로 병합
+- Serper/LLM: 완전 OFF 대신 bucket 별 실행 강도 조절
+
+## Stage 1 — 콘텐츠 게이트 (internal routing only)
+
+5 bucket: `정상` / `사기 시도` / `사기 뉴스·교육` / `의심되지만 불충분` / `판단 불가`
+
+| bucket | 룰 신호검출 | scam_type 분류 | Serper 검증 | LLM 보조 |
+|---|---|---|---|---|
+| 정상 | ✅ 항상 | skip | OFF | OFF |
+| 사기 뉴스·교육 | ✅ 항상 | skip | OFF | OFF |
+| 의심되지만 불충분 | ✅ 항상 | ✅ | 제한 (8) | ✅ |
+| 판단 불가 | ✅ 항상 | ✅ | 제한 (8) | ✅ |
+| 사기 시도 | ✅ 항상 | ✅ | 전체 (15) | ✅ |
+
+게이트 profile 은 호출자 인자(`use_llm`·`skip_verification`)를 상한선으로 줄이기만 함.
+
+- [x] `pipeline/config.py` — `GATE_BUCKETS` / `GATE_LABELS_KO` / `GATE_EXECUTION_PROFILE` / fallback 정의
+- [x] `pipeline/gate.py` 신설 — `classify_gate(text) → GateResult`. Haiku 1회 + heuristic fast-path + fallback
+- [x] `tests/test_gate.py` — 18 케이스 (파서·fast-path·fallback·profile). 통과
+- [x] `pipeline/verifier.py` — 룰 기반(`detect_rule_signals`) vs Serper 기반(`verify`) 분리
+- [x] `tests/test_verifier_rule_signals.py` — 6 케이스. 룰/Serper dispatch disjoint 검증
+- [x] `pipeline/runner.py` — Phase 1.5 게이트 + 라우팅 (profile 상한선 적용, 룰 검출 항상)
+- [x] `api_server_pkg/common.py` — `persist_run` 이 gate 결과를 내부 metadata 에 기록 (외부 응답 비노출)
+
+## 학습·평가 파이프라인 (2026-05-20 완료)
+
+- [x] `training/splits.py` — source_ref 그룹 인식 70/15/15 split, leakage 방지
+- [x] `training/dataset_summary.py` — content_label / sample_kind / scam_type / 출처 / 제외 카운트
+- [x] `training/eval_gate.py` — 3-class (normal/scam_attempt/scam_news_edu) 평가
+- [x] `training/eval_scam_type.py` — scam_attempt 한정 Top-1/3 + macro/weighted F1
+- [x] `training/eval_signals.py` — flag/group 평가 + baseline vs current 라벨 커버리지 비교
+- [x] `tests/test_training_eval.py` — 21 케이스 (leakage·제외 정책·baseline 비교)
+
+## Review — Stage 1 (2026-05-20)
+
+**무엇**: Stage 1 콘텐츠 게이트 구현 + 파이프라인 연결 완료.
+- 게이트(`gate.py`)가 STT 직후 Phase 1.5 에서 5-bucket 분류 → `execution_profile` 로
+  Phase 2(분류)·3(LLM)·4(Serper) 실행 강도 라우팅.
+- `verifier.py` 의 룰 기반 신호검출을 Serper 검증과 분리 — `detect_rule_signals` 는
+  모든 gate bucket 에서 항상 실행 (게이트 오판 시 검출 누락 방지).
+- profile 은 호출자 인자(`use_llm`·`skip_verification`)를 상한선으로 줄이기만 함.
+- 게이트 결과는 외부 응답 schema 비노출 — `self.last_gate_result` + DB metadata 만.
+
+**검증**: pytest 208개 통과 (gate 18 + verifier 6 신규). 게이트 미적용(API key 없음)
+fallback 경로로 end-to-end 스모크 — 게이트 fallback→분류→추출→룰 검출(`abnormal_return_rate`)
+→`to_dict()` 에 gate 키 없음 확인.
+
+**다음**: Stage 2 (multi-label 라우팅) / Stage 3 (신호 그룹핑).
+
+## Stage 2 — 사기 유형 multi-label 라우팅
+
+- [ ] `runner.py` — extractor 에 단일 `scam_type` 대신 임계값 넘는 **상위 N개 유형의 라벨셋 합집합** 전달
+      (`classifier.classify()` 는 `all_scores` 이미 반환 / `extractor.extract()` 는 `labels` 인자 이미 있음)
+- [ ] 표면 `scam_type` 은 top-1 유지 (context 용, 노출 schema 불변)
+- [ ] `config.py` — "기타 사기" 유형 + 라벨셋 추가
+
+## Stage 3 — 위험 신호 그룹핑 레이어 (2026-05-20 완료)
+
+- [x] 기존 51개 `DETECTED_FLAGS`/`FLAG_RATIONALE` 완전 보존 (11개로 교체 X)
+- [x] `pipeline/flag_groups.py` 신설 — `FLAG_GROUPS`(11종) + `group_detected_flags()`.
+      매핑 없는 flag 는 `other_signals` 로 fallback.
+- [x] `pipeline/signal_detector.py` — `DetectionReport.signal_groups` optional 필드 +
+      `detect()` 가 자동 populate, `to_dict()` 에 포함.
+- [x] `tests/test_flag_groups.py` — 22 케이스 (그룹핑·other·중복 dedup·입력 형식·기존
+      schema 보존·FLAG_GROUPS 무결성).
+- [ ] (선택, 다음 패스) `kakao_formatter.py` / 결과 페이지 / AdminRunEditor 가 `signal_groups`
+      를 실제로 표시 — schema 는 이미 준비됨.
+
+## 검증
+- [ ] 합성 발화로 게이트 5-bucket 정확도 (특히 사기 뉴스/교육 vs 사기 시도 혼동률)
+- [ ] 복합 스캠 텍스트로 multi-label 합집합 → 엔티티 recall 개선 측정
+- [ ] `tests/test_gate.py` 신설 + 기존 pytest 93개 회귀 없음
+
+## Review
+(구현 후 작성)
+
+---
+
 # Stage 2 — APK 정적 분석 Lv 1 진짜 구현 (2026-05-05)
 
 목적: Stage 1 narrative 의 Tier 2 (정적 Lv1) 를 실제 코드로. androguard 기반 manifest·

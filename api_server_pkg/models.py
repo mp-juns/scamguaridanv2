@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from pipeline.config import CONTENT_LABELS, GATE_SCAM_ATTEMPT, SAMPLE_KINDS
 
 
 class AnalyzeRequest(BaseModel):
@@ -21,12 +23,31 @@ class AnalyzeRequest(BaseModel):
 
 class HumanAnnotationRequest(BaseModel):
     labeler: str | None = None
-    scam_type_gt: str
+    # content_label 재설계: scam_type_gt 는 더 이상 무조건 필수가 아니다.
+    # content_label == scam_attempt 일 때만 필수 (아래 validator).
+    scam_type_gt: str = ""
     entities_gt: list[dict[str, Any]] = Field(default_factory=list)
     triggered_flags_gt: list[dict[str, Any]] = Field(default_factory=list)
     transcript_corrected_text: str | None = None
     stt_quality: int | None = Field(default=None, ge=1, le=5)
     notes: str = ""
+    # 콘텐츠 성격 라벨 (Stage 1 게이트와 동일 어휘). 미지정 시 학습 로더가 fallback.
+    content_label: str = ""
+    sample_kind: str = ""
+    source_ref: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_content_label(self) -> "HumanAnnotationRequest":
+        cl = (self.content_label or "").strip()
+        if cl and cl not in CONTENT_LABELS:
+            raise ValueError(f"content_label 은 {CONTENT_LABELS} 중 하나여야 합니다.")
+        sk = (self.sample_kind or "").strip()
+        if sk and sk not in SAMPLE_KINDS:
+            raise ValueError(f"sample_kind 은 {SAMPLE_KINDS} 중 하나여야 합니다.")
+        # scam_type 은 scam_attempt 일 때만 강제. normal/scam_news_edu 등에는 강제 안 함.
+        if cl == GATE_SCAM_ATTEMPT and not (self.scam_type_gt or "").strip():
+            raise ValueError("content_label 이 scam_attempt 이면 scam_type_gt 가 필요합니다.")
+        return self
 
 
 class ScamTypeCatalogRequest(BaseModel):

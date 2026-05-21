@@ -507,9 +507,21 @@ def _verify_exchange(entity: Entity) -> list[VerificationResult]:
 
 # ──────────────────────────────────────────────
 # 레이블 → 검증 함수 매핑
+#
+# 룰 기반 vs Serper 기반을 분리한다 (Stage 1 게이트 라우팅용):
+#   - 룰 기반   : 네트워크 호출 없이 엔티티 텍스트만으로 판단. 모든 gate bucket
+#                 에서 *항상* 실행 (detect_rule_signals).
+#   - Serper 기반: Serper API 검색 필요. gate profile 에 따라 실행 강도 조절 (verify).
 # ──────────────────────────────────────────────
 
-_VERIFY_DISPATCH: dict[str, Any] = {
+# 룰 기반 — 네트워크 호출 없음. 항상 안전하게 실행 가능.
+_RULE_VERIFY_DISPATCH: dict[str, Any] = {
+    "수익 퍼센트": _verify_return_rate,
+    "개인정보 항목": _verify_personal_info,
+}
+
+# Serper 기반 — 네트워크 호출. gate profile 로 게이팅.
+_SERPER_VERIFY_DISPATCH: dict[str, Any] = {
     "전화번호": _verify_phone,
     "웹사이트 주소": _verify_website,
     "계좌번호": _verify_account,
@@ -517,23 +529,40 @@ _VERIFY_DISPATCH: dict[str, Any] = {
     "인증 기관명": _verify_certification,
     "인허가 기관명": _verify_certification,
     "사칭 기관명": _verify_impersonated_agency,
-    "수익 퍼센트": _verify_return_rate,
-    "개인정보 항목": _verify_personal_info,
     "치료 효능 주장": _verify_medical_claim,
     "거래소명": _verify_exchange,
 }
 
-# 회사명은 다른 엔티티 참조가 필요하므로 별도 처리
+# 회사명은 다른 엔티티 참조가 필요하므로 별도 처리 (Serper 기반)
 _COMPANY_LABELS = {"회사명 또는 기관명"}
+
+
+def detect_rule_signals(entities: list[Entity]) -> list[VerificationResult]:
+    """룰 기반 신호 검출 — 네트워크 호출 없음.
+
+    엔티티 텍스트만으로 판단하므로 (수익률 임계 초과, 개인정보 요구) Serper·LLM 과
+    무관하게 *모든 gate bucket 에서 항상* 실행할 수 있다. runner 가 게이트 결과와
+    상관없이 무조건 호출한다 — 게이트가 normal 로 오판해도 검출 누락이 없도록.
+    """
+    results: list[VerificationResult] = []
+    for entity in entities:
+        fn = _RULE_VERIFY_DISPATCH.get(entity.label)
+        if fn is not None:
+            results.extend(fn(entity))
+    return results
 
 
 def verify(entities: list[Entity], scam_type: str, transcript: str) -> list[VerificationResult]:
     """
-    추출된 엔티티 리스트를 교차 검증한다.
+    추출된 엔티티 리스트를 **Serper 기반** 교차 검증한다.
     엔티티별 검증을 병렬로 실행하여 속도를 높인다.
 
+    룰 기반 신호(`detect_rule_signals`)는 여기서 다루지 않는다 — runner 가 게이트와
+    무관하게 별도로 항상 호출한다. 이 함수는 Serper API 호출이 필요한 검증만 수행하며
+    gate profile 에 따라 호출 여부·대상 수가 조절된다.
+
     Args:
-        entities: GLiNER가 추출한 엔티티 리스트
+        entities: 검증 대상 엔티티 리스트 (gate profile 의 serper 상한으로 제한된 상태)
         scam_type: 분류된 스캠 유형
         transcript: 원본 텍스트
 
@@ -542,12 +571,12 @@ def verify(entities: list[Entity], scam_type: str, transcript: str) -> list[Veri
     """
     results: list[VerificationResult] = []
 
-    # ── 엔티티별 검증을 병렬 실행 ──
+    # ── 엔티티별 검증을 병렬 실행 (Serper 기반만) ──
     def _verify_entity(entity: Entity) -> list[VerificationResult]:
         label = entity.label
         if label in _COMPANY_LABELS:
             return _verify_company(entity, entities)
-        verify_fn = _VERIFY_DISPATCH.get(label)
+        verify_fn = _SERPER_VERIFY_DISPATCH.get(label)
         if verify_fn is not None:
             return verify_fn(entity)
         return []
