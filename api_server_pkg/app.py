@@ -137,6 +137,10 @@ def create_app() -> FastAPI:
         try:
             pipeline = ScamGuardianPipeline()
             pipeline.analyze("워밍업 테스트", skip_verification=True, use_llm=True, use_rag=False)
+            # 위 analyze 는 skip_verification=True 라 Phase 4 가 안 돌고 SBERT 가 cold 상태로 남음.
+            # 실제 사기 케이스 첫 요청에서 ~6s cold start 가 터지므로 여기서 미리 로드.
+            from pipeline import verifier as _verifier
+            _verifier._get_sbert_model()
             log.info("모델 워밍업 완료")
         except Exception as exc:
             log.warning("모델 워밍업 실패 (무시): %s", exc)

@@ -12,6 +12,7 @@ const nextConfig: NextConfig = {
     "scamguardian.tail7e5dfc.ts.net",
     "scribble-failing-ludicrous.ngrok-free.dev",
     "*.ngrok-free.dev",
+    "*.trycloudflare.com",
   ],
   async rewrites() {
     // Next.js 의 /api/{analyze,analyze-upload,admin,result,auth} 는 자체 핸들러가

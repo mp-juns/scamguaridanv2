@@ -59,7 +59,8 @@ def get_public_base_url() -> str:
         try:
             import json as _json
             import urllib.request as _ureq
-            with _ureq.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=1) as resp:
+            ngrok_api = os.getenv("SCAMGUARDIAN_NGROK_API", "http://127.0.0.1:4040/api/tunnels").strip()
+            with _ureq.urlopen(ngrok_api, timeout=1) as resp:
                 data = _json.loads(resp.read().decode())
                 for t in data.get("tunnels", []):
                     pu = (t.get("public_url") or "").strip()

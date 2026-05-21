@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, ReactNode, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 
 type Entity = {
   label: string;
@@ -182,13 +182,28 @@ function renderTranscriptWithHighlights(
 export default function Home() {
   const [source, setSource] = useState(EXAMPLE_INPUT);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [whisperModel, setWhisperModel] = useState("medium");
   const [skipVerification, setSkipVerification] = useState(true);
   const [useLlm] = useState(true);
   const [useRag, setUseRag] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [report, setReport] = useState<AnalysisReport | null>(null);
+  const [sttBackend, setSttBackend] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/config/runtime")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d && typeof d.stt_backend === "string") {
+          setSttBackend(d.stt_backend);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const sourceHint = useMemo(() => {
     if (source.startsWith("http://") || source.startsWith("https://")) {
@@ -216,7 +231,6 @@ export default function Home() {
         ? await (async () => {
             const formData = new FormData();
             formData.set("file", uploadFile);
-            formData.set("whisper_model", whisperModel);
             formData.set("skip_verification", String(skipVerification));
             formData.set("use_llm", "true");
             formData.set("use_rag", String(useRag));
@@ -232,7 +246,6 @@ export default function Home() {
             },
             body: JSON.stringify({
               source: trimmedSource,
-              whisper_model: whisperModel,
               skip_verification: skipVerification,
               use_llm: true,
               use_rag: useRag,
@@ -367,20 +380,26 @@ export default function Home() {
               <div className="mt-3 text-sm text-slate-400">{sourceHint}</div>
 
               <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                <label className="space-y-2 text-sm text-slate-300">
-                  <span className="block">Whisper 모델</span>
-                  <select
-                    className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none focus:border-cyan-400/50"
-                    onChange={(event) => setWhisperModel(event.target.value)}
-                    value={whisperModel}
-                  >
-                    <option value="tiny">tiny</option>
-                    <option value="base">base</option>
-                    <option value="small">small</option>
-                    <option value="medium">medium</option>
-                    <option value="large">large</option>
-                  </select>
-                </label>
+                <div className="space-y-2 text-sm text-slate-300">
+                  <span className="block">STT 백엔드</span>
+                  <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2">
+                    <span
+                      className={`h-2 w-2 rounded-full ${
+                        sttBackend ? "bg-emerald-400" : "bg-slate-500"
+                      }`}
+                    />
+                    <span className="text-slate-100">
+                      {sttBackend === "claude"
+                        ? "Claude Audio API"
+                        : sttBackend === "openai_whisper"
+                          ? "OpenAI Whisper API"
+                          : "확인 중…"}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    서버 환경변수 <code className="rounded bg-slate-800/80 px-1">STT_BACKEND</code> 로 전환합니다.
+                  </p>
+                </div>
 
                 <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-slate-900/50 px-4 py-3 text-sm text-slate-200">
                   <input

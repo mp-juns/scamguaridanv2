@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from fastapi import APIRouter
@@ -22,6 +23,27 @@ router = APIRouter()
 )
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get(
+    "/api/config/runtime",
+    tags=["Public"],
+    summary="런타임 STT 백엔드 표시",
+    description=(
+        "현재 음성 전사에 사용 중인 백엔드를 노출. UI 배지 용도.\n\n"
+        "- `stt_backend`: `openai_whisper` 또는 `claude` — `pipeline/stt.py` 의 "
+        "`STT_BACKEND` 분기와 동일 라벨\n"
+        "- `*_key_present`: 해당 백엔드 키가 환경에 존재하는지 (실제 키 값은 노출 X)\n\n"
+        "**인증**: 불필요"
+    ),
+)
+def get_runtime_config() -> dict[str, Any]:
+    backend = os.getenv("STT_BACKEND", "whisper").strip().lower()
+    return {
+        "stt_backend": "claude" if backend == "claude" else "openai_whisper",
+        "openai_key_present": bool(os.getenv("OPENAI_API_KEY")),
+        "anthropic_key_present": bool(os.getenv("ANTHROPIC_API_KEY")),
+    }
 
 
 @router.get(

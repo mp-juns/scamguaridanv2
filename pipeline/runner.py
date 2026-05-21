@@ -255,7 +255,9 @@ class ScamGuardianPipeline:
         safety_result: safety.SafetyResult | None = None
         phase0_start = time.time()
         try:
-            if stt._is_youtube_url(source) or source.startswith(("http://", "https://")):
+            if stt._is_youtube_url(source):
+                print("[Phase 0] YouTube URL — VirusTotal skip (신뢰 플랫폼)")
+            elif source.startswith(("http://", "https://")):
                 print("[Phase 0] URL 안전성 검사 중 (VirusTotal)...")
                 safety_result = safety.scan_url(source)
             else:
