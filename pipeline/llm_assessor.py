@@ -40,7 +40,11 @@ def _get_client():
 
 
 def default_model_name() -> str:
-    return os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+    # Phase 3 (analyze_unified) default: Haiku.
+    # Sonnet 대비 ~3배 빠른 latency (10.7s → ~3-4s), LLM_FLAG_SCORE_RATIO=0.5 라
+    # 정확도 손실은 점수 가중치에서 흡수됨. STT/labeler/vision 은 각자의 getenv default 유지.
+    # 변경하려면 .env 에 ANTHROPIC_PHASE3_MODEL 또는 ANTHROPIC_MODEL 설정.
+    return os.getenv("ANTHROPIC_PHASE3_MODEL", os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"))
 
 
 @dataclass
