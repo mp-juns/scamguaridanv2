@@ -497,7 +497,9 @@ export default function Home() {
                     <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
                       <div className="text-sm text-slate-400">스캠 유형</div>
                       <div className="mt-2 text-2xl font-semibold text-white">
-                        {(report.scam_type ?? "").trim() || "미분류"}
+                        {report.is_uncertain || (report.classification_confidence ?? 0) < 0.3
+                          ? "정상"
+                          : (report.scam_type ?? "").trim() || "미분류"}
                       </div>
                       <div className="mt-2 text-sm text-slate-300">
                         신뢰도 {formatPercent(report.classification_confidence)}

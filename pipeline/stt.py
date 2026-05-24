@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -102,13 +104,86 @@ def _ensure_audio_nonempty(path: str) -> None:
         )
 
 
+# 병렬 chunk STT 파라미터 — 영상 분석 latency 단축
+STT_CHUNK_SEC = int(os.getenv("STT_CHUNK_SEC", "45"))
+STT_MAX_WORKERS = int(os.getenv("STT_MAX_WORKERS", "4"))
+STT_CHUNK_THRESHOLD_SEC = int(os.getenv("STT_CHUNK_THRESHOLD_SEC", "45"))
+
+
+def _whisper_one(audio_path: str) -> str:
+    """단일 오디오 파일 Whisper API 호출 + 비용 ledger. chunk 병렬 워커가 호출."""
+    from openai import OpenAI
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY 가 설정되지 않았습니다.")
+    client = OpenAI(api_key=api_key)
+    with open(audio_path, "rb") as f:
+        response = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=f,
+            language="ko",
+        )
+
+    duration = _probe_audio_seconds(audio_path)
+    if duration > 0:
+        try:
+            from platform_layer.cost import record_openai_whisper
+            record_openai_whisper(duration)
+        except Exception:
+            pass
+
+    return (response.text or "").strip()
+
+
+def _split_audio_chunks(audio_path: str, chunk_sec: int, out_dir: str) -> list[str]:
+    """ffmpeg segment 로 오디오를 chunk_sec 단위로 자른다. chunk 경로 리스트 반환 (index 순)."""
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg 가 설치되어 있지 않습니다.")
+    pattern = str(Path(out_dir) / "chunk_%04d.mp3")
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", audio_path,
+         "-f", "segment", "-segment_time", str(chunk_sec),
+         "-c", "copy", pattern],
+        check=True, capture_output=True,
+    )
+    chunks = sorted(Path(out_dir).glob("chunk_*.mp3"))
+    if not chunks:
+        raise RuntimeError("오디오 chunk 분할 결과가 비었습니다.")
+    return [str(p) for p in chunks]
+
+
+def _transcribe_chunks_parallel(
+    audio_path: str,
+    logger: Callable[[str], None] | None = None,
+) -> str:
+    """오디오를 chunk 로 분할 후 ThreadPoolExecutor 로 Whisper API 병렬 호출. index 순서대로 concat."""
+    with tempfile.TemporaryDirectory(prefix="sg_stt_") as tmp_dir:
+        chunks = _split_audio_chunks(audio_path, STT_CHUNK_SEC, tmp_dir)
+        if logger:
+            logger(
+                f"[STT] 병렬 chunking — chunk={STT_CHUNK_SEC}s, "
+                f"개수={len(chunks)}, workers={STT_MAX_WORKERS}"
+            )
+        results: dict[int, str] = {}
+        with ThreadPoolExecutor(max_workers=STT_MAX_WORKERS) as pool:
+            futures = {pool.submit(_whisper_one, p): i for i, p in enumerate(chunks)}
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    results[idx] = fut.result()
+                except Exception as exc:
+                    if logger:
+                        logger(f"[STT] chunk {idx} 실패: {exc} — 빈 텍스트로 대체")
+                    results[idx] = ""
+        return " ".join(results[i] for i in sorted(results) if results[i]).strip()
+
+
 def _transcribe_with_openai_api(
     audio_path: str,
     logger: Callable[[str], None] | None = None,
 ) -> dict:
-    """OpenAI Whisper API로 음성 파일을 텍스트로 변환한다."""
-    from openai import OpenAI
-
+    """OpenAI Whisper API로 음성 파일을 텍스트로 변환한다. 길면 자동 병렬 chunking."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError(
@@ -116,32 +191,24 @@ def _transcribe_with_openai_api(
             ".env 파일에 OPENAI_API_KEY를 추가해주세요."
         )
 
-    client = OpenAI(api_key=api_key)
     file_size_mb = Path(audio_path).stat().st_size / (1024 * 1024)
+    duration = _probe_audio_seconds(audio_path)
+
     if logger:
         logger(
             f"[STT] OpenAI Whisper API 호출 시작\n"
-            f"       → 전송 파일: {Path(audio_path).name} ({file_size_mb:.1f}MB)\n"
+            f"       → 전송 파일: {Path(audio_path).name} ({file_size_mb:.1f}MB, {duration:.1f}s)\n"
             f"       → 모델: whisper-1, 언어: ko"
         )
     t0 = time.time()
-    with open(audio_path, "rb") as f:
-        response = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=f,
-            language="ko",
-        )
-    elapsed = time.time() - t0
-    text = response.text
-    preview = text[:150] + "…" if len(text) > 150 else text
 
-    audio_seconds = _probe_audio_seconds(audio_path)
-    if audio_seconds > 0:
-        try:
-            from platform_layer.cost import record_openai_whisper
-            record_openai_whisper(audio_seconds)
-        except Exception:
-            pass
+    if duration > STT_CHUNK_THRESHOLD_SEC:
+        text = _transcribe_chunks_parallel(audio_path, logger=logger)
+    else:
+        text = _whisper_one(audio_path)
+
+    elapsed = time.time() - t0
+    preview = text[:150] + "…" if len(text) > 150 else text
 
     if logger:
         logger(

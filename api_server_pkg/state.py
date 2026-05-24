@@ -31,8 +31,8 @@ bg_tasks: set[asyncio.Task] = set()
 # token → {result, user_context, input_type, expires_at, user_id, chat_history}
 result_tokens: dict[str, dict[str, Any]] = {}
 
-# 공개 URL 캐시 — _get_public_base_url() 60초 캐시
-public_url_cache: dict[str, Any] = {"url": "", "expires": 0.0}
+# 공개 URL 캐시 — get_public_base_url() 60초 캐시 + cloudflared 로그 mtime 무효화
+public_url_cache: dict[str, Any] = {"url": "", "expires": 0.0, "log_mtime": 0.0}
 
 
 def spawn_bg(coro) -> asyncio.Task:

@@ -18,6 +18,7 @@ from pipeline import apk_analyzer, classifier, extractor, gate, llm_assessor, ra
 from pipeline.config import (
     CLASSIFICATION_THRESHOLD,
     COMMON_RISK_LABELS,
+    GATE_NORMAL,
     RAG_TOP_K,
     get_runtime_scam_taxonomy,
 )
@@ -443,113 +444,114 @@ class ScamGuardianPipeline:
             print(f"      ← 전사: {preview}")
 
         # ════════════════════════════════
-        # Phase 1.5: 콘텐츠 게이트 (Stage 1 — 내부 라우팅 전용)
-        # 게이트 결과는 외부 응답에 노출하지 않는다 (Identity Boundary). 파이프라인
-        # 실행 강도 라우팅 + 내부 metadata 에만 쓴다. self.last_gate_result 로 노출.
+        # Phase 1.5+2+3 통합 병렬 — STT 후 게이트·분류·추출·RAG 동시 실행
+        # latency 단축 (이전: Gate 1s → Phase 2 1s → Phase 3 1-2s = 3-4s)
+        # (지금: max(Gate, Classify, Extract, RAG) ≈ 1s + LLM if 필요)
+        #
+        # Trade-off: 게이트 결과 보기 전 Classify/Extract/RAG 를 eager 실행 →
+        # 게이트가 skip 결정 시 CPU 낭비. wall time 은 모두 overlap 되어 단축.
+        # LLM 만 sequential (사전 시작 시 $ cost 낭비 회피).
         # ════════════════════════════════
-        print("[Phase 1.5] 콘텐츠 게이트 분류 중...")
-        gate_start = time.time()
-        gate_result = gate.classify_gate(text)
-        self.last_gate_result = gate_result
-        gate_profile = gate_result.execution_profile()
-        self._log_step(
-            "Gate",
-            gate_start,
-            {"bucket": gate_result.bucket, "source": gate_result.source},
-        )
-        print(
-            f"      ← {gate_result.label_ko} ({gate_result.bucket}) | "
-            f"scam_type={'O' if gate_profile['run_scam_type'] else 'skip'} "
-            f"serper≤{gate_profile['serper_max_entities']} "
-            f"llm={'O' if gate_profile['use_llm'] else 'skip'}"
-        )
+        print("[Phase 1.5+2+3] 통합 병렬 실행 (게이트 || 분류 || 추출 || RAG)...")
+        parallel_start = time.time()
 
-        # 게이트 profile 은 호출자 인자를 *상한선으로 줄이기만* 한다.
-        effective_use_llm = use_llm and gate_profile["use_llm"]
-        effective_use_rag = effective_use_llm and use_rag
-
-        # ════════════════════════════════
-        # Phase 2: 스캠 유형 분류 (mDeBERTa) — 게이트 profile 에 따라
-        # ════════════════════════════════
-        scam_type_source = "classifier"
-        scam_type_reason = ""
-        if gate_profile["run_scam_type"]:
-            print("[Phase 2] 스캠 유형 분류 중...")
-            print(f"      → mDeBERTa NLI 모델에 {len(text)}자 전송")
-            classification = self.classify(text)
-            top3 = sorted(classification.all_scores.items(), key=lambda x: x[1], reverse=True)[:3]
-            top3_str = ", ".join(f"{k}({v:.1%})" for k, v in top3)
-            print(f"      ← 판정: {classification.scam_type} (신뢰도: {classification.confidence:.1%})")
-            print(f"      ← Top3: {top3_str}")
-        else:
-            print(f"[Phase 2] 스캠 유형 분류 skip (게이트: {gate_result.label_ko})")
-            classification = classifier.ClassificationResult(
-                scam_type="", confidence=0.0, all_scores={}, is_uncertain=True,
-            )
-            self.last_classification = classification
-        classifier_original = classification
-
-        # Stage 2: multi-label 추출 라우팅 후보 (all_scores 기반).
-        # scam_type 필드는 top-1 문자열 그대로 유지 — 후보는 엔티티 추출 라우팅에만
-        # 쓰이고 외부 응답에는 노출하지 않는다 (self.last_candidate_scam_types → 내부 metadata).
-        candidate_scam_types = classifier.candidate_scam_types(classification.all_scores)
-        self.last_candidate_scam_types = candidate_scam_types
-        if candidate_scam_types:
-            print(f"      ← Stage 2 추출 후보 유형: {', '.join(candidate_scam_types)}")
-
-        # ════════════════════════════════
-        # Phase 3: 병렬 실행 (LLM통합 + 엔티티추출 + RAG)
-        # ════════════════════════════════
-        print("[Phase 3] 병렬 실행 중 (LLM + 추출 + RAG)...")
         llm_result: llm_assessor.LLMAssessment | None = None
         unified_result: llm_assessor.UnifiedLLMResult | None = None
         entities: list[extractor.Entity] = []
         similar_cases: list[dict[str, Any]] = []
+        scam_type_source = "classifier"
+        scam_type_reason = ""
 
-        def _task_extract():
-            if not candidate_scam_types:
-                # all_scores 없음 (게이트가 분류 skip 등) → 기존 top-1 라우팅 fallback.
-                if classification.scam_type:
-                    return self.extract(text, classification.scam_type)
-                return self.extract(text, "", labels=_all_label_union())
-            # Stage 2 multi-label: 공통 위험 라벨 + top-N 후보 LABEL_SET 합집합.
-            labels = _extraction_label_set(candidate_scam_types)
-            return self.extract(text, classification.scam_type, labels=labels)
-
-        def _task_llm_unified():
-            return llm_assessor.analyze_unified(
-                text, classification.scam_type, user_context=user_context,
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        try:
+            future_gate = executor.submit(gate.classify_gate, text)
+            future_classify = executor.submit(self.classify, text)
+            # 추출은 union 모드 — Phase 2 결과 기다리지 않고 eager 실행.
+            # 라벨이 더 넓어 약간 더 무겁지만 wall time 단축이 더 큼.
+            future_extract = executor.submit(
+                self.extract, text, "", labels=_all_label_union(),
+            )
+            future_rag = (
+                executor.submit(self.retrieve_similar_cases, text, "")
+                if use_rag else None
             )
 
-        def _task_rag():
-            return self.retrieve_similar_cases(text, classification.scam_type)
+            # 게이트 먼저 (라우팅 결정에 필요)
+            gate_result = future_gate.result()
+            self.last_gate_result = gate_result
+            gate_profile = gate_result.execution_profile()
+            self._log_step(
+                "Gate", parallel_start,
+                {"bucket": gate_result.bucket, "source": gate_result.source},
+            )
+            print(
+                f"      ← [Gate] {gate_result.label_ko} ({gate_result.bucket}) | "
+                f"scam_type={'O' if gate_profile['run_scam_type'] else 'skip'} "
+                f"serper≤{gate_profile['serper_max_entities']} "
+                f"llm={'O' if gate_profile['use_llm'] else 'skip'}"
+            )
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            # 항상 엔티티 추출
-            future_extract = executor.submit(_task_extract)
+            effective_use_llm = use_llm and gate_profile["use_llm"]
+            effective_use_rag = effective_use_llm and use_rag
 
-            # LLM 통합 호출 (게이트 profile 로 게이팅된 effective_use_llm)
-            future_llm = executor.submit(_task_llm_unified) if effective_use_llm else None
+            # 분류 결과 — 게이트가 run_scam_type=True 일 때만 사용
+            if gate_profile["run_scam_type"]:
+                classification = future_classify.result()
+                top3 = sorted(
+                    classification.all_scores.items(), key=lambda x: x[1], reverse=True,
+                )[:3]
+                top3_str = ", ".join(f"{k}({v:.1%})" for k, v in top3)
+                print(
+                    f"      ← [분류] {classification.scam_type} "
+                    f"({classification.confidence:.1%}) | Top3: {top3_str}"
+                )
+            else:
+                classification = classifier.ClassificationResult(
+                    scam_type="", confidence=0.0, all_scores={}, is_uncertain=True,
+                )
+                self.last_classification = classification
+                print(f"      ← [분류] skip (게이트: {gate_result.label_ko})")
+            classifier_original = classification
 
-            # RAG (use_rag일 때만)
-            future_rag = executor.submit(_task_rag) if effective_use_rag else None
+            candidate_scam_types = classifier.candidate_scam_types(classification.all_scores)
+            self.last_candidate_scam_types = candidate_scam_types
+            if candidate_scam_types:
+                print(f"      ← Stage 2 추출 후보 유형: {', '.join(candidate_scam_types)}")
 
-            # 결과 수집
-            entities = future_extract.result()
-            print(f"      ← 엔티티 추출: {len(entities)}개")
-            for e in entities:
-                print(f"         [{e.label}] {e.text} ({e.score:.2f})")
+            # 추출 — B 최적화: 게이트=normal 이면 엔티티 무의미 → skip
+            if gate_result.bucket == GATE_NORMAL:
+                entities = []
+                print(f"      ← [추출] skip (게이트: normal, 사기 무관 콘텐츠)")
+            else:
+                entities = future_extract.result()
+                print(f"      ← [추출] 엔티티 {len(entities)}개")
+                for e in entities:
+                    print(f"         [{e.label}] {e.text} ({e.score:.2f})")
 
-            if future_llm is not None:
+            # RAG
+            if future_rag is not None and effective_use_rag:
+                try:
+                    similar_cases = future_rag.result()
+                    print(f"      ← [RAG] 참고 사례 {len(similar_cases)}개")
+                except Exception as exc:
+                    self._debug(f"retrieve_similar_cases() 실패: {exc}")
+                    print(f"      ← [RAG] 실패: {exc}")
+
+            # LLM — 게이트 결과 받은 후 conditionally 시작 ($ cost 낭비 회피).
+            # 같은 executor 에 submit 해서 RAG/Extract 잔여 작업과 overlap.
+            if effective_use_llm:
+                future_llm = executor.submit(
+                    llm_assessor.analyze_unified,
+                    text, classification.scam_type, user_context=user_context,
+                )
                 try:
                     unified_result = future_llm.result()
                     llm_result = unified_result.assessment
                     suggestion = unified_result.scam_type_suggestion
                     print(
-                        f"      ← LLM 통합: 엔티티 {len(llm_result.suggested_entities)}개, "
+                        f"      ← [LLM] 엔티티 {len(llm_result.suggested_entities)}개, "
                         f"플래그 {len(llm_result.suggested_flags)}개"
                     )
-                    # LLM 스캠 유형 재판정 적용
                     if suggestion is not None and suggestion.scam_type != classification.scam_type:
                         classification = classifier.ClassificationResult(
                             scam_type=suggestion.scam_type,
@@ -568,15 +570,13 @@ class ScamGuardianPipeline:
                         model=llm_assessor.default_model_name(), error=str(exc),
                     )
                     self._debug(f"analyze_unified() 실패: {exc}")
-                    print(f"      ← LLM 통합 실패: {exc}")
+                    print(f"      ← [LLM] 실패: {exc}")
+        finally:
+            # eager 실행한 잔여 future 는 background 에서 알아서 끝나고 thread 종료.
+            executor.shutdown(wait=False)
 
-            if future_rag is not None:
-                try:
-                    similar_cases = future_rag.result()
-                    print(f"      ← RAG: 참고 사례 {len(similar_cases)}개")
-                except Exception as exc:
-                    self._debug(f"retrieve_similar_cases() 실패: {exc}")
-                    print(f"      ← RAG 실패: {exc}")
+        parallel_ms = (time.time() - parallel_start) * 1000
+        print(f"      ← Phase 1.5+2+3 통합 병렬 완료: {parallel_ms:.0f}ms")
 
         # LLM 엔티티 병합
         merged_entities = llm_assessor.merge_suggested_entities(entities, llm_result)

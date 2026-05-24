@@ -30,8 +30,33 @@ from pipeline.config import (
     GATE_FALLBACK_BUCKET,
     GATE_LABELS_KO,
     GATE_MIN_CHARS,
+    GATE_SCAM_NEWS_EDU,
     GATE_UNDETERMINED,
 )
+
+
+# 뉴스 narration 마커 — 3인칭 보도·인용·사례 표현. 2개 이상 + 명령 부재면 scam_news_edu fast-path
+_NEWS_MARKERS = re.compile(
+    r"라고\s*(밝혔|전했|말했|덧붙였|설명했)"
+    r"|\[(기자|특파원|취재|앵커)|(기자|특파원)\]"
+    r"|(검찰|경찰|금감원|방통위|KISA)에\s*따르면"
+    r"|(피해자|피의자|용의자)(는|가|의)"
+    r"|수사\s*(중|결과|에\s*착수)"
+    r"|급증하(고|는|며)"
+    r"|주의(가\s*필요|하셔야|해야)"
+    r"|예방\s*(안내|수칙|법)"
+    r"|피해\s*사례"
+    r"|(보도|기사|뉴스|방송)(에서|에\s*따르면|입니다|이다)"
+)
+# 직접 명령형 금전·인증 요구 — 한 개라도 있으면 fast-path 금지 (LLM 으로 위임)
+_DIRECT_DEMAND = re.compile(
+    r"지금\s*(송금|입금|이체|전화)"
+    r"|(OTP|인증번호|비밀번호)\s*(입력|알려|보내)"
+    r"|계좌(번호)?\s*(입력|알려|로\s*(보내|이체|송금))"
+    r"|클릭(하세요|해\s*주세요)"
+    r"|(설치|다운로드)\s*(하세요|해\s*주세요)"
+)
+_NEWS_FAST_PATH_MIN_MARKERS = 2
 
 _client = None
 
@@ -39,33 +64,26 @@ DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 GATE_INPUT_MAX_CHARS = 4000  # 게이트 판단엔 충분 — 본문 앞부분만 본다
 
 
-_SYSTEM_PROMPT = """당신은 한국어 콘텐츠를 5개 범주 중 하나로 분류하는 내부 라우팅 분류기입니다.
-이 분류는 파이프라인 라우팅에만 쓰이며 최종 사용자에게 노출되지 않습니다.
+_SYSTEM_PROMPT = """한국어 콘텐츠를 내부 라우팅용으로 5개 중 하나로 분류하세요.
 
-입력 콘텐츠를 다음 중 정확히 하나로 분류하세요:
+- scam_attempt: 콘텐츠 자체가 수신자를 속이려 함 (송금·개인정보·앱설치 유도).
+- scam_news_edu: 사기를 *소재로 다루는* 뉴스·교육·경고·피해 후기·사례 영상. 사기 키워드·금액이 많아도 콘텐츠 자체는 누구도 안 속임.
+- normal: 사기와 무관한 일상.
+- suspicious_insufficient: 의심되지만 단정 부족.
+- undetermined: 너무 짧거나 깨져 방향조차 모름.
 
-- "scam_attempt": 콘텐츠 자체가 수신자를 속이려는 사기 시도다. 송금·개인정보·앱
-  설치 등을 유도하는 실제 미끼 메시지·통화·페이지.
-- "scam_news_edu": 사기를 *소재로 다루는* 뉴스 기사·예방 교육·경고 안내·피해 후기.
-  사기 키워드가 많아도 콘텐츠 자체는 누구를 속이려 하지 않는다.
-- "normal": 사기와 무관한 일상적·정상적 콘텐츠.
-- "suspicious_insufficient": 사기 쪽으로 의심되지만 단정할 신호가 부족하다.
-- "undetermined": 입력이 너무 짧거나 깨져 방향조차 판단할 수 없다.
+핵심: 같은 "보이스피싱" 단어라도 수신자 속이면 scam_attempt, 설명·경고·사례 narration 이면 scam_news_edu.
+사용자가 받은 메시지를 전달했으면 *전달된 그 메시지* 를 기준으로.
 
-핵심 구분: 같은 "보이스피싱" 단어가 있어도 — 수신자를 속이려 하면 scam_attempt,
-사기를 설명·경고하면 scam_news_edu 입니다.
+예:
+- "택배 미배송, 주소 재확인 http://bit.ly/xxx" → scam_attempt
+- "택배 사칭 스미싱이 급증, 링크 누르지 마세요" → scam_news_edu
+- "보이스피싱 피해 사례: 검찰 사칭에 3천만원 송금" (기사·영상) → scam_news_edu
+- "서울 한 남성이 현금 5,400만원을 ... 사기 피해" (사건 narration) → scam_news_edu
+- "오늘 점심 뭐 먹지?" → normal
 
-예시:
-- "[Web발신] 택배 미배송 안내, 주소 재확인: http://bit.ly/xxx" → scam_attempt
-- "최근 택배 사칭 스미싱이 급증합니다. 출처 불명 링크는 누르지 마세요." → scam_news_edu
-- "투자로 원금 보장, 연 30% 수익. 지금 입금하세요." → scam_attempt
-- "보이스피싱 피해 사례: 검찰 사칭에 3천만원 송금" (기사 제목) → scam_news_edu
-- "오늘 점심 뭐 먹을까?" → normal
-
-사용자가 받은 메시지를 전달한 경우, 전달된 그 메시지 내용 자체를 기준으로 분류하세요.
-
-JSON 한 줄로만 답하세요. 다른 텍스트 금지:
-{"bucket": "<위 5개 영문 키 중 하나>", "confidence": <0.0~1.0 숫자>, "reason": "<한 줄 근거>"}"""
+JSON 한 줄만 출력 (reason 은 20자 이내). 다른 텍스트 금지:
+{"bucket":"<영문 키>","confidence":<0.0~1.0>,"reason":"<≤20자>"}"""
 
 
 @dataclass
@@ -162,16 +180,37 @@ def _result_from_payload(payload: dict[str, Any], model: str) -> GateResult:
     )
 
 
+def _news_edu_fast_path(text: str) -> GateResult | None:
+    """뉴스/교육 narration 마커가 충분하고 직접 명령형 요구가 없으면 LLM skip.
+
+    매우 보수적 — fast-path 가 false positive 면 Phase 2/LLM/Serper 까지 skip 됨.
+    그래서 (1) 뉴스 마커 2개 이상 (2) 명령형 금전·인증 요구 0개 둘 다 만족해야 함.
+    """
+    if _DIRECT_DEMAND.search(text):
+        return None
+    matches = _NEWS_MARKERS.findall(text)
+    if len(matches) < _NEWS_FAST_PATH_MIN_MARKERS:
+        return None
+    return GateResult(
+        bucket=GATE_SCAM_NEWS_EDU,
+        confidence=0.7,
+        reason=f"뉴스 narration 마커 {len(matches)}개 + 직접 명령형 요구 0건 (heuristic)",
+        source="heuristic",
+    )
+
+
 def classify_gate(text: str) -> GateResult:
     """입력 콘텐츠를 Stage 1 게이트 bucket 으로 분류한다.
 
-    fast-path: 빈/극단적으로 짧은 입력 → undetermined (LLM 호출 없음).
-    그 외 → Claude Haiku 1회. 호출·파싱 실패는 GATE_FALLBACK_BUCKET 으로 fallback.
+    fast-path 우선순위:
+      1. 빈/극단적으로 짧은 입력 → undetermined
+      2. 뉴스 narration 마커 충분 + 직접 명령 없음 → scam_news_edu
+    위 둘에 안 걸리면 → Claude Haiku 1회. 호출·파싱 실패는 fallback.
     어떤 경우에도 예외를 밖으로 던지지 않는다 — 게이트는 죽으면 안 된다.
     """
     stripped = (text or "").strip()
 
-    # fast-path — 방향조차 못 정하는 입력
+    # fast-path 1 — 방향조차 못 정하는 입력
     if len(stripped) < GATE_MIN_CHARS:
         return GateResult(
             bucket=GATE_UNDETERMINED,
@@ -179,6 +218,12 @@ def classify_gate(text: str) -> GateResult:
             reason=f"입력이 {GATE_MIN_CHARS}자 미만 — 판단 불가",
             source="heuristic",
         )
+
+    # fast-path 2 — 뉴스/교육 narration 패턴 (LLM 비용 + latency 절약)
+    news_hit = _news_edu_fast_path(stripped[:GATE_INPUT_MAX_CHARS])
+    if news_hit is not None:
+        print(f"    [Gate] ← {news_hit.bucket} (heuristic, LLM skip)")
+        return news_hit
 
     model = _model_name()
     try:

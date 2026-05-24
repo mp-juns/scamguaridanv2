@@ -5,6 +5,23 @@
 
 ---
 
+## 2026-05-24 — LLM max_tokens 단축은 라우팅 결정에 *대규모* 회귀
+
+**관찰**: gate.py 의 `max_tokens 120 → 60` 으로 줄여 ~0.5s latency 절약 시도 → Haiku 출력 JSON 이 60 토큰에서 잘림 → 파서 실패 → fallback bucket = `undetermined` → 라우팅이 보수 모드로 Phase 2 + Phase 3 LLM 전체 실행 → **분석 시간 12s → 33-40s 폭증** (2배 이상 악화). 14:34, 14:40 두 분석 모두 동일 transcript 에 동일 fallback.
+
+**근본 원인**: Haiku JSON 응답이 한국어 reason 필드 (~30-40 토큰) 포함하면 정확히 60 토큰 근처에서 잘림. 파서는 빈 dict 반환 → bucket 무효 → fallback. fallback bucket 이 `undetermined` 였기 때문에 *최악의 라우팅 결정* (보수 = 전체 실행) 으로 이어짐.
+
+**처방**:
+1. **LLM output token 캡은 *디버깅 마진의 2-3 배* 로 설정** — 예상 출력 길이 측정 후 그 ~2배 (60 토큰 예상 → 120 cap). 0.5s 의 latency 가치는 fallback 시 20+초 잃는 위험 대비 무가치.
+2. **파서 fallback bucket 선택이 라우팅 비용을 좌우** — gate fallback 이 `undetermined` (보수 = 모든 단계 실행) 가 아니라 `normal` (모든 단계 skip) 이었다면 정반대 회귀가 났을 것. 라우팅 cost matrix 를 보고 fallback 결정해야.
+3. **출력 schema 압축은 응답 길이 가변성을 사전 측정** — `reason` 같은 자유 형식 필드는 길이 보장 X. 캡 강제하려면 프롬프트에 "≤N자" 추가 + max_tokens 안전 마진 함께.
+
+**증거 패턴**: `metadata.gate.source == "fallback"` + `metadata.gate.reason` 이 "bucket 무효" 메시지를 담고 있으면 즉시 parser failure 의심. 게이트 응답 의도와 routing 결과를 분리해서 검증해야.
+
+**적용 시점**: LLM 호출의 output token 캡을 줄이거나, fallback 정책을 바꾸거나, JSON 응답 schema 를 손볼 때마다 (1) 실제 출력 길이 측정, (2) fallback bucket 의 라우팅 비용 확인, (3) 회귀 케이스 (정상 input → fallback) 시뮬레이션.
+
+---
+
 ## 2026-05-05 — APK 검출 3-tier (Stage 2/3): 학술 표준과 false positive boundary
 
 **상황**: ScamGuardian 의 APK 처리 — VirusTotal 단독에서 시그니처(VT) + 정적 분석(권한·서명) + 심화 정적 분석(bytecode 패턴) 의 3-tier 로 확장.
