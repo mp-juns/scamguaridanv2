@@ -252,3 +252,160 @@ fallback 경로로 end-to-end 스모크 — 게이트 fallback→분류→추출
 - false positive 측정 — Play Store 정상 앱 (카카오톡 / 네이버 / 은행 앱) 던져서 어떤 신호가 잘못 검출되는지 통계
 - Phase 0.6 의 timeout 정책 — 매우 큰 APK (>100MB) 에서 AnalyzeAPK 가 분 단위 걸릴 수 있음, signal 처리로 cap 필요
 - `runner.py` 의 source detection — 현재 `is_apk_file()` 만, MIME type / 다운로드 후 검사 등 더 견고한 routing
+
+---
+
+# STT 병렬 chunking — 영상 분석 latency 단축 (2026-05-24)
+
+목적: 현재 `_transcribe_with_openai_api()` 가 오디오 전체를 1회 호출 → 180s 영상이면 STT 단독으로 5~10s. 분석 전체 시간의 큰 비중. 오디오를 45s chunk 로 분할 후 4 워커 병렬 호출 → 3배 단축 목표.
+
+## 설계
+
+- chunk size 45s, 워커 4, threshold 45s (이하면 기존 1-shot 유지 — 오버헤드 절약)
+- 모든 파라미터 env 로 조정 가능 (`STT_CHUNK_SEC`, `STT_MAX_WORKERS`, `STT_CHUNK_THRESHOLD_SEC`)
+- chunk 경계 단어 잘림 허용 — 분석은 누락 1~2단어 영향 무시 가능 (분류·엔티티·LLM 모두 견고)
+- 비용 ledger 는 chunk 마다 `record_openai_whisper(duration)` 호출 (기존과 동일 정확도)
+- Claude 백엔드는 변경 X — audio API 가 다른 모델, 별 이득 없음
+
+## 작업
+
+- [x] `pipeline/stt.py` — `_transcribe_chunks_parallel()` + `_split_audio_chunks()` + `_whisper_one()` 추가
+- [x] `_transcribe_with_openai_api()` 에 길이 분기 — threshold 초과 시 chunked 호출
+- [x] env 변수 default + 파싱 (STT_CHUNK_SEC=45, STT_MAX_WORKERS=4, STT_CHUNK_THRESHOLD_SEC=45)
+- [x] `tests/test_stt_chunked.py` — 6 케이스 (분할 카운트·정렬·threshold 우회·병렬 dispatch·chunk 실패 복구·파일 누락)
+
+## 검증
+
+- [x] `tests/test_stt_chunked.py` 6/6 통과
+- [x] 기존 `test_v4_whisper_chunker.py` 4개 통과 (회귀 없음)
+- [x] 전체 스위트 316/316 통과
+- [x] 짧은 오디오(<45s)는 `_whisper_one` 1회만 호출 (mock 으로 확인)
+
+## 리뷰 (2026-05-24)
+
+**핵심 변경**: `pipeline/stt.py` 의 `_transcribe_with_openai_api` 가 오디오 길이를 보고 자동 분기. 45s 이하는 기존 1-shot, 초과 시 ffmpeg segment 로 자르고 ThreadPoolExecutor 로 4 워커 병렬 호출. chunk index 정렬해 concat.
+
+**예상 latency**: 180s 영상 기준 1×Whisper(180s) → 4×Whisper(45s) 병렬. RTT/오버헤드 떼면 약 3× 단축.
+
+**비용 영향 없음**: Whisper 가격은 audio 초당 — chunk 마다 `record_openai_whisper(chunk_duration)` 호출해 ledger 정확도 유지.
+
+**실패 격리**: chunk 한 개가 API 에러 던져도 빈 문자열로 대체. 나머지 chunk 결과는 보존 (catastrophic failure 회피).
+
+**조정 가능한 손잡이** (env):
+- `STT_CHUNK_SEC` (기본 45) — chunk 길이
+- `STT_MAX_WORKERS` (기본 4) — 동시 Whisper 호출 수
+- `STT_CHUNK_THRESHOLD_SEC` (기본 45) — 이하면 chunking skip
+
+**의도적으로 안 한 것**:
+- chunk 경계 overlap — 단어 1~2개 잘릴 수 있으나 분류·엔티티에 영향 미미. 복잡도 비례한 이득 없음
+- Claude audio 백엔드 변경 — audio API 가 다른 호출 패턴이라 분리 유지
+- YouTube 180s 캡 변경 — 현재 캡 유지 (`pipeline/stt.py:64`), 캡 확장은 별도 결정 필요
+- runner.py 변경 — `transcribe()` 호출부는 그대로
+
+---
+
+# Phase 1.5 게이트 latency 단축 (2026-05-24)
+
+목적: 14:24 분석 로그 분석 결과 — 게이트 Claude Haiku 호출이 2.4s 차지 (총 12s 중). 시스템 프롬프트 트림 + max_tokens 단축 + 뉴스 narration heuristic fast-path 로 줄임.
+
+## 작업
+
+- [x] `pipeline/gate.py` — `max_tokens 120 → 60`. 출력 JSON 60 tokens 안에 충분히 들어감
+- [x] `pipeline/gate.py` — 시스템 프롬프트 ~950자 → ~600자 트림 (중복 설명 제거, 예시 5개 → 3개)
+- [x] `pipeline/gate.py` — `_news_edu_fast_path()` 추가. 뉴스 마커 2개 이상 + 직접 명령 0개 → LLM skip
+- [x] `tests/test_gate.py` — heuristic 케이스 6개 추가 (강한 마커 트리거 / 명령 차단 / 마커 부족 fallthrough / 헬퍼 직접 호출 3개)
+
+## 검증
+
+- [x] `test_gate.py` 24/24 통과 (기존 18 + 신규 6)
+- [x] 전체 322/322 통과 (이전 316 + STT 신규 6, gate 신규 6 — 회귀 0)
+- [x] 사용자 본 transcript 로 heuristic 트리거 안 됨 확인 — narrative ~ㅂ니다 만 쓰고 명시적 마커 없음 (의도된 보수성)
+
+## 리뷰
+
+**heuristic fast-path 동작 조건** (둘 다 만족):
+1. NEWS_MARKERS 2개 이상 — `라고 밝혔다/전했다`, `[기자]`, `검찰/경찰/금감원에 따르면`, `피해자/피의자는`, `수사 중`, `급증하`, `주의가 필요`, `예방 안내`, `피해 사례`, `(보도|기사|뉴스|방송)에서/에 따르면`
+2. DIRECT_DEMAND 0개 — `지금 (송금|입금|이체)`, `OTP/인증번호 (입력|알려)`, `계좌(번호)? (입력|알려|로 보내)`, `클릭하세요`, `(설치|다운로드) 하세요`
+
+**보수성 이유**: heuristic 가 false positive → Phase 2/LLM/Serper 모두 skip 됨 = 진짜 사기 놓침. 그래서 마커 *2개* + 명령 0개 강제. 1개만이면 LLM 으로 위임.
+
+**예상 latency 효과**:
+- 명시적 뉴스 마커 있는 콘텐츠 (기사·보도): 2.4s → ~0ms (heuristic 즉시)
+- 그 외: 2.4s → ~1.5s (max_tokens + 프롬프트 트림만)
+- 사용자 본 영상 같은 narrative 콘텐츠: heuristic 안 걸리지만 LLM 경로에서 ~0.5s 단축
+
+**의도적으로 안 한 것**:
+- Anthropic prompt caching — 시스템 프롬프트가 cache 최소 토큰(2048) 못 넘음. 인위적으로 padding 하면 비용 낭비
+- 스캠_시도 heuristic — 마커 (지금 송금, OTP 등) 가 사기·뉴스 양쪽에 다 등장 가능, 보수적으로 보류
+- 게이트 ↔ Phase 3 LLM 병렬화 — 게이트 결과로 LLM skip 결정하기 때문에 병렬 의미 없음
+
+## 회귀 → 긴급 수정 (2026-05-24, 첫 회귀 보고 후)
+
+**증상**: 14:34, 14:40 분석 동일 transcript 가 12s → 33-40s 폭증.
+
+**진단**: `.scamguardian/scamguardian.sqlite3` 의 latest run metadata 확인 →
+`gate.source = "fallback"`, `gate.reason = "bucket 무효('') — fallback"`. 즉
+`max_tokens=60` 이 Haiku 출력을 잘라 파서 실패 → fallback bucket = undetermined → 보수 라우팅으로 Phase 2 + Phase 3 LLM 전체 실행.
+
+**수정** (`pipeline/gate.py`):
+- `max_tokens 60 → 120` 복구 (출력 token 캡은 latency 절약 < 라우팅 회귀 비용)
+- 프롬프트에 "보이스피싱 피해 사례" 예시 + "사건 narration" 예시 복원 (사용자 본 영상 같은 케이스가 명확히 매칭되도록)
+- 프롬프트에 "reason 은 20자 이내" hint 추가 (출력 길이 안정화)
+- news fast-path + 시스템 프롬프트 트림은 그대로 유지 (그 자체는 안전)
+
+**검증**:
+- `test_gate.py` 24/24 통과 (회귀 없음)
+- 사용자 다음 분석 로그에서 `gate.source = "haiku"` + bucket = scam_news_edu (또는 적절한 분류) 회복 확인 필요
+
+**Lessons.md 패턴 5 등록**: "LLM max_tokens 단축은 라우팅 결정에 *대규모* 회귀 — 출력 캡은 예상 길이의 2-3배 안전 마진. fallback bucket 의 라우팅 비용도 함께 고려."
+
+---
+
+# Phase 1.5+2+3 통합 병렬화 — 1분 영상 10s 목표 (2026-05-24)
+
+목적: 사용자 목표 "1분 영상 10s 이내". 현재 11s (STT 8s + Gate 1s + Phase 2 1s + Phase 3 1-2s). Whisper 안 건드는 전제로 post-STT phase 를 통합 병렬화.
+
+## 설계
+
+이전 sequential: `STT → Gate(1s) → Phase 2(1s) → Phase 3 parallel(1-5s)`
+
+신규 통합 병렬: `STT → [Gate || Classify || Extract(union) || RAG] all parallel → conditionally LLM`
+
+핵심 결정:
+- **Gate + Classify + Extract + RAG 모두 eager** — wall time max(...) ≈ 1s
+- **Classify/Extract/RAG 결과는 게이트 라우팅에 따라 conditionally 사용** — eager 실행한 게 낭비될 수 있지만 wall time 절약 더 큼
+- **LLM 만 sequential** — 사전 시작 시 $ cost 낭비 회피
+- **B 최적화**: 게이트=normal 이면 추출 결과 자체 무시 (스킵)
+- **Extract union 모드** — Phase 2 결과 기다리지 않으므로 candidate_scam_types 없음. union 라벨이 약간 더 무겁지만 wall time 단축 큼
+- **executor.shutdown(wait=False)** — 게이트가 skip 결정한 future 는 background 에서 완료, main thread 는 즉시 진행
+
+## 작업
+
+- [x] `pipeline/runner.py` — Phase 1.5/2/3 세 블록을 단일 통합 병렬 블록으로 리팩토링
+- [x] `GATE_NORMAL` import 추가 (`pipeline.config` 에서)
+- [x] 통합 병렬 완료 시간 로그 추가 (`Phase 1.5+2+3 통합 병렬 완료: Xms`)
+
+## 검증
+
+- [x] 전체 테스트 322/322 통과 (회귀 0)
+- [ ] uvicorn reload 후 실제 영상 분석 — 1분 영상 9-10s 달성 확인
+
+## 예상 효과 (post-STT phases 만 비교)
+
+| 케이스 | 이전 (sequential) | 신규 (parallel) | 단축 |
+|--------|------|------|------|
+| gate=normal (skip Phase 2/LLM) | Gate 1 + GLiNER 0.5 = 1.5s | max(Gate, Classify-waste, Extract-skip, RAG-waste) = 1s | ~0.5s |
+| gate=scam_news_edu (skip Phase 2/LLM) | Gate 1 + Extract 0.5 = 1.5s | max(Gate, Classify-waste, Extract 0.5, RAG-waste) = 1s | ~0.5s |
+| gate=scam_attempt (run all) | Gate 1 + Phase 2 1 + LLM 5 = 7s | max(Gate, Classify, Extract, RAG) 1 + LLM 5 = 6s | ~1s |
+| gate=undetermined (run all) | 7s | 6s | ~1s |
+
+1분 영상 (STT 8s) 기준:
+- 이전: 8 + (1.5 ~ 7) = 9.5 ~ 15s
+- 신규: 8 + (1 ~ 6) = 9 ~ 14s
+- 일반 케이스 (normal/news_edu) 에서 1분 영상 ~9s 달성 가능
+
+## 의도적으로 안 한 것
+
+- **LLM speculative parallel 실행** — 게이트가 skip 결정 시 $ cost 낭비. Anthropic Haiku $0.001/req 작아 보이지만 50% skip rate 면 누적 비용.
+- **Phase 2 후 Extract 재실행 (focused labels)** — union 모드 entity 가 정확도 거의 같으면서 wall time 일관됨. 굳이 두 번 안 함.
+- **Phase 0/0.5/0.6 변경** — 영상 분석엔 영향 없음 (URL/APK 케이스)

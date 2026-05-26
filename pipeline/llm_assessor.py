@@ -35,7 +35,10 @@ def _get_client():
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise EnvironmentError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
-        _client = anthropic.Anthropic(api_key=api_key)
+        # fast-fail: Anthropic overloaded 시 첫 응답이 26초까지 걸린 사례 (2026-05-22).
+        # Phase 3 LLM 통합은 *2차 보조* 라 down 돼도 분류·신호 본체 (mDeBERTa/GLiNER/Serper/룰)는
+        # 그대로 작동. 따라서 짧은 timeout + 1회 재시도로 fast-fail 해서 사용자 체감 latency 보호.
+        _client = anthropic.Anthropic(api_key=api_key, timeout=8.0, max_retries=1)
     return _client
 
 

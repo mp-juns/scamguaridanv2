@@ -12,6 +12,7 @@ from pipeline.config import (
     GATE_FALLBACK_BUCKET,
     GATE_NORMAL,
     GATE_SCAM_ATTEMPT,
+    GATE_SCAM_NEWS_EDU,
     GATE_UNDETERMINED,
 )
 from pipeline import gate
@@ -138,3 +139,60 @@ def test_gate_result_label_ko_and_to_dict():
 def test_gate_result_execution_profile_method():
     r = gate.GateResult(bucket=GATE_SCAM_ATTEMPT)
     assert r.execution_profile() == GATE_EXECUTION_PROFILE[GATE_SCAM_ATTEMPT]
+
+
+# ── 뉴스/교육 heuristic fast-path (LLM skip) ──
+
+def test_news_fast_path_strong_markers_triggers():
+    """뉴스 마커 2개 이상 + 직접 명령 없음 → LLM 호출 없이 scam_news_edu."""
+    text = (
+        "검찰에 따르면 보이스피싱 피해자는 지난해 대비 30% 급증하고 있다. "
+        "경찰청 사이버수사대 관계자는 \"OTP 노출 사례가 늘었다\"라고 밝혔다."
+    )
+    result = gate.classify_gate(text)
+    assert result.bucket == GATE_SCAM_NEWS_EDU
+    assert result.source == "heuristic"
+    assert result.model == ""  # LLM 호출 없음 (fast-path)
+
+
+def test_news_fast_path_blocked_by_direct_demand():
+    """뉴스 마커 충분해도 직접 명령형 요구 있으면 LLM 으로 위임 (false positive 방지)."""
+    text = (
+        "검찰에 따르면 보이스피싱이 급증하고 있다고 밝혔다. "
+        "지금 송금 안 하시면 큰일납니다. 계좌번호 입력하세요."
+    )
+    # conftest 가 ANTHROPIC_API_KEY 비움 → LLM 경로는 fallback. heuristic skip 안 됨이 핵심
+    result = gate.classify_gate(text)
+    assert result.source == "fallback"  # heuristic 통과 못하고 LLM 시도 → fallback
+    assert result.bucket == GATE_FALLBACK_BUCKET
+
+
+def test_news_fast_path_insufficient_markers_falls_through():
+    """뉴스 마커 1개만 있으면 fast-path skip → LLM 위임."""
+    text = "보이스피싱 사건이 발생했습니다. 추가 정보는 곧 공유됩니다." * 2
+    result = gate.classify_gate(text)
+    # 마커 부족 → heuristic 안 걸림 → LLM 시도 → API key 없음 → fallback
+    assert result.source == "fallback"
+
+
+def test_news_fast_path_helper_direct():
+    """_news_edu_fast_path 헬퍼 단독 테스트 — 마커 매칭 로직 확인."""
+    # 마커 2개 (검찰에 따르면 + 라고 밝혔다)
+    hit = gate._news_edu_fast_path(
+        "검찰에 따르면 사기 사건이 30% 증가했다고 관계자가 밝혔다고 한다. "
+        "라고 전했다."
+    )
+    assert hit is not None
+    assert hit.bucket == GATE_SCAM_NEWS_EDU
+    assert "뉴스 narration 마커" in hit.reason
+
+
+def test_news_fast_path_helper_zero_markers():
+    """뉴스 마커 0개면 None 반환."""
+    assert gate._news_edu_fast_path("오늘 점심 뭐 먹을까요? 짜장면 어때요?") is None
+
+
+def test_news_fast_path_helper_one_marker():
+    """뉴스 마커 1개만 있으면 (임계 미달) None 반환."""
+    text = "이 사건은 검찰에 따르면 진행 중이다. 자세한 내용은 추후 공개된다."
+    assert gate._news_edu_fast_path(text) is None

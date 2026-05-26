@@ -45,16 +45,45 @@ def _safe_content_type(gate: dict[str, Any] | None) -> dict[str, str] | None:
 
 
 def get_public_base_url() -> str:
-    """결과 링크 베이스 URL 동적 조회. env 우선, 없으면 ngrok local API 자동 탐색.
+    """결과 링크 베이스 URL 동적 조회.
 
-    60초 캐시. ngrok 재시작 시에도 환경변수 따로 안 바꿔도 됨.
+    우선순위: env(`SCAMGUARDIAN_PUBLIC_URL`) → ngrok 4040 API → cloudflared 로그 파일.
+    cloudflared quick tunnel 은 재시작 시 도메인이 매번 바뀌므로 로그에서 최신 hostname 추출.
+    60초 캐시 + 로그 mtime 체크로 cloudflared 재시작 즉시 반영.
     """
     now = time.time()
-    if now < state.public_url_cache.get("expires", 0):
+    log_path = os.getenv(
+        "SCAMGUARDIAN_CLOUDFLARED_LOG",
+        ".scamguardian/logs/cloudflared-kyy.log",
+    )
+    try:
+        log_mtime = os.path.getmtime(log_path)
+    except OSError:
+        log_mtime = 0.0
+
+    cache_valid = (
+        now < state.public_url_cache.get("expires", 0)
+        and log_mtime <= state.public_url_cache.get("log_mtime", 0)
+    )
+    if cache_valid:
         return state.public_url_cache.get("url", "")
 
     env = os.getenv("SCAMGUARDIAN_PUBLIC_URL", "").strip().rstrip("/")
     url = env
+
+    # cloudflared 로그가 현재 워크트리에 있으면 해당 터널이 *이* 백엔드를 가리킴 — 우선 적용.
+    # (다른 워크트리의 ngrok 4040 이 잡혀서 잘못된 도메인 발급되는 사고 방지)
+    if not url and log_mtime > 0:
+        try:
+            import re as _re
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            matches = _re.findall(r"https://[a-z0-9-]+\.trycloudflare\.com", content)
+            if matches:
+                url = matches[-1].rstrip("/")
+        except Exception:
+            pass
+
     if not url:
         try:
             import json as _json
@@ -72,6 +101,7 @@ def get_public_base_url() -> str:
 
     state.public_url_cache["url"] = url
     state.public_url_cache["expires"] = now + 60
+    state.public_url_cache["log_mtime"] = log_mtime
     return url
 
 
