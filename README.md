@@ -72,6 +72,31 @@ python run_analysis.py --text "투자 설명 텍스트"
 pytest    # 114 passed
 ```
 
+## 브랜치별 작업 정리
+
+### hh — 3단계 캐스케이드 분류 재설계 (2026-05-19, [`hh.md`](./hh.md))
+
+12개 사기유형 단일 강제 분류의 두 결함(정상·뉴스 콘텐츠 강제 분류 / 복합 스캠 단일 유형 강제)을 1단계(게이트) → 2단계(유형) → 3단계(신호) 캐스케이드로 해소.
+
+- **Stage 1 — 콘텐츠 게이트**: Claude Haiku 기반 5-bucket 분류 (`정상` / `사기 시도` / `사기 뉴스·교육` / `의심되지만 불충분` / `판단 불가`). **내부 라우팅 전용** — 외부 API 응답에 비노출 (Identity Boundary 유지). bucket 별 실행 강도 라우팅(Serper·LLM 가지치기), 룰 기반 신호검출은 항상 수행 (게이트 오판 시 검출 누락 방지)
+- **Stage 2 — multi-label 라우팅**: 임계값 초과 상위 N개 유형의 엔티티 라벨셋 합집합을 extractor 에 전달 → 복합 스캠 엔티티 누락 해소. 표면 `scam_type` 은 top-1 유지
+- **Stage 3 — 신호 그룹핑 레이어**: 51개 세부 `DETECTED_FLAGS` / `FLAG_RATIONALE` 완전 보존, 11개 의미 그룹으로 묶는 표시 레이어만 추가 (`pipeline/flag_groups.py`)
+- **학습·평가 파이프라인**: source_ref 기반 leakage 방지 split, gate/scam_type/signals 평가, baseline vs current 라벨 커버리지 비교
+- 회귀 가드: 게이트 18 + 룰 신호 6 + 학습평가 21 케이스 추가 (282 통과)
+
+세부 체크리스트: [`tasks/todo.md`](./tasks/todo.md) 의 "3단계 캐스케이드" 섹션.
+
+### kyy — 영상 분석 latency 단축 (2026-05-24, [`kyy.md`](./kyy.md))
+
+baseline ~14.5s → 1분 영상 평균 **~9.2s** (78% 10s 이내, 최단 7.8s).
+
+- **STT 병렬 chunking** (`pipeline/stt.py`): 45s 초과 오디오는 ffmpeg segment 분할 후 ThreadPoolExecutor(4) 로 Whisper API 병렬 호출. 짧은 오디오는 기존 1-shot 유지. chunk 마다 비용 ledger 정확 기록
+- **게이트 최적화** (`pipeline/gate.py`): 시스템 프롬프트 트림(~950→600자), 뉴스 narration heuristic fast-path 추가 (강한 마커 2+ & 직접 요구 0 → `scam_news_edu` 즉시, LLM skip)
+- **Phase 1.5+2+3 통합 병렬화** (`pipeline/runner.py`): `STT → [Gate ‖ Classify ‖ Extract(union) ‖ RAG] all parallel → LLM (conditional)`. Gate=normal 이면 Extract 무시. LLM 만 sequential ($ 절약)
+- **회귀 lesson**: `max_tokens=60` 단축이 JSON 출력 잘림 → fallback bucket → 모든 단계 실행 → 33-40s 폭증. 120 복구. `tasks/lessons.md` 패턴 5 등록 ("출력 캡은 예상 길이 2-3배 안전 마진, fallback 라우팅 비용도 함께 고려")
+- 회귀 가드: `tests/test_stt_chunked.py` 6 + `tests/test_gate.py` 6 신규 (322 통과)
+- **cloudflared quick tunnel**: phh 의 tailscale funnel + ngrok 와 포트·터널 격리(`8001/3101`)된 `scripts/start_kyy.sh` 신설. phh 카카오 웹훅 보호
+
 ## 디렉터리
 
 ```

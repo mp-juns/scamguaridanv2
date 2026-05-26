@@ -4,6 +4,60 @@ milestone 단위 변경 로그. 누적 append, 최신이 위.
 
 ---
 
+## 2026-05-26 — main ← origin/main-kyy 머지 + Tailscale Funnel 보존 백업 + README 갱신
+
+**무엇**: `origin/main-kyy` (kyy 영상 latency 단축 + cloudflared quick tunnel) 를 main 에
+merge. 머지 전에 `scripts/start_stack.sh` 의 Tailscale Funnel 블록을 백업해두고, 머지 후
+원래 위치에 그대로 살아있는지 확인.
+
+**왜**: kyy 브랜치는 phh 의 카카오 웹훅(Tailscale Funnel + ngrok, 포트 8000/3100) 을
+보호하기 위해 별도 포트(8001/3101) + cloudflared quick tunnel 로 분리한 `start_kyy.sh`
+신설. 머지 시 phh 의 funnel 설정이 덮어써질 가능성을 사전 차단해야 함.
+
+**검증 결과**:
+- `main-kyy` 의 `scripts/start_stack.sh` 는 main 과 **byte-identical** — Tailscale Funnel
+  블록(line 84-88: `tailscale funnel --bg "http://127.0.0.1:${FRONTEND_PORT}"`) 그대로
+- `scripts/start_kyy.sh` 는 *추가* 파일, 헤더 주석에 "phh 포트 8000/3100/4040 은 절대
+  건드리지 않음" 명시. `tailscale funnel + ngrok 모두 비활성` (phh 보호 의도)
+- `git merge-tree` dry-run: 공통 변경 파일 0개 → conflict 없이 auto-merge
+- 현재 시스템 상태: `https://scamguardian.tail7e5dfc.ts.net` → `:3100` Funnel on (정상)
+
+**백업 (스크립트 파일 → changes.md 로 이관, 파일 삭제)**:
+
+```bash
+# scripts/start_stack.sh:25 (환경변수)
+ENABLE_FUNNEL="${ENABLE_FUNNEL:-true}"
+
+# scripts/start_stack.sh:84-88 (frontend 기동 후 funnel 활성화)
+if [[ "$ENABLE_FUNNEL" == "true" ]] && command -v tailscale >/dev/null 2>&1; then
+  echo "[start] enabling tailscale funnel (frontend:$FRONTEND_PORT)..."
+  tailscale funnel --bg "http://127.0.0.1:${FRONTEND_PORT}" || true
+  tailscale funnel status 2>/dev/null || true
+fi
+
+# scripts/start_stack.sh:89 (주석)
+# 카카오 오픈빌더는 .ts.net 도메인을 거부하므로 ngrok 으로 보조 터널 제공
+```
+
+참고 URL (CLAUDE.md 기록): `https://scamguardian.tail7e5dfc.ts.net/webhook/kakao` —
+카카오 오픈빌더에서 `.ts.net` 접속 불안정 → 카카오 웹훅은 ngrok 권장.
+
+**README 갱신**: hh.md(3단계 캐스케이드) + kyy.md(영상 latency 단축) 작업 요약 추가
+("브랜치별 작업 정리" 섹션). `tasks/todo.md` 참조 링크 포함.
+
+**머지된 kyy 변경 요약**:
+- `pipeline/stt.py` +107 — STT 병렬 chunking (45s 초과 시 ffmpeg segment + ThreadPoolExecutor(4))
+- `pipeline/runner.py` +192 — Phase 1.5+2+3 통합 병렬화 (STT → [Gate ‖ Classify ‖ Extract ‖ RAG] → LLM)
+- `pipeline/gate.py` +97 — 프롬프트 트림 + 뉴스 narration heuristic fast-path
+- `api_server_pkg/result_token.py` +36 — `get_public_base_url()` 에 cloudflared 로그
+  우선순위 추가 (ngrok 4040 API 와 공존, log mtime 무효화 캐시)
+- `apps/web/src/app/page.tsx` — `is_uncertain || confidence < 0.3` 시 "정상" 표시
+- 신규: `scripts/start_kyy.sh`, `kyy.md`, `tests/test_gate.py`, `tests/test_stt_chunked.py`
+
+**성과** (kyy 실측): baseline 14.5s → **9.2s** (78% 10s 이내, 최단 7.8s, 322 테스트 통과).
+
+---
+
 ## 2026-05-20 — 학습·평가 파이프라인 (dataset summary + gate/scam_type/signals 평가 + baseline 비교)
 
 **무엇**: 3단계 캐스케이드 + content_label 재구조화의 *정량 비교*를 위한 평가 스크립트.
