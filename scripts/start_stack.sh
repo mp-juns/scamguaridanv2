@@ -24,6 +24,9 @@ OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 CONDA_ENV="${CONDA_ENV:-capstone}"
 ENABLE_FUNNEL="${ENABLE_FUNNEL:-true}"
 ENABLE_NGROK="${ENABLE_NGROK:-true}"
+# Ollama: CLAUDE.md 명시 — Claude API 로 교체되어 더 이상 필수 아님.
+# 켜고 싶으면 ENABLE_OLLAMA=true 로 호출.
+ENABLE_OLLAMA="${ENABLE_OLLAMA:-false}"
 NGROK_BIN="${NGROK_BIN:-$HOME/bin/ngrok}"
 NGROK_DOMAIN="${NGROK_DOMAIN:-}"  # 예약 도메인 있으면 지정, 없으면 매번 랜덤
 NGROK_API="http://127.0.0.1:4040/api/tunnels"
@@ -50,21 +53,57 @@ kill_matches "next-server"
 kill_matches "npm run dev"
 kill_matches "ollama serve"
 kill_matches "ngrok http"
+kill_matches "monitor_resources.sh"
 kill_port "$BACKEND_PORT"
 kill_port "$FRONTEND_PORT"
 kill_port "$OLLAMA_PORT"
 kill_port 4040
 
+# 이전 monitor PID 정리
+if [ -f "$LOG_DIR/monitor.pids" ]; then
+  while read -r pid; do kill "$pid" 2>/dev/null || true; done < "$LOG_DIR/monitor.pids"
+  rm -f "$LOG_DIR/monitor.pids"
+fi
+
 sleep 0.5
 
-echo "[start] starting Ollama..."
-OLLAMA_MODELS="$OLLAMA_MODELS_DIR" nohup ollama serve >"$LOG_DIR/ollama.log" 2>&1 &
+# (NEW) 리소스 모니터 *먼저* 시작 — backend/frontend 워밍업 동안 메모리 추이를
+# 모두 잡으려면 stack 시작 전에 monitor 가 돌고 있어야 한다.
+echo "[start] starting resource monitor (5s sampling)..."
+nohup "$ROOT_DIR/scripts/monitor_resources.sh" >>"$LOG_DIR/start_stack.console.log" 2>&1 &
 sleep 0.5
+
+if [[ "$ENABLE_OLLAMA" == "true" ]]; then
+  echo "[start] starting Ollama..."
+  OLLAMA_MODELS="$OLLAMA_MODELS_DIR" nohup ollama serve >"$LOG_DIR/ollama.log" 2>&1 &
+  sleep 0.5
+else
+  echo "[start] skipping Ollama (ENABLE_OLLAMA=false — Claude API 로 교체됨)"
+fi
 
 echo "[start] starting backend (uvicorn :$BACKEND_PORT) in conda env '$CONDA_ENV'..."
 cd "$ROOT_DIR"
 PYTHONUNBUFFERED=1 nohup conda run --no-capture-output -n "$CONDA_ENV" python -u -m uvicorn api_server:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload --log-level info \
   >"$LOG_DIR/backend.log" 2>&1 &
+
+# (CHANGED) sleep 3 대신 backend /health 폴링 — ML 워밍업이 끝나야 frontend 시작.
+# 두 프로세스가 동시에 메모리 spike 를 일으키면 8GB WSL 한도를 잠깐 넘기고
+# swap thrashing → WSL freeze. sequential 화하면 spike 가 분산돼 한도 안 넘김.
+echo "[start] waiting for backend warmup (polling /health up to 120s)..."
+BACKEND_READY=0
+for i in $(seq 1 60); do
+  if curl -sS -m 2 "http://127.0.0.1:${BACKEND_PORT}/health" >/dev/null 2>&1; then
+    BACKEND_READY=1
+    echo "[start] backend ready after ${i}×2s = $((i*2))s"
+    break
+  fi
+  sleep 2
+done
+if [[ "$BACKEND_READY" != "1" ]]; then
+  echo "[start] WARN: backend /health 미응답 120s — 그래도 frontend 시작합니다."
+  echo "[start] backend.log 마지막 줄:"
+  tail -5 "$LOG_DIR/backend.log" || true
+fi
 
 echo "[start] starting frontend (next dev :$FRONTEND_PORT)..."
 
@@ -80,6 +119,23 @@ setsid bash -lic "
 
   npm run dev -- --hostname 0.0.0.0 --port '$FRONTEND_PORT'
 " >"$LOG_DIR/frontend.log" 2>&1 < /dev/null &
+
+# (NEW) frontend 도 첫 컴파일 끝날 때까지 대기 — Turbopack 초기 컴파일이 끝나야
+# tunnel 시작 시 첫 요청에서 무거운 컴파일 + 터널 핸드셰이크가 겹치지 않음.
+echo "[start] waiting for frontend ready (polling :$FRONTEND_PORT up to 60s)..."
+FRONTEND_READY=0
+for i in $(seq 1 30); do
+  if curl -sS -m 2 "http://127.0.0.1:${FRONTEND_PORT}/" >/dev/null 2>&1; then
+    FRONTEND_READY=1
+    echo "[start] frontend ready after ${i}×2s = $((i*2))s"
+    break
+  fi
+  sleep 2
+done
+if [[ "$FRONTEND_READY" != "1" ]]; then
+  echo "[start] WARN: frontend 미응답 60s — frontend.log 확인 필요"
+  tail -10 "$LOG_DIR/frontend.log" || true
+fi
 
 if [[ "$ENABLE_FUNNEL" == "true" ]] && command -v tailscale >/dev/null 2>&1; then
   echo "[start] enabling tailscale funnel (frontend:$FRONTEND_PORT)..."

@@ -63,14 +63,23 @@
 fallback 경로로 end-to-end 스모크 — 게이트 fallback→분류→추출→룰 검출(`abnormal_return_rate`)
 →`to_dict()` 에 gate 키 없음 확인.
 
-**다음**: Stage 2 (multi-label 라우팅) / Stage 3 (신호 그룹핑).
+**다음**: Stage 2 (multi-label 라우팅) / Stage 3 (신호 그룹핑) — 둘 다 완료 (아래 섹션 참고).
 
-## Stage 2 — 사기 유형 multi-label 라우팅
+## Stage 2 — 사기 유형 multi-label 라우팅 (2026-05-24 완료, 상태 점검 2026-05-26)
 
-- [ ] `runner.py` — extractor 에 단일 `scam_type` 대신 임계값 넘는 **상위 N개 유형의 라벨셋 합집합** 전달
-      (`classifier.classify()` 는 `all_scores` 이미 반환 / `extractor.extract()` 는 `labels` 인자 이미 있음)
-- [ ] 표면 `scam_type` 은 top-1 유지 (context 용, 노출 schema 불변)
-- [ ] `config.py` — "기타 사기" 유형 + 라벨셋 추가
+- [x] `classifier.candidate_scam_types(all_scores, top_n, dominance_gap)` 추가
+      ([pipeline/classifier.py:226](pipeline/classifier.py#L226)). `STAGE2_CANDIDATE_TOP_N=3`,
+      `STAGE2_DOMINANCE_GAP=0.30` 상수는 [pipeline/config.py:322-328](pipeline/config.py#L322-L328).
+- [x] `runner.py` — extractor 에 단일 `scam_type` 대신 라벨셋 **합집합** 전달
+      ([pipeline/runner.py:471-473](pipeline/runner.py#L471-L473)). 실제 구현은 top-N 보다 더 광범위한
+      `_all_label_union()` 전체 라벨 union (Phase 2 결과 기다리지 않고 eager 실행해 wall time
+      단축). `COMMON_RISK_LABELS` (개인정보/계좌번호/악성 URL) 도 항상 포함.
+- [x] candidate top-N 후보는 별도로 계산해 `last_candidate_scam_types` 에 저장
+      ([pipeline/runner.py:516-519](pipeline/runner.py#L516-L519)), metadata 로 persist
+      ([api_server_pkg/common.py:95-96](api_server_pkg/common.py#L95-L96)).
+- [x] 표면 `scam_type` 은 top-1 유지 (context 용, 노출 schema 불변).
+- [x] `tests/test_stage2_routing.py` — top-N 후보 + dominance gap 회귀 테스트.
+- [ ] `config.py` — "기타 사기" 유형 + 라벨셋 추가 (escape hatch, 아직 미구현).
 
 ## Stage 3 — 위험 신호 그룹핑 레이어 (2026-05-20 완료)
 
@@ -85,9 +94,9 @@ fallback 경로로 end-to-end 스모크 — 게이트 fallback→분류→추출
       를 실제로 표시 — schema 는 이미 준비됨.
 
 ## 검증
-- [ ] 합성 발화로 게이트 5-bucket 정확도 (특히 사기 뉴스/교육 vs 사기 시도 혼동률)
-- [ ] 복합 스캠 텍스트로 multi-label 합집합 → 엔티티 recall 개선 측정
-- [ ] `tests/test_gate.py` 신설 + 기존 pytest 93개 회귀 없음
+- [ ] 합성 발화로 게이트 5-bucket 정확도 (특히 사기 뉴스/교육 vs 사기 시도 혼동률) — 측정 미실시
+- [ ] 복합 스캠 텍스트로 multi-label 합집합 → 엔티티 recall 개선 측정 — 측정 미실시
+- [x] `tests/test_gate.py` 신설 + pytest 회귀 없음 (2026-05-26 기준 322 tests collected, 기존 93 → 322 확장).
 
 ## Review
 (구현 후 작성)
@@ -412,38 +421,52 @@ fallback 경로로 end-to-end 스모크 — 게이트 fallback→분류→추출
 
 ---
 
-# 🚨 공유 — Next 16 Turbopack 메모리 누수 → Webpack fallback (2026-05-28, phh 워크스페이스 발견)
+# Next 16 Turbopack 메모리 누수 → Webpack fallback (2026-05-28)
 
-> **환경 공통 이슈**. 모든 워크스페이스 작업자가 알아야. phh 에서 4시간 디버깅 후 root cause 확정.
+목적: `./scripts/start_stack.sh` 실행 시 WSL freeze 재발. 직전 8GB 한도 의심으로 20GB 증설했으나 stack 안 띄워도 압박 체감 = 메모리 단독 원인 아님. 진짜 root cause 진단 + fix.
 
-## 증상
+## 진단 (`scripts/monitor_resources.sh` 자체 도구로 잡음)
 
-- `./scripts/start_stack.sh` 실행 → WSL 무한 프리징 + 원격(SSH/VSCode) 연결 끊김
-- WSL 메모리 8GB → 20GB 증설 후에도 재발
-- stack 안 띄웠을 때도 호스트 측 압박 체감 (작업관리자 디스크 활성 시간 50%+)
+- **첫 freeze (03:04)**: next-server **VSZ 3GB → 22GB (30초 만에 7배)**. WSL swap 4GB 풀 → 호스트 C:\ 디스크 폭주 → 9P 마운트 hang → D-state 좀비 무더기 → load avg 56
+- **frontend.log 결정 증거**: `resolve 'tailwindcss' in '.../apps'` (apps/web 아님) — Turbopack root 자동 감지 fail
+- **`turbopack.root: path.resolve(__dirname)` 도 ESM 함정**: next.config.ts 가 ESM 으로 컴파일되면 `__dirname=undefined` → fallback cwd 로 잘못된 경로
 
-## 진단
+## 작업
 
-- **첫 freeze (03:04)**: next-server **VSZ 3GB → 22GB (30초 만에 7배)**. RSS 1.2GB 만 보면 못 봄
-- **frontend.log 결정 증거**: `resolve 'tailwindcss' in '.../apps'` (apps/web 아님)
-- = **Turbopack root 자동 감지가 monorepo 패턴으로 잘못 추론** → tailwindcss resolve 무한 시도 → JS heap 누적 → swap thrashing → 9P 마운트 hang → D-state 좀비 → WSL freeze 악순환
+- [x] `apps/web/next.config.ts` — `fileURLToPath(import.meta.url)` 패턴으로 root 결정 (ESM-safe) + 검증 console.log
+- [x] `apps/web/package.json` — `"dev": "next dev"` → `"dev": "next dev --webpack"` (Next 16 공식 fallback)
+- [x] `.wslconfig` 8GB → 20GB + swap 4GB → 8GB (응급 버퍼, 근본 fix 아님). 백업 `.wslconfig.bak-20260528-031233`
+- [x] `scripts/monitor_resources.sh` 신설 — 5초 sampling + 30초 호스트 rsync. D-state + 9P 마운트 + wchan 진단
+- [x] `start_stack.sh` 수정 — `sleep 3` → backend `/health` 폴링 + frontend 폴링 + monitor 자동 시작
+- [x] `/mnt/c/Users/mpssh/Documents/wsl_logs/` 호스트 미러 디렉토리 — freeze 후에도 외부 접근
 
-## 적용된 fix (phh 에서 적용 끝)
+## 검증
 
-- `apps/web/next.config.ts` — `fileURLToPath(import.meta.url)` 패턴 (`__dirname` ESM 함정 회피)
-- `apps/web/package.json` — `"dev": "next dev --webpack"` (Next 16 공식 webpack fallback)
-- `.wslconfig` 메모리 20GB + swap 8GB (응급 버퍼)
-- `scripts/monitor_resources.sh` 신설 — D-state + 9P + wchan 진단
-- `/mnt/c/Users/mpssh/Documents/wsl_logs/` 호스트 미러 — freeze 후에도 외부 진단
+- [ ] webpack 모드로 frontend 단독 띄워 첫 페이지 컴파일 통과
+- [ ] `./scripts/start_stack.sh` 전체 실행 후 freeze 안 나는지 확인
+- [ ] resources.log / processes.log / io.log 에서 next-server VSZ < 5GB 안정 유지
+- [ ] 호스트 작업관리자에서 디스크 활성 시간 < 20%, vmmemWSL < 5GB
 
-## 다른 워크스페이스가 주의할 것
+## 의도적으로 안 한 것
 
-- **Next 버전 올리지 말 것** (16.2.1 유지)
-- **Tailwind 큰 버전 변경 시 재발 가능** (현재 4 사용)
-- **`apps/web` 구조 변경 시 turbopack root 재검증 필수**
-- **freeze 진단 시 RSS 가 아닌 VSZ + D-state wchan 봐야**
+- **Turbopack 자체 고치기** — 시간 더 걸리고 근본 해결 안 될 수 있음. webpack fallback 이 검증된 공식 경로
+- **`build` 스크립트 변경** — dev 만 webpack 으로. 프로덕션 build 는 별도 결정
+- **WSL 메모리 줄이기** — 사용자 진단 ("메모리 단독 원인 아님") 정확. 20GB 유지
 
-## 상세 기록
+## 부수 발견 (사용자 인식과 다른 흔적)
 
-- 작업 항목 + Review: [tasks/todo-phh.md](tasks/todo-phh.md) 의 2026-05-28 섹션
-- 학습 패턴: [tasks/lessons.md](tasks/lessons.md) 의 2026-05-28 패턴
+- **Node.js 4월 16일 자동 업데이트**: nvm 에 v24.14.0 (2026-03-24) + v24.15.0 (2026-04-16) 둘 다 있음. 사용자 인식엔 없지만 `nvm install 24` 등이 minor patch 자동 받았을 가능성
+- **Next.js 는 처음부터 16.2.1**: apps/web 추가 시점 (2026-04-26 commit `195d486`) 부터 이미 16. 갈아끼움 작업 commit 없음 — Next 16 default 가 Turbopack 이라 자연스럽게 사용 중이었던 것
+
+## Review
+
+(다음 세션에서 stack 띄운 후 작성. freeze 안 나는지 검증 + 호스트 디스크 활성 시간 확인 후.)
+
+## 학습 내용
+
+상세는 [tasks/lessons.md](tasks/lessons.md) 2026-05-28 패턴 참고. 핵심:
+- RSS 가 아닌 **VSZ** 봐야 누수 보임
+- D-state + `folio_wait_bit_common` = 9P I/O hang
+- 메모리 증설은 임시 버퍼, 근본 fix 아님
+- Next 16 + Tailwind 4 + Turbopack 조합 위험 (현재 시점)
+- ESM 컨텍스트에서 `__dirname` 함정
