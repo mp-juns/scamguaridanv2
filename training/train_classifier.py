@@ -224,7 +224,8 @@ def main() -> None:
         warmup_ratio=0.06,
         weight_decay=0.01,
         seed=args.seed,
-        fp16=torch.cuda.is_available(),
+        bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+        fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
         report_to=["none"],
     )
 
@@ -233,7 +234,7 @@ def main() -> None:
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=DataCollatorWithPadding(tokenizer),
         compute_metrics=compute_metrics,
         callbacks=[MetricsEmitCallback()],

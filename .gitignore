@@ -227,3 +227,11 @@ data/aihubshell
 .scamguardian/training_sessions/
 .scamguardian/active_models.json
 .scamguardian/logs/
+
+# 학습 산출물 — 데이터 + 스크립트로 재현 가능. 대용량 binary 라 커밋 금지
+checkpoints/
+logs/
+
+# 로컬 백업·임시 (절대 커밋 금지)
+.scamguardian/active_models.json.bak
+.scamguardian/*.pre-symlink-*
