@@ -97,6 +97,20 @@ baseline ~14.5s → 1분 영상 평균 **~9.2s** (78% 10s 이내, 최단 7.8s).
 - 회귀 가드: `tests/test_stt_chunked.py` 6 + `tests/test_gate.py` 6 신규 (322 통과)
 - **cloudflared quick tunnel**: phh 의 tailscale funnel + ngrok 와 포트·터널 격리(`8001/3101`)된 `scripts/start_kyy.sh` 신설. phh 카카오 웹훅 보호
 
+## 디버깅 Journal
+
+세션 트랜스크립트 — 사용자 prompt + Claude 가 한 일. 같은 함정 만난 사람이 시간 안 잃기를.
+
+### 2026-05-28 — WSL freeze 4시간 디버깅 ([`journal/2026-05-28-wsl-freeze.md`](./journal/2026-05-28-wsl-freeze.md))
+
+`./scripts/start_stack.sh` 실행 시 WSL 무한 프리징. 메모리 8GB 부족 가설로 시작했지만, 진짜 원인은 **Next 16 Turbopack 무한 resolve 누수 × Acronis True Image 디스크 80% 점유** 의 시너지.
+
+- **1차 trigger** (호스트): Acronis True Image 가 디스크 80% I/O 점유 → WSL 이 남은 20% 만 사용
+- **2차 trigger** (WSL): Next 16 Turbopack root 자동 감지 실패 + ESM `__dirname` 함정 → next-server JS heap **3GB → 22GB (30초 만에)**
+- **악순환**: WSL swap → 호스트 디스크 saturated → 9P 마운트 hang → D-state 좀비 누적 → load avg 56 → WSL freeze
+- **fix**: `next dev --webpack` (Next 16 공식 fallback) + `fileURLToPath(import.meta.url)` ESM-safe root + Acronis 제거 + 진단용 [`scripts/monitor_resources.sh`](./scripts/monitor_resources.sh) 신설
+- **교훈**: RSS 가 아닌 VSZ 봐야 누수 보임 / D-state + `folio_wait_bit_common` = 9P I/O hang / 메모리 증설은 임시 버퍼 / *환경 변화 (호스트 백업 SW 활성화 등)* 도 root cause 후보
+
 ## 디렉터리
 
 ```
