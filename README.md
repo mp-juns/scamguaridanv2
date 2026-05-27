@@ -145,6 +145,61 @@ Lv 3 는 인터페이스 + flag 카탈로그까지 박혔고, 실제 remote VM �
 
 자세한 architecture: `CLAUDE.md` 의 *APK Detection Architecture (3-tier)* 섹션.
 
+## 최근 개발 진행 (2026-05-27)
+
+### classifier-v1 1차 학습 (sanity check, 비활성)
+
+- 누적 `data/processed/user_samples_2026-05-26.jsonl` (99줄) + DB `human_annotations`
+  머지본으로 mDeBERTa scam_type 분류기 LoRA fine-tune 1차 시도
+- 환경 패치: `training/train_classifier.py` 의 `tokenizer=` → `processing_class=`
+  (transformers 5.1.0 Trainer API 변경), `fp16=` → `bf16=` (LoRA 호환)
+- 결과 (`checkpoints/classifier-v1/`): train 65 / val 8, **eval_macro_f1 0.167** —
+  7클래스 랜덤(0.143) 근접. **활성화 안 함** (`active_models.json` 분류기 비활성 유지),
+  파이프라인 sanity check 로만 판정
+- 자세한 metric·환경 패치·라벨별 부족분 표: [`changes.md` 2026-05-27 섹션](./changes.md)
+
+### 학습 데이터 정비
+
+- **`data/processed/user_samples_2026-05-26.jsonl`** (99줄): 사용자 수집 + 정상 안내문.
+  `scam_attempt 62 / normal 21 / scam_news_edu 16`
+- **`data/generated_data/scamguardianv2_manual_diverse_synthetic_nodup_2026-05-27.jsonl`**
+  (171건): 마스킹 처리된 합성 데이터 (`[URL_MASKED]` 등, `non_deployable: true`).
+  19개 시나리오 × 9 scam_type + normal 40 + scam_news_edu 40. 스키마가 `training/data.py`
+  와 완벽 매치 — 즉시 `--extra-jsonl` 머지 가능
+- **`data/aihub/original/`** (9.4 GB): AI Hub dataset 71768 — 광주 119 신고 통화 20,129건
+  JSON (구급 15,956 / 구조 4,025 / 기타 148). 본질이 *진짜 응급 신고*라 보이스피싱 라벨
+  직접 매핑 불가, **normal 보강용 200~500건 발췌 한정**
+- **`aihub_download.sh`**: AI Hub dataset 71768 의 6개 filekey 다운로드 스크립트.
+  AIHUB_API_KEY 검증 + ./data/aihubshell 호출. 단 dataset 활용 미승인 시 502 반환
+  (사이트에서 수동 신청·승인 필요)
+
+### 라벨별 부족분 (2026-05-27 기준)
+
+| 라벨 | user_samples+DB | 합성 합산 후 | v2 목표(30) | v3 목표(50) |
+|---|--:|--:|--:|--:|
+| 스미싱 | 22 | 48 | ✅ | -2 |
+| 기관 사칭 | 12 | 37 | ✅ | -13 |
+| 대출 사기 | 10 | 15 | -15 | -35 |
+| 메신저 피싱 | 9 | 14 | -16 | -36 |
+| 투자 사기 | 7 | 12 | -18 | -38 |
+| 중고거래 사기 | 7 | 12 | -18 | -38 |
+| 로맨스 스캠 | 6 | 11 | -19 | -39 |
+| 코인 사기 | 4 | 9 | -21 | -41 |
+| 취업·알바 사기 | 4 | 4 | -26 ❌ | -46 |
+| 건강식품 사기 | 3 | 3 | -27 ❌ | -47 |
+| 납치·협박형 | 2 | 2 | -28 ❌ | -48 |
+| 부동산 사기 | 1 | 1 | -29 ❌ | -49 |
+
+❌ 4종은 합성 데이터로도 미보강 — 별도 sourcing 필요 (Claude 합성 추가 / 119 데이터는
+직접 매핑 부적합).
+
+### 다음 행보
+
+1. **classifier-v1.5**: user_samples + 합성(171건) 머지 학습 → macro_f1 변화 측정
+2. **부족 4라벨** (취업알바·건강식품·납치·부동산) 시나리오 추가 합성
+3. **AI Hub 71768 일부 normal 발췌** (200~500건) — 분량 통제 후 머지
+4. **v2 도달 시 base 모델 ablation** — mDeBERTa-v3 vs KcELECTRA-base-v2022 vs klue/roberta-base
+
 ## 배포
 
 - **Frontend**: Vercel (Root Directory: `apps/web`)

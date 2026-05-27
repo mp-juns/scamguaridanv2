@@ -104,3 +104,82 @@ bucket 정의(라벨링 일관성용):
 "3단계 캐스케이드 — 콘텐츠 게이트 + multi-label 라우팅 (2026-05-19)" 섹션 참고.
 
 순서: Stage 1 게이트 → Stage 2 multi-label → Stage 3 그룹핑 (각각 독립 배포 가능).
+
+---
+
+## 6. Stage 2 분류기 학습 데이터 진행상황 (2026-05-27)
+
+캐스케이드 Stage 2 (multi-label scam_type) 의 학습 데이터·1차 학습 결과 정리.
+Stage 1·3 와 무관 — Stage 2 분류기 품질을 결정짓는 데이터 layer 만 다룸.
+
+### 6.1. classifier-v1 1차 학습 (sanity check)
+
+**데이터**: `data/processed/user_samples_2026-05-26.jsonl` (99줄) + DB
+`human_annotations` 머지 → 124 content / **87 scam_type** / 19 gliner.
+라벨 <5 건 5종(취업알바·코인·건강식품·납치·부동산) 학습 제외 → 73 샘플 7라벨로 학습.
+
+**환경 패치** ([training/train_classifier.py](training/train_classifier.py)):
+- `tokenizer=` → `processing_class=` (transformers 5.1.0 `Trainer` API 변경)
+- `fp16=` → `bf16=` (LoRA + fp16 의 `Attempting to unscale FP16 gradients` 회피)
+
+**결과** (`checkpoints/classifier-v1/`):
+
+| metric | value |
+|---|---|
+| train / val | 65 / 8 |
+| eval_macro_f1 | **0.167** (7클래스 랜덤 0.143 근접) |
+| eval_accuracy | 0.25 |
+| 학습 시간 | 6.9초 (RTX 5070 Ti, LoRA 어댑터) |
+
+**결정**: `active_models.json` swap 안 함 — zero-shot fallback 유지. 본 모델은
+재현·디버그 용 산출물로만 보존. 자세한 metric·환경 패치 기록은
+[changes.md 2026-05-27 섹션](./changes.md).
+
+### 6.2. 외부 데이터 평가
+
+세션 동안 검토한 3개 데이터 소스의 Stage 2 학습 기여도:
+
+| 소스 | 건수 | 우리 라벨 매핑 | Stage 2 기여도 |
+|---|--:|---|---|
+| `data/processed/user_samples_*.jsonl` | 99 | 직접 매핑 (사용자 수집·검수) | ✅ 핵심 — 87 scam_type 의 절반+ |
+| `data/processed/public_cases.jsonl` | 87 | 미라벨 — `scam_type_hint` 만 있고 normalizer 가 안 읽음 | ❌ 머지 시 전부 `undetermined` 처리, Stage 2 비기여 |
+| `data/generated_data/...synthetic_nodup_2026-05-27.jsonl` | 171 | 스키마 완벽 매치, 19개 시나리오, 마스킹 처리 (`non_deployable: true`) | ✅ 즉시 활용 가능 (Stage 2 의 9 라벨 보강) |
+| AI Hub 71768 (광주 119) | 20,129 | 119 응급 신고 — 보이스피싱과 *역할/맥락 반대* | ⚠️ Stage 2 직접 매핑 불가, normal 발췌 200~500건 한정 |
+
+### 6.3. v2 목표(라벨당 30) 까지 부족분
+
+user_samples+DB 87 + 합성 91 = **178 scam_type 머지 시**:
+
+| 라벨 | 현재 | +합성 | 합산 | v2 목표 대비 | Stage 2 학습 포함? |
+|---|--:|--:|--:|--:|---|
+| 스미싱 | 22 | +26 | 48 | ✅ +18 | ✅ |
+| 기관 사칭 | 12 | +25 | 37 | ✅ +7 | ✅ |
+| 대출 사기 | 10 | +5 | 15 | -15 | ✅ |
+| 메신저 피싱 | 9 | +5 | 14 | -16 | ✅ |
+| 투자 사기 | 7 | +5 | 12 | -18 | ✅ |
+| 중고거래 사기 | 7 | +5 | 12 | -18 | ✅ |
+| 로맨스 스캠 | 6 | +5 | 11 | -19 | ✅ |
+| 코인 사기 | 4 | +5 | 9 | -21 | ✅ (이전엔 <5 제외) |
+| 취업·알바 사기 | 4 | 0 | 4 | -26 ❌ | ❌ |
+| 건강식품 사기 | 3 | 0 | 3 | -27 ❌ | ❌ |
+| 납치·협방형 | 2 | 0 | 2 | -28 ❌ | ❌ |
+| 부동산 사기 | 1 | 0 | 1 | -29 ❌ | ❌ |
+
+**효과**: 합성 머지 시 Stage 2 학습 포함 라벨 **7 → 8개** (코인 사기 회복).
+나머지 4 라벨은 별도 sourcing 필요.
+
+### 6.4. 다음 Stage 2 학습 사이클
+
+1. **classifier-v1.5**: user_samples + 합성(171건) `--extra-jsonl` 두 개 동시 머지 학습 →
+   합성 비율 증가가 macro_f1 에 미치는 영향 측정 (Stage 2 회의 — 합성 통제선 결정 근거)
+2. **부족 4라벨** (취업알바·건강식품·납치·부동산) Claude 합성 시나리오 추가 → 12라벨 학습 가능
+3. **AI Hub 71768 normal 발췌** 200~500건 통제 머지 — normal 학습 분포 확장
+4. **v2 (라벨당 30, total ~360) 도달 시 base 모델 ablation**:
+   mDeBERTa-v3-base-mnli-xnli (현재) vs KcELECTRA-base-v2022 vs klue/roberta-base
+
+### 6.5. Identity Boundary 와의 일관성
+
+본 학습은 **외부 `scam_type` top-1** 유지 + **내부 `candidate_scam_types` top-N** 라우팅
+용도로만 쓰임 (Section 4 의 D7·D8 확정사항). 점수·등급 외부 노출 X, 검출 신호만 보고
+원칙 그대로. 학습 결과 macro_f1 0.167 이라는 *측정값* 자체도 내부 sanity check 용이지
+외부 응답 surface 에 노출되지 않음.

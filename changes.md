@@ -4,6 +4,84 @@ milestone 단위 변경 로그. 누적 append, 최신이 위.
 
 ---
 
+## 2026-05-27 — classifier-v1 1차 학습 (sanity check, 비활성)
+
+**무엇**: 누적된 `data/processed/user_samples_2026-05-26.jsonl` (99줄) + DB
+`human_annotations` 머지본으로 mDeBERTa scam_type 분류기 LoRA fine-tune 1차 시도.
+결과는 활성화하지 않고 파이프라인 sanity check 로만 판정.
+
+**환경 패치 (transformers 5.1.0 호환)**:
+- `training/train_classifier.py:236` — `tokenizer=` → `processing_class=` (Trainer API 변경)
+- `training/train_classifier.py:227-228` — `fp16=` → `bf16= … or fp16= …` (LoRA + fp16 의
+  `Attempting to unscale FP16 gradients.` 회피, RTX 5070 Ti bf16 native)
+- 추가 설치: `training/requirements-train.txt` (datasets / accelerate / peft / seqeval 등)
+
+**학습 설정**:
+- base: `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`
+- LoRA 어댑터, epochs=3, batch=8, lr=기본
+- 데이터: 73 샘플 (라벨 <5 5종 제외 후 7라벨), train=65 / val=8
+
+**결과 (`checkpoints/classifier-v1/`)**:
+
+| metric | value |
+|---|---|
+| eval_accuracy | 0.25 |
+| eval_macro_f1 | 0.167 |
+| eval_macro_precision | 0.119 |
+| eval_macro_recall | 0.286 |
+| 학습 시간 | 6.9초 |
+| LoRA 가중치 크기 | 10.7 MB |
+
+7클래스 랜덤 baseline 이 macro_f1 ≈ 0.143 → **사실상 random guess 수준**. val 8개라
+metric 자체가 noise. 파이프라인이 끝까지 도는 것만 검증됨.
+
+**결정**:
+- `checkpoints/classifier-v1/` 산출물로 보존 (재현·디버그 용)
+- `.scamguardian/active_models.json` **변경 안 함** — 기존 `_disabled_classifier_at`
+  상태 유지, swap 안 함 (zero-shot fallback 그대로)
+
+**라벨별 부족분 (목표 30 / 50 기준, 머지본 87샘플 × 12라벨)**:
+
+| 라벨 | 현재 | 30 대비 | 50 대비 | 1차 학습 포함? |
+|---|---:|---:|---:|---|
+| 스미싱 | 22 | -8 | -28 | ✅ |
+| 기관 사칭 | 12 | -18 | -38 | ✅ |
+| 대출 사기 | 10 | -20 | -40 | ✅ |
+| 메신저 피싱 | 9 | -21 | -41 | ✅ |
+| 투자 사기 | 7 | -23 | -43 | ✅ |
+| 중고거래 사기 | 7 | -23 | -43 | ✅ |
+| 로맨스 스캠 | 6 | -24 | -44 | ✅ |
+| 취업·알바 사기 | 4 | -26 | -46 | ❌ (<5 제외) |
+| 코인 사기 | 4 | -26 | -46 | ❌ |
+| 건강식품 사기 | 3 | -27 | -47 | ❌ |
+| 납치·협박형 | 2 | -28 | -48 | ❌ |
+| 부동산 사기 | 1 | -29 | -49 | ❌ |
+| **합계 부족분** | **87** | **+273** | **+513** | |
+
+**다음 재학습 목표 (2단계 ramp)**:
+
+1. **classifier-v2 (라벨당 30건, total ~360)** — 부족분 273 추가
+   - 우선순위: <5 라벨 5종을 먼저 5+ 로 끌어올려 학습 포함시킴
+     (`취업알바·코인·건강식품·납치·부동산` 각각 +1~4건 → 합 +14)
+   - 그 다음 6~22건 라벨들을 30까지: 부족분 -8 ~ -24
+   - content_label 균형: scam_attempt 60~70% / normal 20% / scam_news_edu 10~20%
+     (현재 normal 21, scam_news_edu 16 — 비율 OK, 절대량은 같이 증가시켜야 함)
+2. **classifier-v3 (라벨당 50건, total ~600)** — v2 평가 후 진행
+
+**Sourcing (CLAUDE.md / training README 권장)**:
+- DB `analysis_runs` 미라벨 분 `/admin` 큐에서 사람 라벨링
+- AI Hub `dataset 71768` (119 신고) — 협박·위급 → `납치·협박형`
+- AI Hub `dataset 98` (금융보험 콜센터) — 정상 통화 → `normal` 보강
+- Claude 합성 — 희귀 라벨(코인·로맨스·부동산·건강식품) 시드 채움
+
+**검증**:
+- `cat .scamguardian/active_models.json` — 분류기 비활성 상태 유지 확인
+- `ls checkpoints/classifier-v1/` — adapter_model.safetensors / label2id.json / 3 epoch
+  체크포인트 보존
+- 본 변경은 **로컬 only**, push 안 함
+
+---
+
 ## 2026-05-26 — main ← origin/main-kyy 머지 + Tailscale Funnel 보존 백업 + README 갱신
 
 **무엇**: `origin/main-kyy` (kyy 영상 latency 단축 + cloudflared quick tunnel) 를 main 에
