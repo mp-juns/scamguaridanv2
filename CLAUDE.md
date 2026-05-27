@@ -46,6 +46,27 @@ High-level summary at each step
 Document Results: Add review section to tasks/todo.md
 Capture Lessons:
 Update tasks/lessons. md after corrections
+
+### Workspace-Separated Todo Files (MANDATORY)
+
+프로젝트 루트 디렉토리 이름의 접미사에 따라 **별도 todo 파일** 을 사용합니다.
+같은 `tasks/todo.md` 를 여러 워크스페이스에서 공유하면 머지 충돌·작업 혼선이 생기므로
+워크스페이스마다 격리시킵니다.
+
+**규칙**:
+- 루트 디렉토리 이름이 `*-phh` 로 끝나면 → `tasks/todo-phh.md` 만 사용·갱신
+- 루트 디렉토리 이름이 `*-kyy` 로 끝나면 → `tasks/todo-kyy.md` 만 사용·갱신
+- 접미사 없는 (기본 `scamguardian-v2/`) 워크스페이스 → 기존 `tasks/todo.md` 사용
+- 새 collaborator 추가 시 같은 패턴으로 `tasks/todo-<initials>.md` 신규 파일
+
+**적용 범위** (이 규칙이 가리키는 "todo 파일" 모두):
+- 위 Task Management 1·3 단계의 "Write plan to tasks/todo.md", "Add review section to tasks/todo.md"
+- 향후 todo 갱신·체크리스트 마킹·review 추가 시 *반드시* 현재 워크스페이스에 맞는 파일
+
+**금지**:
+- `*-phh` 워크스페이스에서 `tasks/todo.md` (접미사 없는 파일) 를 수정하지 말 것
+- `*-kyy` 워크스페이스에서 `tasks/todo-phh.md` 를 수정하지 말 것
+- 워크스페이스 식별이 모호하면 즉시 사용자에게 확인
 ## Core Principles
 - Simplicity First:
 - No Laziness:
