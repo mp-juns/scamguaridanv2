@@ -19,6 +19,8 @@
 
 **근본 원인**: Next 16 Turbopack 의 root 자동 감지가 `apps/web` 가 아닌 `apps/` 를 잘못 잡음 → `tailwindcss` resolve 를 `apps/node_modules` → `/node_modules` 까지 무한 시도 → resolve 캐시가 JS heap 에 누적 → 메모리 폭증. WSL2 의 swap → 호스트 디스크 → 9P hang → D-state 좀비 악순환.
 
+**시너지 원인 — 호스트 백업 SW (Acronis True Image)**: Turbopack 누수 *단독* 으론 freeze 안 났을 가능성. 사용자 의문 "그전까진 잘 쓰다가 왜 갑자기" 의 진짜 답 — **호스트 Acronis True Image 가 디스크 80% I/O 점유** 중이라 WSL 가 남은 20% 만 사용 가능. WSL swap I/O + 9P 마운트가 그 좁은 대역폭 위에서 처리 → 디스크 saturated → 9P hang → D-state 누적. **두 원인 합쳐서 폭발**: Acronis (1차 디스크 점유) × Turbopack 누수 (2차 swap 요구). 어제는 Acronis 비활성 시간대 → 같은 누수 있어도 freeze 안 남. 즉 *호스트 디스크 I/O bandwidth* 와 *WSL 메모리 swap 요구* 의 충돌이 진짜 trigger. 다른 후보: OneDrive 대량 sync, Antivirus full scan, Windows Update 다운로드.
+
 **`turbopack.root` 옵션도 ESM 컴파일 함정**: `next.config.ts` 의 `__dirname` 이 ESM 컨텍스트에서 *undefined*. `path.resolve(undefined)` 는 cwd fallback → 의도와 다른 경로. ESM-safe 패턴 필수:
 
 ```ts
@@ -40,6 +42,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 - 호스트 작업관리자에서 디스크 활성 시간 50%+ 와 vmmemWSL 메모리 = 호스트 측 swap 폭주
 
 **적용 시점**: Next 버전 올릴 때 / Tailwind 큰 버전 변경 시 / `apps/web` 같은 sub-디렉토리 구조 변경 시 — *반드시* turbopack root 자동 감지 검증. frontend.log 의 resolve 경로 확인.
+
+**진단 시 추가 체크리스트** (WSL freeze 가 어제까진 안 났는데 갑자기 시작):
+- 호스트 작업관리자 → 디스크 활성 시간 > 50% 인지 → Acronis / Norton / OneDrive / Windows Defender full scan / Windows Update 가 점유 중인지
+- 호스트 측 백업 SW 가 *최근에 활성화* 됐는지 (예: 자동 백업 스케줄 시작, 새 폴더 sync, 정기 full scan 주기)
+- 위 항목이 *예* 면 — 메모리/Turbopack 만 의심하지 말고 *호스트 디스크 점유 SW* 도 root cause 후보로 같이 봐야
 
 **관련 자산** (이번 세션에서 신설):
 - `scripts/monitor_resources.sh` — 5초 sampling + 30초 호스트 rsync + D-state 진단
