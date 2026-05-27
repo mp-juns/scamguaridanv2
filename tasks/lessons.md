@@ -5,6 +5,49 @@
 
 ---
 
+## 2026-05-28 — Next 16 Turbopack 메모리 누수 → WSL freeze 악순환 (4시간 디버깅)
+
+**관찰**: `./scripts/start_stack.sh` 실행 시 WSL 무한 프리징 + 원격 끊김. 메모리 8GB→20GB 증설해도 재발. baseline 만으로도 호스트 측 압박 체감.
+
+**증상 시간 추이 (첫 freeze, 03:04)**:
+- next-server **VSZ 3GB → 22GB (30초 만에 7배)** — RSS 1.2GB 만 보면 못 보는 누수
+- WSL 안 swap 4GB 풀로 사용 → 호스트 C:\ 디스크 쓰기 폭주 (작업관리자 활성 시간 58%)
+- 9P 마운트 (`/mnt/c`) 응답 늦어짐 → WSL 안 D-state 프로세스 무더기
+- D-state wchan: `folio_wait_bit_common`, `wait_on_buffer`, `d_alloc_parallel`
+- load avg 56 (CPU 6코어 정상치의 9배)
+- = WSL freeze 체감 (실은 진짜 hang, OOM kill 흔적 없음)
+
+**근본 원인**: Next 16 Turbopack 의 root 자동 감지가 `apps/web` 가 아닌 `apps/` 를 잘못 잡음 → `tailwindcss` resolve 를 `apps/node_modules` → `/node_modules` 까지 무한 시도 → resolve 캐시가 JS heap 에 누적 → 메모리 폭증. WSL2 의 swap → 호스트 디스크 → 9P hang → D-state 좀비 악순환.
+
+**`turbopack.root` 옵션도 ESM 컴파일 함정**: `next.config.ts` 의 `__dirname` 이 ESM 컨텍스트에서 *undefined*. `path.resolve(undefined)` 는 cwd fallback → 의도와 다른 경로. ESM-safe 패턴 필수:
+
+```ts
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+```
+
+**처방**:
+1. **Next 16 + Tailwind 4 조합에서 Turbopack 위험 (2026-05 기준)** — `next dev --webpack` 으로 fallback. Next 16 공식 옵션. 5-10% 느려지지만 freeze 완전 해소.
+2. **WSL freeze 진단은 RSS 가 아닌 VSZ 봐야** — RSS 1.2GB 만 보면 누수 안 보임. **VSZ 22GB** 가 진짜 증거. swap 으로 빠진 부분 합쳐서 봐야.
+3. **D-state 프로세스 + 9P 마운트 hang 패턴** — freeze 원인이 메모리 단독이 아닌 *kernel I/O wait 누적*. `ps -eo stat,wchan` 로 D-state 잡고 wchan 확인. `folio_wait_bit_common` = page cache 대기 = 디스크/9P hang.
+4. **메모리 증설은 *임시 버퍼*** — Turbopack 누수가 있으면 20GB 도 시간 문제로 차오름. 근본 fix 없이 메모리만 늘리면 freeze 시간만 길어질 뿐. 사용자가 정확히 진단 ("메모리가 단독 원인이면 stack 안 띄웠을 때도 압박 없어야").
+
+**증거 패턴**:
+- `frontend.log` 에 `resolve 'tailwindcss' in '.../apps'` (apps/web 아님) = root 자동 감지 fail
+- `processes.log` 에 next-server **VSZ > 10GB** = JS heap 누수
+- `io.log` 에 D-state wchan `folio_wait_bit_common` = I/O hang
+- 호스트 작업관리자에서 디스크 활성 시간 50%+ 와 vmmemWSL 메모리 = 호스트 측 swap 폭주
+
+**적용 시점**: Next 버전 올릴 때 / Tailwind 큰 버전 변경 시 / `apps/web` 같은 sub-디렉토리 구조 변경 시 — *반드시* turbopack root 자동 감지 검증. frontend.log 의 resolve 경로 확인.
+
+**관련 자산** (이번 세션에서 신설):
+- `scripts/monitor_resources.sh` — 5초 sampling + 30초 호스트 rsync + D-state 진단
+- `/mnt/c/Users/mpssh/Documents/wsl_logs/` — freeze 후에도 외부에서 진단 데이터 접근
+- `.wslconfig` 백업 `/mnt/c/Users/mpssh/.wslconfig.bak-20260528-031233` — 8GB 원상복귀용
+
+---
+
 ## 2026-05-24 — LLM max_tokens 단축은 라우팅 결정에 *대규모* 회귀
 
 **관찰**: gate.py 의 `max_tokens 120 → 60` 으로 줄여 ~0.5s latency 절약 시도 → Haiku 출력 JSON 이 60 토큰에서 잘림 → 파서 실패 → fallback bucket = `undetermined` → 라우팅이 보수 모드로 Phase 2 + Phase 3 LLM 전체 실행 → **분석 시간 12s → 33-40s 폭증** (2배 이상 악화). 14:34, 14:40 두 분석 모두 동일 transcript 에 동일 fallback.
