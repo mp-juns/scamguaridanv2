@@ -99,9 +99,9 @@ baseline ~14.5s → 1분 영상 평균 **~9.2s** (78% 10s 이내, 최단 7.8s).
 
 ## 디버깅 Journal
 
-세션 트랜스크립트 — 사용자 prompt + Claude 가 한 일. 같은 함정 만난 사람이 시간 안 잃기를.
+세션 트랜스크립트 — 사용자 prompt + Claude 가 한 일. 
 
-### 2026-05-28 — WSL freeze 4시간 디버깅 ([`journal/2026-05-28-wsl-freeze.md`](./journal/2026-05-28-wsl-freeze.md))
+### 2026-05-28 — WSL freeze  디버깅 ([`journal/2026-05-28-wsl-freeze.md`](./journal/2026-05-28-wsl-freeze.md))
 
 `./scripts/start_stack.sh` 실행 시 WSL 무한 프리징. 메모리 8GB 부족 가설로 시작했지만, 진짜 원인은 **Next 16 Turbopack 무한 resolve 누수 × Acronis True Image 디스크 80% 점유** 의 시너지.
 
