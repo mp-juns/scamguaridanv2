@@ -10,7 +10,7 @@
 - 발견: P1 항목 "`./scripts/start_stack.sh` 실행 시 WSL 무한 프리징" 미해결.
 - 환경 정보 + memory 디렉토리 비어있음 확인.
 
-## 2. 사용자: "아니 자꾸 지금 프리징 나잖아 좀 시발아 개선이 1도 안돼"
+## 2. 사용자: "아니 자꾸 지금 프리징 나잖아 개선이 1도 안돼"
 
 - 가벼운 진단: `free -h`, `ps aux`, `backend.log` 끝, `next.config.ts`, `start_stack.sh`.
 - 발견: stack 안 떠있음. 어제 14:25 마지막 활동. `turbopack.root: path.resolve(__dirname)` 이미 적용된 상태.
@@ -37,7 +37,7 @@
 - `next.config.ts` 수정 — `fileURLToPath(import.meta.url)` 패턴 + 검증 console.log 추가.
 - frontend 단독 띄워 검증: `Ready in 419ms` ✓, console.log `[next.config.ts] turbopack.root = .../apps/web` 정상 출력.
 
-## 6. (curl localhost:3100 30초 timeout 후) 사용자: "또 거기서 지금 튕김 시발 좀 제발 부탁이다 일단 외부에서도 추적하게 mpssh/documents/wsl_logs에 로그 저장해봐"
+## 6. (curl localhost:3100 30초 timeout 후) 사용자: "또 거기서 지금 튕김 좀 제발 부탁이다 일단 외부에서도 추적하게 mpssh/documents/wsl_logs에 로그 저장해봐"
 
 - `/mnt/c/Users/mpssh/Documents/wsl_logs/` 디렉토리 신설.
 - monitor_resources.sh 수정 — `tee` 패턴으로 WSL + Windows 양쪽 동시 write.
