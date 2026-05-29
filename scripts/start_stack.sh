@@ -24,6 +24,9 @@ OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 CONDA_ENV="${CONDA_ENV:-capstone}"
 ENABLE_FUNNEL="${ENABLE_FUNNEL:-true}"
 ENABLE_NGROK="${ENABLE_NGROK:-true}"
+# Ollama: CLAUDE.md 명시 — Claude API 로 교체되어 더 이상 필수 아님.
+# 켜고 싶으면 ENABLE_OLLAMA=true 로 호출.
+ENABLE_OLLAMA="${ENABLE_OLLAMA:-false}"
 NGROK_BIN="${NGROK_BIN:-$HOME/bin/ngrok}"
 NGROK_DOMAIN="${NGROK_DOMAIN:-}"  # 예약 도메인 있으면 지정, 없으면 매번 랜덤
 NGROK_API="http://127.0.0.1:4040/api/tunnels"
@@ -57,14 +60,20 @@ kill_port 4040
 
 sleep 0.5
 
-echo "[start] starting Ollama..."
-OLLAMA_MODELS="$OLLAMA_MODELS_DIR" nohup ollama serve >"$LOG_DIR/ollama.log" 2>&1 &
-sleep 0.5
+if [[ "$ENABLE_OLLAMA" == "true" ]]; then
+  echo "[start] starting Ollama..."
+  OLLAMA_MODELS="$OLLAMA_MODELS_DIR" nohup ollama serve >"$LOG_DIR/ollama.log" 2>&1 &
+  sleep 0.5
+else
+  echo "[start] skipping Ollama (ENABLE_OLLAMA=false — Claude API 로 교체됨)"
+fi
 
 echo "[start] starting backend (uvicorn :$BACKEND_PORT) in conda env '$CONDA_ENV'..."
 cd "$ROOT_DIR"
 PYTHONUNBUFFERED=1 nohup conda run --no-capture-output -n "$CONDA_ENV" python -u -m uvicorn api_server:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload --log-level info \
   >"$LOG_DIR/backend.log" 2>&1 &
+# backend 가 ML 모델 로딩하는 동안 동시 시작 부하 분산 — 메모리 spike 완화.
+sleep 3
 
 echo "[start] starting frontend (next dev :$FRONTEND_PORT)..."
 

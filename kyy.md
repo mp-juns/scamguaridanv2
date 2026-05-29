@@ -1,6 +1,12 @@
-# kyy 브랜치 작업 정리 (2026-05-24)
+# kyy 브랜치 작업 정리
 
-## 목적
+`main` 브랜치 대비 누적 작업 로그. 최신 작업이 아래에 추가됨.
+
+---
+
+## 2026-05-24 — 영상 분석 latency 단축
+
+### 목적
 
 영상 분석 latency 단축 — baseline ~14.5s → 1분 영상 10s 이내 일관 달성
 
@@ -95,3 +101,105 @@
 4. Admin 인증 + RBAC (production 보안 갭)
 5. API 통합 테스트 (회귀 가드 강화)
 6. v4 Live Call Guard MVP (학술 차별화)
+
+---
+
+## 2026-05-29 — 통화 STT 정확도 강화 + 화자 분리 + 스트리밍 + Live Voice
+
+### 목적
+
+보이스피싱 통화 녹음 분석의 두 약점을 정면 돌파:
+1. **Whisper hallucination** — 침묵·노이즈 구간에서 "시청해주셔서 감사합니다" 같은
+   학습 데이터 phrase 환각 + 도메인 어휘 prompt 가 무한 반복 출력 유발
+2. **화자 미분리** — Whisper 가 상대방(사기범) / 본인(피해자) 발화를 안 나눠줘서
+   *피해자 측 compliance signal* 분석 불가
+
+그리고 v4 Live Call Guard 의 사전 단계 — chunk 단위 streaming 분석 + Live Voice UI.
+
+### 완료한 작업
+
+#### 1. Whisper hallucination 강화 — `pipeline/stt.py`
+
+- **도메인 어휘 prompt 제거**: 어휘 list 를 Whisper prompt 에 박으면 침묵 구간에서
+  그 어휘를 그대로 transcript 로 토해냄 (12개 어휘로도 무한 반복 관찰). prompt 는
+  짧은 컨텍스트 문장만 (`STT_DOMAIN_PROMPT`, 기본 "한국어 전화 통화 녹음입니다.").
+- **`_strip_hallucination_phrases()`**: 알려진 YouTube/방송 phrase ("시청해주셔서
+  감사합니다", "구독과 좋아요", "[음악]", "MBC 뉴스" 등) 정확 일치 제거.
+- **`_squash_repetition()`**: 8-gram→1-gram 순으로 N회 연속 반복 phrase 를 1회로 축약
+  (loop 환각 제거).
+- **`temperature=0.0`** deterministic 디코딩.
+- **chunk 재인코딩**: `-c copy` (mp3 가정) → `libmp3lame mono 16k 64kbps` 재인코딩 —
+  wav/m4a 등 어떤 코덱 입력도 chunk 분할 성공 (이전 exit 234 mux 실패 수정).
+- **VAD 전처리** (`api_server_pkg/analyze.py`): upload 시 ffmpeg
+  `silenceremove + dynaudnorm` 으로 침묵 제거 + 음량 정규화 — hallucination 원천 차단.
+
+#### 2. CLOVA Speech STT 백엔드 — `pipeline/stt.py` (`_transcribe_with_clova`)
+
+- Naver CLOVA Speech API — 한 번의 호출로 전사 + **audio-based 화자 분리** (`segments`
+  의 `speaker_label`) 동시 획득 → LLM diarize 불필요.
+- `_clova_to_turns()`: 발화 시간 총합 휴리스틱 (긴 화자=상대방/사기범, 짧은 화자=본인)
+  으로 `상대방`/`본인` turn 리스트 생성 + 각 turn 의 `start_sec/end_sec` (오디오 재생용).
+- **`boostings` 파라미터**: 도메인 어휘 인식 가중치 (Whisper prompt 와 달리 새 텍스트
+  생성 X, 단어 출력 bias 만 — hallucination 부작용 없음). 검찰·금감원·대포통장·OTP 등.
+- `STT_BACKEND=clova` 선택 시 활성. 전용 진단 로그 `.scamguardian/logs/clova-kyy.log`.
+- 비용 ledger: `platform_layer.cost.record_clova_speech()` + `pricing.clova_speech_cost()`
+  (≈ $0.003/분, `CLOVA_SPEECH_PER_MIN_USD` override).
+
+#### 3. 텍스트 기반 화자 분리 — `pipeline/diarize.py` (신규)
+
+- CLOVA 가 아닌 백엔드(Whisper)용 fallback — 전사문을 Claude Haiku 로 `상대방`/`본인`
+  분리. pyannote 대비 가볍고 (1-2s) 보이스피싱 대화 패턴에 충분.
+- **환각 차단 규칙**: "split (나누기) 만, write (쓰기) 금지" — 출력 단어 중 본문에
+  없는 비율 15% 초과 시 자동 reject.
+
+#### 4. STT-only 엔드포인트 — `api_server_pkg/transcribe.py` (신규)
+
+- `POST /api/transcribe-upload` — 분석·DB 저장 없이 Phase 1 (STT) 만 수행 후 즉시 반환.
+- Live Voice 페이지에서 분석과 *병렬* 호출해 전사 결과를 먼저 보여주는 용도.
+
+#### 5. Chunk 단위 스트리밍 분석 — `api_server_pkg/stream_analyze.py` (신규)
+
+- `POST /api/analyze-stream` — 긴 음성을 `chunk_seconds`(기본 60s) 단위로 잘라 각 chunk
+  의 STT + 키워드 alert 를 **NDJSON** 으로 즉시 흘려줌 (`start`/`chunk`/`done`/`error`).
+- 클라이언트는 `fetch` 의 ReadableStream 을 line-by-line 파싱 → chunk 별 실시간 표시.
+- v4 Live Call Guard (5초 chunk 실시간 검출) 의 사전 녹음 simulation.
+
+#### 6. Live Voice 페이지 — `apps/web/src/app/live/` (신규)
+
+- `/live` — "사기 후가 아닌 사기 중 차단" 컨셉의 통화 분석 UI (`LiveVoiceUpload.tsx`).
+- 검출 신호 카탈로그 노출: 메타인식 표현 / 민감정보 누설 / 송금 동의 / 권위 굴복 누적.
+- 홈 페이지(`page.tsx`)에 `🎙️ LIVE VOICE` 진입 링크 추가.
+- Next.js 프록시 라우트 2개 신규: `api/transcribe-upload`, `api/analyze-stream`.
+
+### 환경 변수 (신규)
+
+| 변수 | 설명 | 기본값 |
+|---|---|---|
+| `STT_BACKEND` | `whisper` / `claude` / `clova` | `whisper` |
+| `STT_DOMAIN_PROMPT` | Whisper prompt 컨텍스트 (빈 문자열=안 보냄) | `한국어 전화 통화 녹음입니다.` |
+| `CLOVA_INVOKE_URL` | CLOVA Speech 도메인 invoke URL | (clova 시 필수) |
+| `CLOVA_SECRET_KEY` | CLOVA Speech secret key | (clova 시 필수) |
+| `CLOVA_BOOSTING_WORDS` | 도메인 어휘 boosting (콤마 구분) | 검찰·금감원·대포통장 등 기본 list |
+| `CLOVA_SPEECH_PER_MIN_USD` | CLOVA 분당 단가 (비용 ledger) | `0.003` |
+
+### 변경 파일
+
+| 파일 | 변경 |
+|---|---|
+| `pipeline/stt.py` | hallucination strip/squash + CLOVA 백엔드 + turns + chunk 재인코딩 |
+| `pipeline/diarize.py` | 신규 — 텍스트 기반 Claude Haiku 화자 분리 |
+| `api_server_pkg/transcribe.py` | 신규 — `/api/transcribe-upload` (STT only) |
+| `api_server_pkg/stream_analyze.py` | 신규 — `/api/analyze-stream` (NDJSON 스트리밍) |
+| `api_server_pkg/analyze.py` | upload 시 VAD (silenceremove + dynaudnorm) 전처리 |
+| `api_server_pkg/app.py` | transcribe / stream_analyze 라우터 등록 |
+| `apps/web/src/app/live/` | 신규 — Live Voice 페이지 + 업로드 컴포넌트 |
+| `apps/web/src/app/api/transcribe-upload/`, `.../analyze-stream/` | 신규 프록시 라우트 |
+| `apps/web/src/app/page.tsx` | 홈에 LIVE VOICE 링크 |
+| `platform_layer/cost.py`, `pricing.py` | CLOVA Speech 비용 ledger |
+
+### 다음 우선순위 (갱신)
+
+1. **CLOVA 화자 분리 정확도 측정** — 합성/실제 통화로 상대방·본인 매핑 정밀도 검증
+2. `.env.example` 에 STT_BACKEND / CLOVA_* 변수 추가 (현재 코드만 있음)
+3. v4 Live Call Guard 실시간 (5초 chunk WebSocket) — streaming 엔드포인트 위에 구축
+4. Admin 인증 + RBAC (production 보안 갭)

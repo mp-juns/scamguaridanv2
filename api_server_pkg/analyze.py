@@ -211,6 +211,9 @@ async def analyze_upload(
                     "1",
                     "-ar",
                     "16000",
+                    "-af",
+                    # VAD (침묵 제거) → 음량 정규화. Whisper hallucination 원천 차단.
+                    "silenceremove=stop_periods=-1:stop_duration=1:stop_threshold=-40dB,dynaudnorm=f=150:g=15",
                     "-f",
                     "wav",
                     str(wav_path),

@@ -21,6 +21,8 @@ from . import (
     health,
     kakao,
     result_token,
+    stream_analyze,
+    transcribe,
     v4_stream,
 )
 
@@ -110,6 +112,8 @@ def create_app() -> FastAPI:
     app.include_router(result_token.router)
     app.include_router(kakao.router)
     app.include_router(analyze.router)
+    app.include_router(transcribe.router)
+    app.include_router(stream_analyze.router)
     app.include_router(admin_runs.router)
     app.include_router(admin_platform.router)
     app.include_router(admin_training.router)

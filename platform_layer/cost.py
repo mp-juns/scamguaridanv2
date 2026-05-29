@@ -69,6 +69,12 @@ def record_openai_whisper(audio_seconds: float, *, action: str = "transcribe") -
     _record("openai", action, units=audio_seconds, usd=usd, audio_seconds=audio_seconds)
 
 
+def record_clova_speech(audio_seconds: float, *, action: str = "transcribe") -> None:
+    """Naver CLOVA Speech 비용 ledger 기록."""
+    usd = pricing.clova_speech_cost(audio_seconds)
+    _record("clova", action, units=audio_seconds, usd=usd, audio_seconds=audio_seconds)
+
+
 def record_serper(queries: int = 1, *, action: str = "search") -> None:
     _record("serper", action, units=queries, usd=pricing.serper_cost(queries))
 
