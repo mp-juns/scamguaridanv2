@@ -5,6 +5,22 @@
 
 ---
 
+## 2026-06-01 — WSL CUDA 판정은 샌드박스/디바이스 노출을 분리해서 확인
+
+**관찰**: `torch.cuda.is_available() == False` 만 보고 "CUDA 없음" 으로 결론내렸지만,
+WSL 환경에서는 `/usr/lib/wsl/lib` 드라이버 라이브러리와 `/dev/dxg` 디바이스 노출 여부,
+그리고 Codex sandbox 의 device passthrough 여부가 서로 다를 수 있다.
+
+**처방**:
+- CUDA 여부를 말하기 전에 `torch.version.cuda`, `/usr/lib/wsl/lib/libcuda.so`,
+  `/dev/dxg`, `LD_LIBRARY_PATH=/usr/lib/wsl/lib ... torch.cuda.device_count()` 를 함께 본다.
+- sandbox 안에서 디바이스가 안 보이면 host/WSL 자체에 CUDA가 없다는 뜻이 아닐 수 있다.
+- 학습 실행 전에는 실제 학습 프로세스가 돌아갈 권한/환경에서 CUDA probe 를 다시 한다.
+
+**적용 시점**: WSL + GPU 학습, nvidia-smi 비정상, Codex sandbox 에서 CUDA probe 할 때.
+
+---
+
 ## 2026-05-28 — Next 16 Turbopack 메모리 누수 → WSL freeze 악순환 (4시간 디버깅)
 
 **관찰**: `./scripts/start_stack.sh` 실행 시 WSL 무한 프리징 + 원격 끊김. 메모리 8GB→20GB 증설해도 재발. baseline 만으로도 호스트 측 압박 체감.
@@ -123,6 +139,38 @@ bytecode 분석은 disassemble 한다고 해서 동적 분석이 아니다 — �
 
 1. `analyze_apk_dynamic()` 함수 + `APKDynamicReport` dataclass 까지 인터페이스 박음
 2. `APK_DYNAMIC_ENABLED=0` (기본) → 즉시 `status=DISABLED` 반환, 호스트 0 건드림
+## 2026-06-01 — 학습 세션 상태는 pid 보다 완료 산출물을 우선 확인
+
+**상황**: classifier 학습이 `metrics.jsonl` 에 `kind=done` 을 기록하고 checkpoint 도 저장했는데,
+세션 감시 로직이 pid 종료 타이밍만 보고 `failed` 로 보정했다.
+
+**처방**:
+- `running`/`failed` 상태를 갱신할 때는 먼저 `metrics.jsonl` 의 `done` 이벤트와 output artifact
+  (`label2id.json`, adapter/model weights 등)를 확인한다.
+- 성공 산출물이 있으면 pid 상태보다 artifact 를 신뢰해 `completed` 로 복구한다.
+- 긴 학습 subprocess 는 서버 reload/HMR/admin polling 과 독립적으로 끝날 수 있으므로,
+  상태 판정은 process liveness 단독 판단을 피한다.
+
+**적용 시점**: 백그라운드 작업 상태를 파일 기반으로 추적할 때. 특히 watch thread 가 reload 나
+프로세스 재시작과 엇갈릴 수 있는 dev 서버에서는 artifact-first 복구 경로가 필요하다.
+
+---
+
+## 2026-06-01 — 학습 데이터 통계 표시는 source 를 분리해서 보여주기
+
+**상황**: `/admin/training` 의 "분류기 학습 데이터" 카드가 기본 DB 라벨 25건만 보여주면서,
+synthetic extra JSONL 포함 학습셋 12025건과 혼동을 만들었다.
+
+**처방**:
+- `load_classifier_dataset()` 기본 호출 결과와 `load_classifier_dataset(extra_jsonl=...)` 결과를 같은 이름으로 표시하지 않는다.
+- UI 에서는 "기본 검수 라벨" 과 "현재 학습 후보 전체" 를 명확히 분리한다.
+- 학습 시작 폼은 최신 synthetic corpus 경로를 기본값으로 채워 실제 학습 명령과 화면 숫자가 같은 기준을 쓰게 한다.
+
+**적용 시점**: DB 라벨 + 외부 JSONL + generated corpus 처럼 여러 source 를 합쳐 학습하는 화면을 만들 때,
+항상 표시값 옆에 source/scope 를 함께 적는다.
+
+---
+
 3. `backend=local` → **HARD BLOCK** (어떤 env 조합으로도 풀리지 않음). `BLOCKED_LOCAL` 반환
 4. `backend=remote` 만 실제 동작 — 별도 VM 의 Android 에뮬레이터 stack 호출
 5. flag 카탈로그 5 종 + FLAG_RATIONALE 미리 박음 — remote VM 구현 시 자동 흘러감
