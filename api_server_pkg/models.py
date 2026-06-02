@@ -72,7 +72,8 @@ class CreateApiKeyRequest(BaseModel):
 
 
 class StartTrainingRequest(BaseModel):
-    model: str
+    model: str = "classifier"
+    models: list[str] | None = None
     epochs: int = 3
     batch_size: int = 8
     lora: bool = False

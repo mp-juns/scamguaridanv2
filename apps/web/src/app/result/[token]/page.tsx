@@ -60,6 +60,24 @@ type SafetyCheckDict = {
   error?: string | null;
 };
 
+type RagReferenceCase = {
+  run_id?: string;
+  distance?: number;
+  scam_type_gt?: string;
+  transcript_excerpt?: string;
+  entities_gt?: Array<{ label?: string; text?: string }>;
+  triggered_flags_gt?: Array<{ flag?: string; reason?: string; evidence?: string }>;
+  annotation_summary?: {
+    entity_labels?: string[];
+    flags?: string[];
+  };
+};
+
+type RagContextDict = {
+  enabled?: boolean;
+  similar_cases?: RagReferenceCase[];
+};
+
 type ReportDict = {
   scam_type?: string;
   classification_confidence?: number;
@@ -75,6 +93,7 @@ type ReportDict = {
   summary?: string;
   disclaimer?: string;
   llm_assessment?: LLMAssessment | null;
+  rag_context?: RagContextDict | null;
   safety_check?: SafetyCheckDict | null;
 };
 
@@ -218,6 +237,8 @@ export default async function ResultPage({ params }: PageProps) {
   const detection = detectionStyle(signals.length);
   const inputLabel = INPUT_TYPE_LABEL[input_type] ?? input_type;
   const llm = result.llm_assessment ?? null;
+  const ragContext = result.rag_context ?? null;
+  const ragCases = ragContext?.enabled ? (ragContext.similar_cases ?? []) : [];
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,#111827_0%,#020617_60%,#000000_100%)] px-4 py-8 text-slate-100 sm:px-6 sm:py-10">
@@ -325,6 +346,87 @@ export default async function ResultPage({ params }: PageProps) {
                 ))}
               </ul>
             )}
+          </section>
+        )}
+
+        {/* RAG 참조 데이터 — 분석에 쓰인 과거 라벨 사례를 투명하게 표시 */}
+        {ragCases.length > 0 && (
+          <section className="rounded-2xl border border-cyan-500/30 bg-cyan-950/15 p-6">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-lg font-semibold text-cyan-100">
+                🔎 RAG 참조 데이터 ({ragCases.length}건)
+              </h2>
+              <span className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-2.5 py-0.5 text-xs text-cyan-200">
+                과거 라벨 사례 기반 참고
+              </span>
+            </div>
+            <p className="mb-4 text-sm leading-relaxed text-cyan-100/75">
+              아래 사례들은 현재 입력과 임베딩상 가까운 라벨링 데이터입니다. ScamGuardian 은 이 사례를
+              참고 정보로 사용하지만, 동일 사례라고 단정하지는 않습니다.
+            </p>
+            <ol className="space-y-3">
+              {ragCases.map((item, idx) => {
+                const flags = item.annotation_summary?.flags ?? [];
+                const entityLabels = item.annotation_summary?.entity_labels ?? [];
+                return (
+                  <li key={`${item.run_id ?? "case"}-${idx}`} className="rounded-xl border border-cyan-400/15 bg-slate-950/50 p-4">
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <div>
+                        <span className="text-sm font-semibold text-slate-100">
+                          {item.scam_type_gt || "라벨 미지정"}
+                        </span>
+                        {typeof item.distance === "number" && (
+                          <span className="ml-2 font-mono text-xs text-cyan-200/80">
+                            distance {item.distance.toFixed(4)}
+                          </span>
+                        )}
+                      </div>
+                      {item.run_id && (
+                        <a
+                          href={`/admin/${encodeURIComponent(item.run_id)}`}
+                          className="font-mono text-xs text-cyan-200 underline-offset-4 hover:underline"
+                        >
+                          run {item.run_id.slice(0, 8)}
+                        </a>
+                      )}
+                    </div>
+
+                    {item.transcript_excerpt && (
+                      <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-slate-300">
+                        {item.transcript_excerpt}
+                      </p>
+                    )}
+
+                    {(flags.length > 0 || entityLabels.length > 0) && (
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                        <div>
+                          <div className="text-xs text-slate-500">참조 플래그</div>
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {flags.slice(0, 6).map((flag) => (
+                              <span key={flag} className="rounded-full border border-slate-600 bg-slate-900 px-2 py-0.5 font-mono text-xs text-slate-300">
+                                {flag}
+                              </span>
+                            ))}
+                            {flags.length === 0 && <span className="text-xs text-slate-500">없음</span>}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-slate-500">참조 엔티티 라벨</div>
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {entityLabels.slice(0, 6).map((label) => (
+                              <span key={label} className="rounded-full border border-slate-600 bg-slate-900 px-2 py-0.5 text-xs text-slate-300">
+                                {label}
+                              </span>
+                            ))}
+                            {entityLabels.length === 0 && <span className="text-xs text-slate-500">없음</span>}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
           </section>
         )}
 

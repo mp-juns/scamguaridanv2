@@ -26,6 +26,7 @@ class CompareAnalysisRequest(BaseModel):
     text: str | None = None
     session_id: str | None = None
     whisper_model: str = "medium"
+    compare_scope: str = "both"
 
 _CLASSIFIER_COMPARE_SMOKE_SET: list[dict[str, str]] = [
     {
@@ -423,10 +424,26 @@ def _transcribe_for_compare(source: str, whisper_model: str) -> dict[str, Any]:
     }
 
 
+def _extract_compare_evidence(text: str, scam_type: str) -> dict[str, Any]:
+    from pipeline import extractor, verifier
+
+    entities = extractor.extract(text, scam_type)
+    rule_results = verifier.detect_rule_signals(entities)
+    triggered = [result for result in rule_results if result.triggered]
+    return {
+        "entities": [entity.to_dict() for entity in entities],
+        "signals": [result.to_dict() for result in triggered],
+        "signal_candidates": [result.to_dict() for result in rule_results],
+    }
+
+
 def _compare_analysis(payload: CompareAnalysisRequest) -> dict[str, Any]:
     source = (payload.text or payload.source or "").strip()
     if not source:
         raise ValueError("비교할 텍스트 또는 링크를 입력해주세요.")
+    compare_scope = (payload.compare_scope or "both").strip()
+    if compare_scope not in {"both", "classifier", "extractor"}:
+        raise ValueError("compare_scope 는 both, classifier, extractor 중 하나여야 합니다.")
 
     session_id = _resolve_compare_session_id(payload.session_id)
     from training import sessions as tsess
@@ -437,6 +454,8 @@ def _compare_analysis(payload: CompareAnalysisRequest) -> dict[str, Any]:
     text = transcript["text"]
     raw = _classify_raw_for_compare(text)
     tuned = _classify_checkpoint_for_compare(text, _load_checkpoint_for_compare(output_dir))
+    raw_evidence = _extract_compare_evidence(text, raw.scam_type)
+    tuned_evidence = _extract_compare_evidence(text, tuned.scam_type)
 
     from pipeline import llm_assessor
     try:
@@ -461,6 +480,7 @@ def _compare_analysis(payload: CompareAnalysisRequest) -> dict[str, Any]:
     return {
         "session_id": session_id,
         "output_dir": output_dir,
+        "compare_scope": compare_scope,
         "input": {
             "source": source,
             "transcript_text": text,
@@ -474,6 +494,7 @@ def _compare_analysis(payload: CompareAnalysisRequest) -> dict[str, Any]:
             "confidence": raw.confidence,
             "is_uncertain": raw.is_uncertain,
             "top_scores": _top_scores(raw.all_scores, 5),
+            **raw_evidence,
         },
         "claude": {
             "label": "Claude 분석",
@@ -485,6 +506,8 @@ def _compare_analysis(payload: CompareAnalysisRequest) -> dict[str, Any]:
             "suggested_flags": [flag.to_dict() for flag in llm_assessment.suggested_flags],
             "suggested_entities": [entity.to_dict() for entity in llm_assessment.suggested_entities],
             "error": llm_error,
+            "entities": [entity.to_dict() for entity in llm_assessment.suggested_entities],
+            "signals": [flag.to_dict() for flag in llm_assessment.suggested_flags],
         },
         "fine_tuned": {
             "label": "파인튜닝 모델",
@@ -493,6 +516,7 @@ def _compare_analysis(payload: CompareAnalysisRequest) -> dict[str, Any]:
             "confidence": tuned.confidence,
             "is_uncertain": tuned.is_uncertain,
             "top_scores": _top_scores(tuned.all_scores, 5),
+            **tuned_evidence,
         },
         "agreement": {
             "existing_vs_fine_tuned": raw.scam_type == tuned.scam_type,
@@ -601,7 +625,8 @@ async def admin_training_synthetic_summary() -> dict[str, Any]:
         "subprocess 로 학습 세션 spawn — `.scamguardian/training_sessions/{id}/` 에 "
         "`status.json` / `metrics.jsonl` / `train.log` 출력.\n\n"
         "**Body** (`StartTrainingRequest`):\n"
-        "- `model` — `classifier` (mDeBERTa) 또는 `gliner`\n"
+        "- `model` — `classifier` (mDeBERTa) 또는 `gliner` (단일 세션, legacy)\n"
+        "- `models` — `['classifier', 'gliner']` 처럼 보내면 선택된 모델을 각각 학습\n"
         "- `epochs` (기본 3), `batch_size` (기본 8), `lora` (LoRA 사용)\n"
         "- `extra_jsonl` — 추가 데이터셋 경로\n"
         "- `val_ratio` (기본 0.1), `seed` (기본 17), `base_model`"
@@ -611,20 +636,39 @@ async def admin_training_synthetic_summary() -> dict[str, Any]:
 async def admin_training_start(payload: StartTrainingRequest) -> dict[str, Any]:
     try:
         from training import sessions as tsess
-        params = tsess.SessionParams(
-            model=payload.model,
-            epochs=payload.epochs,
-            batch_size=payload.batch_size,
-            lora=payload.lora,
-            extra_jsonl=payload.extra_jsonl,
-            val_ratio=payload.val_ratio,
-            seed=payload.seed,
-            base_model=payload.base_model,
-            early_stopping_patience=payload.early_stopping_patience,
-            early_stopping_threshold=payload.early_stopping_threshold,
-        )
-        info = await asyncio.to_thread(tsess.start_session, params)
-        return info
+        requested_models = payload.models if payload.models is not None else [payload.model]
+        models = []
+        for model in requested_models:
+            model_name = str(model or "").strip()
+            if model_name and model_name not in models:
+                models.append(model_name)
+        if not models:
+            raise ValueError("학습할 모델을 하나 이상 선택해야 합니다.")
+
+        started: list[dict[str, Any]] = []
+        for model_name in models:
+            params = tsess.SessionParams(
+                model=model_name,
+                epochs=payload.epochs,
+                batch_size=payload.batch_size,
+                lora=payload.lora,
+                extra_jsonl=payload.extra_jsonl,
+                val_ratio=payload.val_ratio,
+                seed=payload.seed,
+                base_model=payload.base_model,
+                early_stopping_patience=payload.early_stopping_patience,
+                early_stopping_threshold=payload.early_stopping_threshold,
+            )
+            started.append(await asyncio.to_thread(tsess.start_session, params))
+
+        if len(started) == 1:
+            return started[0]
+        return {
+            "session_id": started[0]["session_id"],
+            "status": "running",
+            "model": "multi",
+            "sessions": started,
+        }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

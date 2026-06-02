@@ -106,6 +106,22 @@ def _log_path(session_id: str) -> Path:
     return _session_dir(session_id) / "train.log"
 
 
+def _training_python_command() -> list[str]:
+    explicit = (os.getenv("SCAMGUARDIAN_TRAIN_PYTHON") or "").strip()
+    if explicit:
+        return [explicit]
+
+    conda_env = (os.getenv("SCAMGUARDIAN_TRAIN_CONDA_ENV") or os.getenv("CONDA_ENV") or "").strip()
+    if conda_env:
+        return ["conda", "run", "--no-capture-output", "-n", conda_env, "python"]
+
+    capstone_python = Path.home() / "anaconda3" / "envs" / "capstone" / "bin" / "python"
+    if capstone_python.exists():
+        return [str(capstone_python)]
+
+    return [sys.executable]
+
+
 def _read_status(session_id: str) -> dict[str, Any] | None:
     p = _status_path(session_id)
     if not p.exists():
@@ -286,7 +302,7 @@ def start_session(params: SessionParams) -> dict[str, Any]:
 
     module = "training.train_classifier" if params.model == "classifier" else "training.train_gliner"
     cmd: list[str] = [
-        sys.executable, "-u", "-m", module,
+        *_training_python_command(), "-u", "-m", module,
         "--output-dir", str(output_dir),
         "--epochs", str(params.epochs),
         "--batch-size", str(params.batch_size),
@@ -308,6 +324,12 @@ def start_session(params: SessionParams) -> dict[str, Any]:
         cmd += ["--base-model", params.base_model]
 
     env = os.environ.copy()
+    wsl_cuda_lib = "/usr/lib/wsl/lib"
+    if Path(wsl_cuda_lib).exists():
+        current_ld = env.get("LD_LIBRARY_PATH", "")
+        parts = [part for part in current_ld.split(":") if part]
+        if wsl_cuda_lib not in parts:
+            env["LD_LIBRARY_PATH"] = ":".join([wsl_cuda_lib, *parts])
     # 학습 콜백이 metrics.jsonl 에 emit 할 수 있게 경로 알림
     env["SCAMGUARDIAN_TRAINING_METRICS"] = str(_metrics_path(session_id))
     env["SCAMGUARDIAN_TRAINING_SESSION_ID"] = session_id

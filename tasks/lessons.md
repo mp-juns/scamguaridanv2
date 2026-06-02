@@ -5,6 +5,24 @@
 
 ---
 
+## 2026-06-02 — 학습 환경은 `python`이 아니라 목표 conda env 이름으로 확인
+
+**상황**: 사용자는 `capstone` conda env 에서 학습하길 원했지만, assistant 가 현재 shell 의
+`python`/base env 에 설치된 패키지를 보고 `datasets` 가 있다고 판단했다. 실제 `capstone`
+에는 `datasets` 가 없어 classifier 학습이 실패했다.
+
+**처방**:
+- 학습/서버/터미널 환경을 말할 때 `which python` 만 보지 말고 `conda env list`,
+  `conda run -n <env> python -c "import sys; print(sys.executable)"`,
+  `conda run -n <env> python -m pip show <package>` 로 목표 env 를 직접 확인한다.
+- 프로젝트가 특정 env 를 요구하면 training subprocess launcher 에도 같은 env 를 고정한다.
+- WSL CUDA 학습에서는 학습 subprocess env 에 `/usr/lib/wsl/lib` 를 `LD_LIBRARY_PATH` 로
+  넣어 torch 가 WSL CUDA driver library 를 찾을 수 있게 한다.
+
+**적용 시점**: `ModuleNotFoundError`, CUDA probe, FastAPI 에서 학습 subprocess 를 띄우는 경우.
+
+---
+
 ## 2026-06-01 — WSL CUDA 판정은 샌드박스/디바이스 노출을 분리해서 확인
 
 **관찰**: `torch.cuda.is_available() == False` 만 보고 "CUDA 없음" 으로 결론내렸지만,

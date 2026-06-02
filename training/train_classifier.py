@@ -107,15 +107,23 @@ def main() -> None:
     id2label = {i: label for label, i in label2id.items()}
 
     # 3) 모델 / 토크나이저 (필요한 시점에만 import — dry-run 빠르게)
-    import torch
-    from transformers import (
-        AutoModelForSequenceClassification,
-        AutoTokenizer,
-        DataCollatorWithPadding,
-        Trainer,
-        TrainingArguments,
-    )
-    from datasets import Dataset
+    try:
+        import torch
+        from transformers import (
+            AutoModelForSequenceClassification,
+            AutoTokenizer,
+            DataCollatorWithPadding,
+            Trainer,
+            TrainingArguments,
+        )
+        from datasets import Dataset
+    except ModuleNotFoundError as exc:
+        missing = exc.name or str(exc)
+        raise SystemExit(
+            f"학습 의존성 '{missing}' 패키지가 현재 Python 환경에 없습니다.\n"
+            "다음 명령으로 fine-tuning 전용 의존성을 설치한 뒤 다시 실행하세요:\n"
+            "  pip install -r training/requirements-train.txt"
+        ) from exc
 
     tokenizer = AutoTokenizer.from_pretrained(args.base_model)
 

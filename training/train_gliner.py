@@ -106,20 +106,43 @@ def main() -> None:
     )
 
     examples = load_gliner_dataset(extra_jsonl=args.extra_jsonl)
-    log.info("총 %d 샘플 (엔티티 합계 %d)", len(examples), sum(len(e.ner) for e in examples))
+    total_entities = sum(len(e.ner) for e in examples)
+    labels_seen = sorted({l for ex in examples for _, _, l in ex.ner})
+    log.info("총 %d 샘플 (엔티티 합계 %d)", len(examples), total_entities)
 
     if args.dry_run:
         return
 
     if len(examples) < 30:
         log.error("샘플이 너무 적습니다(%d < 30). 라벨 더 모아주세요.", len(examples))
+        emit_metric({
+            "kind": "error",
+            "model": "gliner",
+            "step": 0,
+            "epoch": 0,
+            "gliner_progress": 0,
+            "train_size": len(examples),
+            "entity_count": total_entities,
+            "label_count": len(labels_seen),
+            "error": "too_few_samples",
+        })
         return
 
     train_ex, val_ex = train_val_split(examples, val_ratio=args.val_ratio, seed=args.seed)
     train_records = to_gliner_records(train_ex)
     val_records = to_gliner_records(val_ex)
     log.info("train=%d val=%d", len(train_records), len(val_records))
-    emit_metric({"kind": "start", "model": "gliner", "train_size": len(train_records), "val_size": len(val_records)})
+    emit_metric({
+        "kind": "start",
+        "model": "gliner",
+        "step": 0,
+        "epoch": 0,
+        "gliner_progress": 0,
+        "train_size": len(train_records),
+        "val_size": len(val_records),
+        "entity_count": total_entities,
+        "label_count": len(labels_seen),
+    })
 
     out_path = Path(args.output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -131,6 +154,17 @@ def main() -> None:
         json.dumps(val_records, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    emit_metric({
+        "kind": "prepared",
+        "model": "gliner",
+        "step": 1,
+        "epoch": 0,
+        "gliner_progress": 0.15,
+        "train_size": len(train_records),
+        "val_size": len(val_records),
+        "entity_count": total_entities,
+        "label_count": len(labels_seen),
+    })
 
     # GLiNER 학습 — 0.2.x API
     import torch
@@ -141,6 +175,16 @@ def main() -> None:
     # GLiNER 학습 API 는 버전마다 약간 다른데 0.2.x 는 model.train(...) 또는
     # 외부 trainer 가 필요. 여기서는 내장 학습 루프가 없으면 JSON 만 저장하고 안내한다.
     if hasattr(model, "fit"):
+        emit_metric({
+            "kind": "fit_start",
+            "model": "gliner",
+            "step": 2,
+            "epoch": 0,
+            "gliner_progress": 0.2,
+            "train_size": len(train_records),
+            "val_size": len(val_records),
+            "label_count": len(labels_seen),
+        })
         model.fit(
             train_records,
             val_data=val_records,
@@ -149,9 +193,31 @@ def main() -> None:
             lr=args.lr,
             save_path=str(out_path),
         )
-        emit_metric({"kind": "done", "model": "gliner", "epochs": args.epochs})
+        emit_metric({
+            "kind": "done",
+            "model": "gliner",
+            "step": max(3, args.epochs),
+            "epoch": args.epochs,
+            "gliner_progress": 1,
+            "train_size": len(train_records),
+            "val_size": len(val_records),
+            "label_count": len(labels_seen),
+            "epochs": args.epochs,
+        })
         log.info("GLiNER 학습 완료 → %s", out_path)
     else:
+        emit_metric({
+            "kind": "trainer_unavailable",
+            "model": "gliner",
+            "step": 2,
+            "epoch": 0,
+            "gliner_progress": 1,
+            "train_size": len(train_records),
+            "val_size": len(val_records),
+            "entity_count": total_entities,
+            "label_count": len(labels_seen),
+            "gliner_version": getattr(__import__("gliner"), "__version__", "?"),
+        })
         log.warning(
             "현재 GLiNER 버전(%s)에 fit() 메서드가 없습니다. train.json/val.json 만 저장했어요.\n"
             "공식 가이드(https://github.com/urchade/GLiNER#fine-tune-on-your-own-data) 의 "
@@ -161,7 +227,6 @@ def main() -> None:
         )
 
     # 추론 시 라벨 후보로 쓰일 unique label 목록도 같이 저장
-    labels_seen = sorted({l for ex in examples for _, _, l in ex.ner})
     (out_path / "labels.json").write_text(
         json.dumps(labels_seen, ensure_ascii=False, indent=2),
         encoding="utf-8",

@@ -1,3 +1,188 @@
+# Compare Scope Selection (2026-06-02)
+
+목적: raw/fine-tuned 비교 분석 시 분류기만 볼지, 추출기만 볼지, 둘 다 볼지 선택할 수 있게 한다.
+기본값은 둘 다 비교로 유지한다.
+
+- [x] 현재 compare-analysis request/UI 구조 확인
+- [x] backend request 에 `compare_scope` 추가
+- [x] frontend 비교 폼에 scope 선택 UI 추가
+- [x] compare panel 이 scope 에 따라 분류/추출 섹션을 조건부 표시하도록 변경
+- [x] py_compile/lint/type smoke 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**구현**:
+- `CompareAnalysisRequest` 에 `compare_scope` 추가.
+  - 허용값: `both`, `classifier`, `extractor`.
+  - 기본값: `both`.
+- `/admin/training` 모델 비교 분석 폼에 비교 범위 선택 UI 추가.
+  - `분류+추출`
+  - `분류기만`
+  - `추출기만`
+- 비교 분석 요청에 `compare_scope` 를 전달.
+- `ModelComparePanel` 이 scope 에 따라 조건부 표시:
+  - `classifier`: 유형 verdict card + 일치 여부만 표시.
+  - `extractor`: 엔티티/위험 신호 후보 matrix 만 표시.
+  - `both`: 둘 다 표시.
+
+**검증**:
+- `python -m py_compile api_server_pkg/admin_training.py` 통과.
+- `npm run lint` 통과.
+- `npx tsc --noEmit` 통과.
+- `git diff --check` 통과.
+
+---
+
+# Compare Analysis Classification + Extraction Matrix (2026-06-02)
+
+목적: 모델 비교 분석 세션에서 위험 유형 분류뿐 아니라 위험요소/엔티티 추출 결과도 함께 비교한다.
+초기 분석 화면처럼 한 입력에 대한 유형, 엔티티, 신호 후보를 같은 화면에서 나란히 보이게 한다.
+
+- [x] 현재 compare-analysis endpoint 와 extractor/verifier helper 확인
+- [x] backend compare response 에 existing/fine-tuned extractor + rule signal 후보 추가
+- [x] frontend compare panel 을 유형/엔티티/신호 비교 matrix 로 변경
+- [x] py_compile/lint/type smoke 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**구현**:
+- `POST /api/admin/training/compare-analysis`
+  - 기존 raw classifier 결과에 `extractor.extract()` 를 실행해 `entities` 를 추가.
+  - 기존 추출 엔티티에 `verifier.detect_rule_signals()` 를 실행해 `signals` 와 `signal_candidates` 를 추가.
+  - fine-tuned classifier 예측 유형 기준으로도 같은 extraction/rule signal pipeline 을 실행.
+  - Claude suggested entities/flags 도 비교 UI 에서 같은 의미로 읽을 수 있도록 `entities`, `signals` 에 복제.
+- `/admin/training`
+  - 모델 비교 분석 결과에 `유형 + 추출 비교` matrix 추가.
+  - 기존 분석 / Claude 분석 / 파인튜닝 모델을 한 줄에서 비교.
+  - 각 column 은 유형, 요약/오류, 위험요소/엔티티, 위험 신호 후보를 표시.
+  - 기존 Claude 근거 후보 블록은 유지해 자세한 LLM 후보를 별도로 볼 수 있게 했다.
+
+**검증**:
+- `python -m py_compile api_server_pkg/admin_training.py` 통과.
+- `npm run lint` 통과.
+- `npx tsc --noEmit` 통과.
+- `git diff --check` 통과.
+
+---
+
+# GLiNER Training Metrics Graph (2026-06-02)
+
+목적: classifier 처럼 GLiNER 학습 세션에서도 `/admin/training` 메트릭 그래프가 비지 않도록
+학습 크기/epoch 진행/완료 이벤트를 metrics.jsonl 로 기록하고 UI 그래프에 GLiNER 전용 값을 표시한다.
+
+- [x] 현재 GLiNER 학습 스크립트와 UI 그래프 데이터 확인
+- [x] GLiNER metrics emission 보강
+- [x] UI chartData 에 GLiNER metric field 추가
+- [x] py_compile/lint/type smoke 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**구현**:
+- `training/train_gliner.py`
+  - GLiNER 세션도 `metrics.jsonl` 에 numeric `step` 과 `gliner_progress` 를 기록한다.
+  - 기록 필드: `train_size`, `val_size`, `entity_count`, `label_count`, `gliner_progress`.
+  - 샘플 부족 시 `kind=error`, 데이터 준비 완료 시 `kind=prepared`.
+  - 현재 설치된 GLiNER `0.2.26` 은 `fit()` 이 없어 실제 fine-tune trainer 를 제공하지 않으므로
+    `kind=trainer_unavailable` 을 metric 으로 남겨 UI 에서 빈 그래프가 되지 않게 했다.
+- `/admin/training`
+  - chart data 에 `gliner_progress`, `gliner_train_size`, `gliner_val_size`, `gliner_label_count` 추가.
+  - classifier 세션은 기존 loss/eval/macro F1/accuracy 를 그대로 표시.
+  - GLiNER 세션은 `gliner_progress` line 을 표시하고, metric tiles 는 progress/train docs/val docs/labels 로 전환.
+
+**검증**:
+- `python -m py_compile training/train_gliner.py` 통과.
+- `npm run lint` 통과.
+- `npx tsc --noEmit` 통과.
+- `git diff --check` 통과.
+
+---
+
+# Capstone Training Environment Fix (2026-06-02)
+
+목적: classifier 학습이 `datasets` 누락으로 실패한 원인을 목표 conda env 기준으로 바로잡고,
+학습 subprocess 가 항상 `capstone` 환경을 사용하게 한다.
+
+- [x] 현재 shell/base env 와 `capstone` env 의 Python/패키지 상태 분리 확인
+- [x] `capstone` 에 fine-tuning requirements 설치
+- [x] training launcher 가 기본적으로 `capstone` Python 을 선택하도록 보강
+- [x] WSL CUDA library path 를 학습 subprocess env 에 자동 추가
+- [x] py_compile/import/diff smoke 검증
+
+## Review
+
+**원인**:
+- 현재 shell 은 base env (`/home/mpwsl2/anaconda3/bin/python`) 였고 여기에는 `datasets` 가 있었다.
+- 사용자가 원하는 `capstone` env (`/home/mpwsl2/anaconda3/envs/capstone/bin/python`) 에는
+  `datasets` 가 없어 `ModuleNotFoundError` 가 발생했다.
+
+**수정**:
+- `conda run -n capstone python -m pip install -r training/requirements-train.txt` 로
+  `datasets`, `peft`, `evaluate`, `accelerate`, `seqeval` 설치.
+- `training/sessions.py` 에 `_training_python_command()` 를 추가해 기본적으로
+  `/home/mpwsl2/anaconda3/envs/capstone/bin/python` 을 사용하게 했다.
+- `SCAMGUARDIAN_TRAIN_PYTHON`, `SCAMGUARDIAN_TRAIN_CONDA_ENV`, `CONDA_ENV` 가 있으면
+  그 값을 우선한다.
+- `/usr/lib/wsl/lib` 가 있으면 학습 subprocess 의 `LD_LIBRARY_PATH` 에 자동 prefix 한다.
+- `training/train_classifier.py` 는 학습 의존성 누락 시 traceback 대신 설치 명령을 안내한다.
+
+**검증**:
+- `conda run -n capstone python -c "from datasets import Dataset; import peft, evaluate"` 통과.
+- `_training_python_command()` 가 `capstone` Python 을 반환하는 것 확인.
+- `python -m py_compile training/sessions.py training/train_classifier.py` 통과.
+- `git diff --check` 통과.
+
+---
+
+# Training Target Selection + RAG References (2026-06-02)
+
+목적: `/admin/training` 에서 classifier/GLiNER 를 각각 학습할지 함께 학습할지 선택할 수 있게 하고,
+기본값은 둘 다 학습으로 둔다. 또한 RAG 를 분석에 사용한 경우 최종 결과 페이지에서 어떤
+라벨/사례 데이터를 참조했는지 표시한다.
+
+- [x] 현재 training session API/UI 와 RAG result schema 확인
+- [x] 학습 시작 payload 에 `models[]` 다중 선택을 추가하고 기본을 classifier+gliner 로 설정
+- [x] UI 에 두 모델 체크박스/결과 세션 처리 연결
+- [x] 결과 페이지에 `rag_context.similar_cases` 참조 데이터 섹션 추가
+- [x] py_compile/lint/type smoke 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**구현**:
+- 학습 시작 payload 에 `models?: string[]` 를 추가했다.
+  - 기존 `model: "classifier"` 단일 요청은 그대로 동작한다.
+  - 새 UI 는 기본값으로 `["classifier", "gliner"]` 를 보낸다.
+- `POST /api/admin/training/sessions`
+  - `models` 가 여러 개면 각 모델별 학습 subprocess 를 바로 spawn 한다.
+  - `start_session()` 이 비동기 subprocess 시작 후 즉시 반환하므로 classifier 와 GLiNER 는 동시 학습된다.
+  - 응답에는 대표 `session_id` 와 전체 `sessions[]` 를 함께 담는다.
+- `/admin/training`
+  - 모델 선택을 select 에서 classifier/GLiNER 체크박스로 변경.
+  - 기본은 둘 다 선택.
+  - 둘 다 선택하면 버튼 문구를 `동시 학습 시작` 으로 표시.
+  - LoRA/early stop 은 classifier 선택 시에만 활성.
+- `/result/[token]`
+  - `result.rag_context.enabled` 이고 `similar_cases` 가 있으면 `RAG 참조 데이터` 섹션 표시.
+  - 참조 run id, 거리(distance), 정답 유형, 본문 발췌, 참조 플래그/엔티티 라벨을 노출.
+  - “참고 정보이며 동일 사례라고 단정하지 않는다”는 문구로 identity boundary 를 유지.
+
+**5070 Ti 16GB 관련 판단**:
+- 현재 다중 학습은 별도 프로세스 동시 실행 구조다.
+- 16GB VRAM 에서는 classifier LoRA + GLiNER 조합을 시도할 만하지만, batch size 가 크면 CUDA OOM 가능성이 있다.
+- 둘 다 동시에 돌릴 때는 `batch_size=4~5` 부터 시작하는 쪽이 안정적이다.
+
+**검증**:
+- `python -m py_compile api_server_pkg/models.py api_server_pkg/admin_training.py training/sessions.py` 통과.
+- `npm run lint` 통과.
+- `npx tsc --noEmit` 통과.
+- `git diff --check` 통과.
+- `StartTrainingRequest(models=['classifier','gliner'])` smoke 확인.
+
+---
+
 # Training Status False Failure (2026-06-01)
 
 목적: 학습 로그와 metrics 는 갱신 중인데 status.json 이 `failed` 로 먼저 바뀌어 UI가

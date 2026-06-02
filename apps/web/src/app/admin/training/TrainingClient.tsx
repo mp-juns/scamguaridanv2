@@ -79,6 +79,7 @@ type ComparisonResult = {
 type ModelCompareResult = {
   session_id: string;
   output_dir: string;
+  compare_scope: "both" | "classifier" | "extractor";
   input: {
     source: string;
     transcript_text: string;
@@ -92,6 +93,9 @@ type ModelCompareResult = {
     confidence: number;
     is_uncertain: boolean;
     top_scores: CompareScore[];
+    entities: CompareEntity[];
+    signals: CompareSignal[];
+    signal_candidates: CompareSignal[];
   };
   claude: {
     label: string;
@@ -103,6 +107,8 @@ type ModelCompareResult = {
     suggested_flags: { flag: string; reason: string; evidence: string; confidence: number }[];
     suggested_entities: { text: string; label: string; reason: string; confidence: number }[];
     error: string;
+    entities: CompareEntity[];
+    signals: CompareSignal[];
   };
   fine_tuned: {
     label: string;
@@ -111,12 +117,35 @@ type ModelCompareResult = {
     confidence: number;
     is_uncertain: boolean;
     top_scores: CompareScore[];
+    entities: CompareEntity[];
+    signals: CompareSignal[];
+    signal_candidates: CompareSignal[];
   };
   agreement: {
     existing_vs_fine_tuned: boolean;
     existing_vs_claude: boolean;
     claude_vs_fine_tuned: boolean;
   };
+};
+
+type CompareEntity = {
+  text?: string;
+  label?: string;
+  score?: number;
+  reason?: string;
+  confidence?: number;
+  source?: string;
+};
+
+type CompareSignal = {
+  flag?: string;
+  flag_description?: string;
+  reason?: string;
+  evidence?: string;
+  evidence_snippets?: string[];
+  confidence?: number;
+  entity_text?: string;
+  entity_label?: string;
 };
 
 type SyntheticAttempt = {
@@ -173,6 +202,13 @@ type SyntheticSummary = {
 type SessionsResponse = {
   sessions: SessionInfo[];
   active_models: Record<string, string>;
+};
+
+type StartTrainingResponse = SessionInfo | {
+  session_id: string;
+  status: "running";
+  model: "multi";
+  sessions: SessionInfo[];
 };
 
 const STATUS_BADGE: Record<string, string> = {
@@ -237,7 +273,7 @@ export default function TrainingClient() {
   const logRef = useRef<HTMLPreElement | null>(null);
 
   const [form, setForm] = useState({
-    model: "classifier" as "classifier" | "gliner",
+    models: ["classifier", "gliner"] as Array<"classifier" | "gliner">,
     epochs: 3,
     batch_size: 8,
     lora: true,
@@ -247,6 +283,7 @@ export default function TrainingClient() {
   const [compareForm, setCompareForm] = useState({
     text: "서울중앙지검 수사관입니다. 본인 명의 계좌가 사건에 연루되어 안전계좌로 3000만원 검증 이체가 필요합니다.",
     source: "",
+    scope: "both" as "both" | "classifier" | "extractor",
   });
   const [submitting, setSubmitting] = useState(false);
 
@@ -325,22 +362,29 @@ export default function TrainingClient() {
     setSubmitting(true);
     setError("");
     try {
+      if (form.models.length === 0) {
+        throw new Error("학습할 모델을 하나 이상 선택해주세요.");
+      }
       const r = await fetch("/api/admin/training/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: form.model,
+          model: form.models[0],
+          models: form.models,
           epochs: form.epochs,
           batch_size: form.batch_size,
-          lora: form.lora,
+          lora: form.lora && form.models.includes("classifier"),
           extra_jsonl: form.extra_jsonl.trim() || null,
           early_stopping_patience: form.early_stopping_patience,
         }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail ?? "세션 시작 실패");
-      setSelectedId(data.session_id);
-      const startedDetail = await fetchSessionDetail(data.session_id);
+      const started = data as StartTrainingResponse;
+      const firstSessionId = "sessions" in started ? started.sessions[0]?.session_id : started.session_id;
+      if (!firstSessionId) throw new Error("시작된 세션 정보를 찾지 못했습니다.");
+      setSelectedId(firstSessionId);
+      const startedDetail = await fetchSessionDetail(firstSessionId);
       if (startedDetail) setDetail(startedDetail);
       await refreshList();
     } catch (err) {
@@ -406,6 +450,7 @@ export default function TrainingClient() {
           text: compareForm.text.trim() || null,
           source: compareForm.source.trim() || null,
           session_id: completedClassifier,
+          compare_scope: compareForm.scope,
         }),
       });
       const data = await r.json();
@@ -421,13 +466,17 @@ export default function TrainingClient() {
   const chartData = useMemo(() => {
     if (!detail) return [];
     return detail.metrics
-      .filter((m) => typeof m.step === "number")
-      .map((m) => ({
-        step: m.step as number,
+      .filter((m) => typeof m.step === "number" || m.model === "gliner" || typeof m.gliner_progress === "number")
+      .map((m, index) => ({
+        step: typeof m.step === "number" ? m.step : index,
         loss: typeof m.loss === "number" ? m.loss : null,
         eval_loss: typeof m.eval_loss === "number" ? m.eval_loss : null,
         eval_macro_f1: typeof m.eval_macro_f1 === "number" ? m.eval_macro_f1 : null,
         eval_accuracy: typeof m.eval_accuracy === "number" ? m.eval_accuracy : null,
+        gliner_progress: typeof m.gliner_progress === "number" ? m.gliner_progress : null,
+        gliner_train_size: typeof m.train_size === "number" ? m.train_size : null,
+        gliner_val_size: typeof m.val_size === "number" ? m.val_size : null,
+        gliner_label_count: typeof m.label_count === "number" ? m.label_count : null,
       }));
   }, [detail]);
 
@@ -452,6 +501,20 @@ export default function TrainingClient() {
 
   const selectedSession = detail?.session ?? sessions.find((session) => session.session_id === selectedId) ?? null;
   const lastMetric = detail?.metrics.at(-1) ?? selectedSession?.last_metrics ?? null;
+  const hasClassifierChart = chartData.some((row) =>
+    row.loss !== null || row.eval_loss !== null || row.eval_macro_f1 !== null || row.eval_accuracy !== null,
+  );
+  const hasGlinerChart = chartData.some((row) => row.gliner_progress !== null);
+  const trainsClassifier = form.models.includes("classifier");
+  const trainsGliner = form.models.includes("gliner");
+  const toggleTrainingModel = (model: "classifier" | "gliner", checked: boolean) => {
+    setForm((prev) => {
+      const next = checked
+        ? Array.from(new Set([...prev.models, model]))
+        : prev.models.filter((item) => item !== model);
+      return { ...prev, models: next };
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -634,17 +697,32 @@ export default function TrainingClient() {
       <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
         <h2 className="mb-4 text-lg font-semibold">새 학습 세션</h2>
         <div className="grid gap-4 md:grid-cols-6">
-          <label className="space-y-1 text-sm">
-            <span className="block text-slate-300">모델</span>
-            <select
-              value={form.model}
-              onChange={(e) => setForm({ ...form, model: e.target.value as "classifier" | "gliner" })}
-              className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-slate-100"
-            >
-              <option value="classifier">classifier (mDeBERTa)</option>
-              <option value="gliner">gliner</option>
-            </select>
-          </label>
+          <div className="space-y-1 text-sm md:col-span-2">
+            <span className="block text-slate-300">학습 대상</span>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={trainsClassifier}
+                  onChange={(e) => toggleTrainingModel("classifier", e.target.checked)}
+                  className="h-4 w-4 accent-cyan-300"
+                />
+                <span>classifier</span>
+              </label>
+              <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={trainsGliner}
+                  onChange={(e) => toggleTrainingModel("gliner", e.target.checked)}
+                  className="h-4 w-4 accent-cyan-300"
+                />
+                <span>GLiNER</span>
+              </label>
+            </div>
+            <p className="text-xs text-slate-500">
+              둘 다 선택하면 각각 별도 프로세스로 바로 시작해서 동시에 학습합니다.
+            </p>
+          </div>
           <label className="space-y-1 text-sm">
             <span className="block text-slate-300">epochs</span>
             <input
@@ -673,7 +751,7 @@ export default function TrainingClient() {
               checked={form.lora}
               onChange={(e) => setForm({ ...form, lora: e.target.checked })}
               className="h-4 w-4 accent-cyan-300"
-              disabled={form.model !== "classifier"}
+              disabled={!trainsClassifier}
             />
             <span>LoRA (classifier 만)</span>
           </label>
@@ -686,7 +764,7 @@ export default function TrainingClient() {
               value={form.early_stopping_patience}
               onChange={(e) => setForm({ ...form, early_stopping_patience: Number(e.target.value) })}
               className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2"
-              disabled={form.model !== "classifier"}
+              disabled={!trainsClassifier}
             />
           </label>
           <label className="space-y-1 text-sm md:col-span-1">
@@ -703,10 +781,10 @@ export default function TrainingClient() {
         <div className="mt-4 flex justify-end">
           <button
             onClick={() => void startSession()}
-            disabled={submitting}
+            disabled={submitting || form.models.length === 0}
             className="rounded-xl bg-cyan-300 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {submitting ? "시작 중..." : "학습 시작"}
+            {submitting ? "시작 중..." : form.models.length > 1 ? "동시 학습 시작" : "학습 시작"}
           </button>
         </div>
 
@@ -750,7 +828,7 @@ export default function TrainingClient() {
                 <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3">
                   <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">실행 설정</div>
                   <div className="space-y-1 break-all font-mono text-xs text-slate-300">
-                    <div>model: {selectedSession?.model ?? form.model}</div>
+                    <div>model: {selectedSession?.model ?? form.models.join(",")}</div>
                     <div>epochs: {String(selectedSession?.params?.epochs ?? form.epochs)}</div>
                     <div>batch_size: {String(selectedSession?.params?.batch_size ?? form.batch_size)}</div>
                     <div>lora: {String(selectedSession?.params?.lora ?? form.lora)}</div>
@@ -765,10 +843,21 @@ export default function TrainingClient() {
 
                 {lastMetric && (
                   <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    <MiniMetric label="loss" value={metricValue(lastMetric.loss)} />
-                    <MiniMetric label="eval loss" value={metricValue(lastMetric.eval_loss)} />
-                    <MiniMetric label="macro F1" value={pct(lastMetric.eval_macro_f1)} />
-                    <MiniMetric label="accuracy" value={pct(lastMetric.eval_accuracy)} />
+                    {selectedSession?.model === "gliner" ? (
+                      <>
+                        <MiniMetric label="progress" value={pct(lastMetric.gliner_progress)} />
+                        <MiniMetric label="train docs" value={metricValue(lastMetric.train_size)} />
+                        <MiniMetric label="val docs" value={metricValue(lastMetric.val_size)} />
+                        <MiniMetric label="labels" value={metricValue(lastMetric.label_count)} />
+                      </>
+                    ) : (
+                      <>
+                        <MiniMetric label="loss" value={metricValue(lastMetric.loss)} />
+                        <MiniMetric label="eval loss" value={metricValue(lastMetric.eval_loss)} />
+                        <MiniMetric label="macro F1" value={pct(lastMetric.eval_macro_f1)} />
+                        <MiniMetric label="accuracy" value={pct(lastMetric.eval_accuracy)} />
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -820,6 +909,29 @@ export default function TrainingClient() {
                 className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 font-mono text-xs text-slate-100"
               />
             </label>
+            <div className="mt-4 text-sm">
+              <span className="text-slate-300">비교 범위</span>
+              <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                {[
+                  ["both", "분류+추출"],
+                  ["classifier", "분류기만"],
+                  ["extractor", "추출기만"],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setCompareForm({ ...compareForm, scope: value as "both" | "classifier" | "extractor" })}
+                    className={`rounded-xl border px-3 py-2 text-sm transition ${
+                      compareForm.scope === value
+                        ? "border-violet-300/50 bg-violet-300 text-slate-950"
+                        : "border-white/10 bg-slate-950/70 text-slate-300 hover:bg-white/5"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
               <div className="text-xs text-slate-500">
                 fine-tuned 기준:{" "}
@@ -938,12 +1050,32 @@ export default function TrainingClient() {
                         labelStyle={{ color: "#cbd5f5" }}
                       />
                       <Legend />
-                      <Line type="monotone" dataKey="loss" stroke="#22d3ee" dot={false} connectNulls />
-                      <Line type="monotone" dataKey="eval_loss" stroke="#f97316" dot={false} connectNulls />
-                      <Line type="monotone" dataKey="eval_macro_f1" stroke="#22c55e" dot={false} connectNulls />
-                      <Line type="monotone" dataKey="eval_accuracy" stroke="#a78bfa" dot={false} connectNulls />
+                      {hasClassifierChart && (
+                        <>
+                          <Line type="monotone" dataKey="loss" stroke="#22d3ee" dot={false} connectNulls />
+                          <Line type="monotone" dataKey="eval_loss" stroke="#f97316" dot={false} connectNulls />
+                          <Line type="monotone" dataKey="eval_macro_f1" stroke="#22c55e" dot={false} connectNulls />
+                          <Line type="monotone" dataKey="eval_accuracy" stroke="#a78bfa" dot={false} connectNulls />
+                        </>
+                      )}
+                      {hasGlinerChart && (
+                        <Line
+                          type="monotone"
+                          dataKey="gliner_progress"
+                          name="gliner_progress"
+                          stroke="#38bdf8"
+                          strokeWidth={2}
+                          dot
+                          connectNulls
+                        />
+                      )}
                     </LineChart>
                   </ResponsiveContainer>
+                  {hasGlinerChart && (
+                    <div className="mt-2 text-xs text-slate-500">
+                      GLiNER 0.2.x 환경에서 trainer API 가 없으면 train/val JSON 준비 완료까지의 진행값을 표시합니다.
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1052,40 +1184,71 @@ function ClassifierComparisonPanel({ comparison }: { comparison: ComparisonResul
 }
 
 function ModelComparePanel({ result }: { result: ModelCompareResult }) {
+  const scope = result.compare_scope ?? "both";
+  const showClassifier = scope === "both" || scope === "classifier";
+  const showExtractor = scope === "both" || scope === "extractor";
+  const columns = [
+    {
+      key: "existing",
+      title: "기존 분석",
+      subtitle: result.existing.method,
+      scamType: result.existing.scam_type,
+      confidence: result.existing.confidence,
+      entities: result.existing.entities,
+      signals: result.existing.signals,
+      tone: "cyan" as const,
+    },
+    {
+      key: "claude",
+      title: "Claude 분석",
+      subtitle: result.claude.method,
+      scamType: result.claude.scam_type || "-",
+      confidence: result.claude.confidence,
+      entities: result.claude.entities ?? result.claude.suggested_entities,
+      signals: result.claude.signals ?? result.claude.suggested_flags,
+      tone: "violet" as const,
+      error: result.claude.error,
+      summary: result.claude.summary,
+    },
+    {
+      key: "fine_tuned",
+      title: "파인튜닝 모델",
+      subtitle: result.session_id,
+      scamType: result.fine_tuned.scam_type,
+      confidence: result.fine_tuned.confidence,
+      entities: result.fine_tuned.entities,
+      signals: result.fine_tuned.signals,
+      tone: "emerald" as const,
+    },
+  ];
+
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-3">
-        <ModelVerdictCard
-          title="기존 분석"
-          subtitle={result.existing.method}
-          scamType={result.existing.scam_type}
-          confidence={result.existing.confidence}
-          tone="cyan"
-        />
-        <ModelVerdictCard
-          title="Claude 분석"
-          subtitle={result.claude.method}
-          scamType={result.claude.scam_type || "-"}
-          confidence={result.claude.confidence}
-          tone="violet"
-        />
-        <ModelVerdictCard
-          title="파인튜닝 모델"
-          subtitle={result.session_id}
-          scamType={result.fine_tuned.scam_type}
-          confidence={result.fine_tuned.confidence}
-          tone="emerald"
-        />
-      </div>
-
-      <div className="rounded-xl border border-white/10 bg-slate-950/50 p-3">
-        <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">일치 여부</div>
-        <div className="flex flex-wrap gap-2 text-xs">
-          <AgreementPill label="기존 = 파인튜닝" ok={result.agreement.existing_vs_fine_tuned} />
-          <AgreementPill label="기존 = Claude" ok={result.agreement.existing_vs_claude} />
-          <AgreementPill label="Claude = 파인튜닝" ok={result.agreement.claude_vs_fine_tuned} />
+      {showClassifier && (
+        <div className="grid gap-3 sm:grid-cols-3">
+          {columns.map((column) => (
+            <ModelVerdictCard
+              key={column.key}
+              title={column.title}
+              subtitle={column.subtitle}
+              scamType={column.scamType}
+              confidence={column.confidence}
+              tone={column.tone}
+            />
+          ))}
         </div>
-      </div>
+      )}
+
+      {showClassifier && (
+        <div className="rounded-xl border border-white/10 bg-slate-950/50 p-3">
+          <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">일치 여부</div>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <AgreementPill label="기존 = 파인튜닝" ok={result.agreement.existing_vs_fine_tuned} />
+            <AgreementPill label="기존 = Claude" ok={result.agreement.existing_vs_claude} />
+            <AgreementPill label="Claude = 파인튜닝" ok={result.agreement.claude_vs_fine_tuned} />
+          </div>
+        </div>
+      )}
 
       {result.claude.error ? (
         <div className="rounded-xl border border-rose-400/25 bg-rose-500/10 p-3 text-sm text-rose-100">
@@ -1104,12 +1267,90 @@ function ModelComparePanel({ result }: { result: ModelCompareResult }) {
         </div>
       )}
 
+      {showExtractor && (
+        <div className="overflow-hidden rounded-xl border border-white/10 bg-slate-950/50">
+          <div className="border-b border-white/10 p-3">
+            <div className="text-xs uppercase tracking-widest text-slate-400">
+              {showClassifier ? "유형 + 추출 비교" : "추출기 비교"}
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              같은 입력에서 엔티티와 위험 신호 후보가 어떻게 달라지는지 비교합니다.
+            </p>
+          </div>
+          <div className="grid gap-0 lg:grid-cols-3">
+            {columns.map((column) => (
+              <div key={column.key} className="border-b border-white/10 p-3 lg:border-b-0 lg:border-r last:border-r-0">
+                <div className="mb-3">
+                  <div className="text-xs text-slate-500">{column.title}</div>
+                  <div className="mt-1 text-sm font-semibold text-white">{showClassifier ? column.scamType : "추출 결과"}</div>
+                  {column.error && (
+                    <div className="mt-2 rounded-lg border border-rose-400/25 bg-rose-500/10 px-2 py-1 text-xs text-rose-100">
+                      {column.error}
+                    </div>
+                  )}
+                  {column.summary && !column.error && (
+                    <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-slate-400">{column.summary}</p>
+                  )}
+                </div>
+                <CompareChipList
+                  title={`위험요소/엔티티 ${column.entities.length}개`}
+                  empty="추출된 엔티티 없음"
+                  items={column.entities.map((entity) => `${entity.label || "-"}: ${entity.text || ""}`)}
+                />
+                <CompareChipList
+                  title={`위험 신호 후보 ${column.signals.length}개`}
+                  empty="검출된 신호 후보 없음"
+                  items={column.signals.map((signal) => {
+                    const evidence = signal.evidence || signal.reason || signal.evidence_snippets?.[0] || signal.flag_description || "";
+                    return `${signal.flag || signal.flag_description || "-"}${evidence ? `: ${evidence}` : ""}`;
+                  })}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <details className="rounded-xl border border-white/10 bg-slate-950/40 p-3 text-sm">
         <summary className="cursor-pointer text-slate-300">비교에 사용한 transcript</summary>
         <p className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-slate-400">
           {result.input.transcript_text}
         </p>
       </details>
+    </div>
+  );
+}
+
+function CompareChipList({
+  title,
+  items,
+  empty,
+}: {
+  title: string;
+  items: string[];
+  empty: string;
+}) {
+  const visible = items.filter(Boolean).slice(0, 8);
+  return (
+    <div className="mb-3">
+      <div className="mb-2 text-xs font-semibold text-slate-300">{title}</div>
+      {visible.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-white/10 px-2 py-2 text-xs text-slate-500">
+          {empty}
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {visible.map((item, index) => (
+            <span
+              key={`${item}-${index}`}
+              className="rounded-full border border-slate-600 bg-slate-900 px-2 py-0.5 text-xs text-slate-300"
+              title={item}
+            >
+              {item.length > 42 ? `${item.slice(0, 42)}...` : item}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
