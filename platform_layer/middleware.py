@@ -40,6 +40,7 @@ _REQUIRE_KEY_PATTERNS = [
     re.compile(r"^/api/analyze-upload$"),
     re.compile(r"^/api/transcribe-upload$"),
     re.compile(r"^/api/analyze-stream$"),
+    re.compile(r"^/api/live-analyze$"),
 ]
 # API key 선택 (있으면 기록만)
 _OPTIONAL_KEY_PATTERNS = [

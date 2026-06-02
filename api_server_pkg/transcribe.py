@@ -22,6 +22,29 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 router = APIRouter()
 
 
+def _audio_filter() -> str:
+    """ffmpeg -af 체인 (빈 문자열이면 -af 생략).
+
+    CLOVA: **정규화 없는 clean 16k downsample 이 STT 정확도 최고** (측정값 — dynaudnorm
+    이 단어 사이 노이즈 플로어를 끌어올려 오인식 유발). + 화자 경계 정적 보존 → diarization
+    timestamp 원본 일치. → 빈 문자열.
+    non-CLOVA(Whisper): silenceremove(환각 차단) + dynaudnorm(작은 발화 증폭).
+    """
+    try:
+        from pipeline import stt as _stt
+        is_clova = (_stt.STT_BACKEND or "").lower() == "clova"
+    except Exception:
+        is_clova = False
+    if is_clova:
+        return ""
+    return "silenceremove=stop_periods=-1:stop_duration=1:stop_threshold=-40dB,dynaudnorm=f=150:g=15"
+
+
+def _ffmpeg_af_args() -> list[str]:
+    af = _audio_filter()
+    return ["-af", af] if af else []
+
+
 @router.post(
     "/api/transcribe-upload",
     tags=["Public"],
@@ -91,7 +114,7 @@ async def transcribe_upload(
             [
                 "ffmpeg", "-y", "-i", str(tmp_path),
                 "-vn", "-ac", "1", "-ar", "16000",
-                "-af", "silenceremove=stop_periods=-1:stop_duration=1:stop_threshold=-40dB,dynaudnorm=f=150:g=15",
+                *_ffmpeg_af_args(),
                 "-f", "wav",
                 str(wav_path),
             ],

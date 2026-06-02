@@ -235,5 +235,8 @@ data/generated/
 .scamguardian/*.bak
 .scamguardian/*.bak-*
 .scamguardian/*.backup-*
+.scamguardian/*.pre-symlink-*
+.scamguardian/phh_training/
 *.sqlite3.backup-*
 *.sqlite3.bak-*
+*.tmp.*

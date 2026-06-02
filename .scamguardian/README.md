@@ -391,27 +391,14 @@ Response:
 
 ### 5.4 어드민 — 학습 (Fine-tuning)
 
-> 📖 **데이터 준비 · 합성 생성 · 학습 · 평가 전 과정 상세**: [`training/FINETUNING.md`](../training/FINETUNING.md)
-
 | 메소드 | 경로 | 용도 |
 |---|---|---|
 | GET | `/api/admin/training/data-stats` | 라벨 분포·학습 가능 여부 |
-| POST | `/api/admin/training/sessions` | 세션 시작 (subprocess 백그라운드, early stopping 파라미터 포함) |
+| POST | `/api/admin/training/sessions` | 세션 시작 (subprocess 백그라운드) |
 | GET | `/api/admin/training/sessions` | 세션 리스트 + active_models |
 | GET | `/api/admin/training/sessions/{id}` | 세션 상세 + metrics + log_tail |
 | POST | `/api/admin/training/sessions/{id}/cancel` | 세션 중단 |
 | POST | `/api/admin/training/sessions/{id}/activate` | active_models.json 갱신 → 파이프라인 swap |
-| GET | `/api/admin/training/synthetic-summary` | **(신규)** 합성 코퍼스 통계 + 지식그래프 데이터 |
-| POST | `/api/admin/training/sessions/{id}/compare` | **(신규)** 스모크셋으로 zero-shot ↔ 체크포인트 분류 대조 |
-| POST | `/api/admin/training/compare-analysis` | **(신규)** 임의 입력을 원본·학습 모델 양쪽으로 분석·비교 |
-
-**학습 시스템 (2026-06-01 보강):**
-- **데이터 3소스** — 사람 라벨링(`human_annotations`) + 외부 JSONL(`--extra-jsonl`) + 합성 데이터
-  (`scripts/generate_synthetic_training_data.py`, 12 scam_type × 5 템플릿, 엔티티 span·risk_flags·RAG 뷰 자동 생성).
-- **세션 관리** (`training/sessions.py`) — `.scamguardian/training_sessions/{id}/{status.json, metrics.jsonl, train.log}`
-  파일 기반. `_refresh_status()` 가 산출물·최근활동 감지로 **"가짜 실패" 보정** → completed 승격.
-- **LoRA/PEFT 어댑터** 자동 로딩(`classifier.py:_load_finetuned_model`), early stopping(`eval_macro_f1`), fp16/bf16.
-- **비교 분석 UI** — zero-shot vs fine-tuned 예측 대조 + 합성 데이터 지식그래프 시각화(`TrainingClient.tsx`).
 
 ### 5.5 어드민 — 플랫폼 (API key / 비용 / 어뷰즈)
 

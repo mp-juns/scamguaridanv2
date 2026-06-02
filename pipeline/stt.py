@@ -17,7 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 _YOUTUBE_PATTERN = re.compile(
     r"https?://(www\.)?(youtube\.com|youtu\.be)/"
@@ -401,29 +401,176 @@ def _transcribe_with_claude(
     return {"text": text, "language": "ko", "segments": []}
 
 
-def _clova_to_turns(segments: list[dict]) -> list[dict]:
-    """CLOVA Speech segments (speaker_label 포함) → 상대방/본인 turn 리스트.
-
-    휴리스틱: 발화 시간 총합 더 긴 화자 = 상대방 (사기범의 긴 모놀로그), 짧은 = 본인 (피해자).
-    각 turn 에 start_sec / end_sec 도 함께 — frontend 에서 원본 오디오 segment 재생용.
-    """
-    if not segments:
-        return []
-    speaker_durations: dict[str, float] = {}
+def _label_durations(segments: list[dict]) -> dict[str, float]:
+    """speaker_label → 발화 시간 총합(초)."""
+    durations: dict[str, float] = {}
     for seg in segments:
         label = str(seg.get("speaker_label", "")).strip()
         if not label:
             continue
-        duration = float(seg.get("end", 0.0) - seg.get("start", 0.0))
-        speaker_durations[label] = speaker_durations.get(label, 0.0) + duration
-    if not speaker_durations:
+        durations[label] = durations.get(label, 0.0) + float(
+            seg.get("end", 0.0) - seg.get("start", 0.0)
+        )
+    return durations
+
+
+def _label_texts(segments: list[dict]) -> dict[str, list[str]]:
+    """speaker_label → 발화 텍스트 목록 (시간순)."""
+    texts: dict[str, list[str]] = {}
+    for seg in segments:
+        label = str(seg.get("speaker_label", "")).strip()
+        text = (seg.get("text", "") or "").strip()
+        if not label or not text:
+            continue
+        texts.setdefault(label, []).append(text)
+    return texts
+
+
+def _duration_role_map(durations: dict[str, float]) -> dict[str, str]:
+    """fallback 휴리스틱: 발화 시간 총합 가장 긴 화자 = 상대방, 나머지 = 본인."""
+    if not durations:
+        return {}
+    longest = max(durations, key=lambda k: durations[k])
+    return {label: ("상대방" if label == longest else "본인") for label in durations}
+
+
+_CLOVA_ROLE_SYSTEM_PROMPT = (
+    "당신은 한국어 통화 녹취의 두 화자에게 역할을 배정합니다. 각 화자의 발화 모음을 보고 "
+    "누가 '전화를 건 사람(상대방)' 이고 누가 '전화를 받은 사람(본인)' 인지 판정하세요.\n\n"
+    "- 상대방(전화 건 사람): 권위적·길게 정보 제공·명령조·기관(검찰/경찰/금감원/은행) 사칭·"
+    "반복 지시·먼저 용건을 꺼냄\n"
+    "- 본인(전화 받은 사람): 짧게 되묻기·의심·순응. 예: '네', '뭔데요?', '…말씀이신가요?', "
+    "'아 네 알겠습니다'\n\n"
+    "발화량(초)은 보조 단서입니다 — 보통 상대방이 더 길게 말하지만 본인이 더 많이 말하는 "
+    "경우도 있으니 **내용을 우선**하세요.\n\n"
+    "반드시 JSON 객체 하나만 출력하세요. 키는 화자 번호만(예: \"1\", \"2\"), 값은 역할:\n"
+    '{"1": "상대방", "2": "본인"}\n'
+    "설명·코드블록 없이 JSON 만 출력."
+)
+
+_ROLE_TEXT_CAP = 2000  # 화자별 발화 prompt 길이 상한 (토큰 bound)
+
+
+def _parse_role_map(raw: str, expected_labels: set[str]) -> dict[str, str] | None:
+    """LLM 응답에서 {label: role} 객체 파싱 + 검증.
+
+    유효 조건: expected_labels 전부 포함 + 역할 값이 정확히 {상대방, 본인} 1:1.
+    하나라도 어긋나면 None (→ 호출부에서 duration fallback).
+    """
+    import json as _json
+
+    text = re.sub(r"```(?:json)?\s*", "", raw or "").strip().rstrip("`").strip()
+    data: Any = None
+    try:
+        data = _json.loads(text)
+    except Exception:
+        m = re.search(r"\{[\s\S]*\}", text)
+        if m:
+            try:
+                data = _json.loads(m.group(0))
+            except Exception:
+                data = None
+    if not isinstance(data, dict):
+        return None
+
+    def _norm_key(k: Any) -> str:
+        # "화자 1" / "speaker 1" / "1" 모두 "1" 로 정규화
+        s = re.sub(r"^\s*(화자|speaker)\s*", "", str(k).strip(), flags=re.IGNORECASE)
+        return s.strip()
+
+    mapping = {_norm_key(k): str(v).strip() for k, v in data.items()}
+    if set(mapping.keys()) != expected_labels:
+        return None
+    roles = list(mapping.values())
+    if sorted(roles) != ["본인", "상대방"]:  # 정확히 한 명씩
+        return None
+    return mapping
+
+
+def _assign_clova_roles(segments: list[dict]) -> dict[str, str]:
+    """CLOVA speaker_label → 상대방/본인 매핑.
+
+    1차: 내용 기반 LLM(Haiku) — 권위·명령·정보제공 화자=상대방, 순응·되묻기=본인.
+    CLOVA 의 segment 분리·텍스트는 그대로 두고 *역할 딱지만* 결정 (텍스트 생성 X → 환각 없음).
+    실패·비활성·화자 수 != 2 시 duration 휴리스틱 fallback.
+    `CLOVA_ROLE_ASSIGN=duration` 으로 LLM 끄기 가능.
+    """
+    durations = _label_durations(segments)
+    if len(durations) <= 1:
+        return {label: "상대방" for label in durations}  # 단일 화자 / 모놀로그
+
+    fallback = _duration_role_map(durations)
+    mode = os.getenv("CLOVA_ROLE_ASSIGN", "llm").strip().lower()
+    if mode != "llm" or len(durations) != 2:
+        return fallback
+
+    clova_log = _get_clova_logger()
+    texts = _label_texts(segments)
+    labels = sorted(durations.keys())
+    user_parts: list[str] = []
+    for label in labels:
+        joined = " ".join(texts.get(label, []))[:_ROLE_TEXT_CAP]
+        user_parts.append(f"화자 {label} (발화량 {durations[label]:.0f}초):\n{joined}")
+    user_content = "\n\n".join(user_parts) + "\n\n위 두 화자의 역할을 JSON 으로:"
+
+    try:
+        from pipeline import diarize as _diarize
+        client = _diarize._get_client()
+        model = _diarize._model_name(None)  # Haiku 기본
+        t0 = time.time()
+        message = client.messages.create(
+            model=model,
+            max_tokens=80,
+            system=_CLOVA_ROLE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        elapsed = time.time() - t0
+        raw = message.content[0].text if message.content else ""
+        try:
+            from platform_layer import cost as _cost
+            _cost.record_claude(
+                model,
+                int(getattr(message.usage, "input_tokens", 0) or 0),
+                int(getattr(message.usage, "output_tokens", 0) or 0),
+                action="diarize.role_assign",
+            )
+        except Exception:
+            pass
+        role_map = _parse_role_map(raw, set(labels))
+        if role_map is None:
+            clova_log.info(
+                "  역할배정: LLM 응답 무효 → duration fallback %s (raw=%r, %.2fs)",
+                fallback, (raw or "")[:80], elapsed,
+            )
+            return fallback
+        agree = role_map == fallback
+        clova_log.info(
+            "  역할배정: LLM %s (duration 휴리스틱 %s, %s, %.2fs)",
+            role_map, "일치" if agree else "불일치→LLM 채택", fallback, elapsed,
+        )
+        return role_map
+    except Exception as exc:
+        clova_log.info("  역할배정: LLM 실패 → duration fallback %s (%s)", fallback, exc)
+        return fallback
+
+
+def _clova_to_turns(segments: list[dict]) -> list[dict]:
+    """CLOVA Speech segments (speaker_label 포함) → 상대방/본인 turn 리스트.
+
+    역할 배정: 내용 기반 LLM(`_assign_clova_roles`, 권위/순응 단서) — 실패 시 발화 시간
+    총합 휴리스틱 fallback. 각 turn 에 start_sec / end_sec 도 함께 — frontend 재생용.
+    """
+    if not segments:
+        return []
+    role_map = _assign_clova_roles(segments)
+    if not role_map:
+        # speaker_label 자체가 없음 → 단일 상대방 turn
         joined = " ".join((s.get("text", "") or "").strip() for s in segments).strip()
         if not joined:
             return []
         first_start = float(segments[0].get("start", 0.0)) if segments else 0.0
         last_end = float(segments[-1].get("end", 0.0)) if segments else 0.0
         return [{"speaker": "상대방", "text": joined, "start_sec": first_start, "end_sec": last_end}]
-    longest_label = max(speaker_durations, key=lambda k: speaker_durations[k])
     turns: list[dict] = []
     current_speaker: str | None = None
     current_parts: list[str] = []
@@ -434,7 +581,7 @@ def _clova_to_turns(segments: list[dict]) -> list[dict]:
         text = (seg.get("text", "") or "").strip()
         if not text:
             continue
-        speaker = "상대방" if label == longest_label else "본인"
+        speaker = role_map.get(label, "상대방")
         seg_start = float(seg.get("start", 0.0))
         seg_end = float(seg.get("end", 0.0))
         if speaker == current_speaker:
@@ -715,6 +862,7 @@ def transcribe(
                 logger(f"[STT] 오디오 파일 준비 완료: {audio_path}")
             _ensure_audio_nonempty(audio_path)
             result = _do_stt(audio_path, logger=logger)
+        result = _maybe_correct(result, logger=logger)
         return TranscriptResult(
             text=result["text"],
             language=result.get("language", "ko"),
@@ -726,6 +874,7 @@ def transcribe(
     # 로컬 파일
     _ensure_audio_nonempty(source)
     result = _do_stt(source, logger=logger)
+    result = _maybe_correct(result, logger=logger)
     return TranscriptResult(
         text=result["text"],
         language=result.get("language", "ko"),
@@ -733,3 +882,26 @@ def transcribe(
         turns=result.get("turns"),
         source_type="file",
     )
+
+
+def _maybe_correct(result: dict, logger: Callable[[str], None] | None = None) -> dict:
+    """STT_CORRECT=1 이고 turns 가 있으면 LLM 후처리 교정 적용 (text 도 재구성).
+
+    실패·비활성 시 result 그대로 — 회귀 없음. turns 없는 backend(Whisper 등)는 skip.
+    """
+    try:
+        from pipeline import stt_correct
+        if not stt_correct.enabled():
+            return result
+        turns = result.get("turns")
+        if not turns:
+            return result
+        corrected = stt_correct.correct_turns(turns)
+        result["turns"] = corrected
+        result["text"] = stt_correct.corrected_full_text(corrected)
+        if logger:
+            logger("[STT] LLM 후처리 교정 적용")
+    except Exception as exc:
+        if logger:
+            logger(f"[STT] 교정 skip: {exc}")
+    return result

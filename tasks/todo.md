@@ -3,16 +3,42 @@
 목적: 현재 프로젝트 전체 변경분을 GitHub 에 먼저 올려 안전 지점을 만들고, 상위 폴더의
 `scamguardian-v2-kyy` 내용물만 현재 프로젝트에 병합 복사한 뒤 전체 프로젝트 규모와 구조를 다시 분석한다.
 
-- [ ] 현재 저장소/원격/상위 KYY 폴더 상태 확인
-- [ ] 현재 변경분을 커밋하고 원격 브랜치에 푸시
-- [ ] `../scamguardian-v2-kyy/` 내용물만 현재 프로젝트 루트로 병합 복사
-- [ ] 병합 후 Git diff/주요 충돌/위험 파일 확인
-- [ ] 전체 프로젝트 구조·규모·핵심 모듈 분석 기록
-- [ ] 검증 결과와 Review 기록
+- [x] 현재 저장소/원격/상위 KYY 폴더 상태 확인
+- [x] 현재 변경분을 커밋하고 원격 브랜치에 푸시
+- [x] `../scamguardian-v2-kyy/` 내용물만 현재 프로젝트 루트로 병합 복사
+- [x] 병합 후 Git diff/주요 충돌/위험 파일 확인
+- [x] 전체 프로젝트 구조·규모·핵심 모듈 분석 기록
+- [x] 검증 결과와 Review 기록
 
 ## Review
 
-진행 중.
+**수행**:
+- KYY 병합 전 현재 변경분을 커밋하고 GitHub 에 푸시했다.
+  - commit: `8eb2d5d` (`Checkpoint training compare and model management`)
+  - branch: `feat/training-compare-synthetic`
+- Beestation 동기화 폴더를 확인했다.
+  - 경로: `/mnt/c/Users/kimju/BeeStation`
+  - 핵심 데이터 백업:
+    `/mnt/c/Users/kimju/BeeStation/A-EYE/ScamGuardianBackups/pre-kyy-20260602_223128/scamguardian-critical-data-with-env.tgz`
+- `../scamguardian-v2-kyy/` 의 내용물만 현재 프로젝트 루트에 병합 복사했다.
+  - `.git/`, `.agents/`, `.codex/`, `apps/web/.next/`, `apps/web/node_modules/`, cache류는 제외했다.
+  - 삭제 옵션 없이 rsync 병합했다.
+- KYY 병합 후 오래된 학습 파일이 최신 fine-tuning/model compare 기능을 덮어쓴 것을 확인하고,
+  백업 커밋 기준으로 학습/모델관리 핵심 파일을 되살려 병합했다.
+- WSL/Beestation 백업 스크립트를 추가했다.
+  - `scripts/backup_project_data_to_beestation.sh`
+  - `scripts/backup_wsl_export_to_beestation.ps1`
+- `codex.md` 에 KYY 병합 후 전체 프로젝트 분석, 위험 영역, 백업 전략을 기록했다.
+
+**검증**:
+- `python -m py_compile api_server.py api_server_pkg/*.py pipeline/*.py training/*.py platform_layer/*.py db/*.py`
+- `cd apps/web && npx tsc --noEmit`
+- `cd apps/web && npm run lint`
+- 충돌 마커 검색: `rg -n "<<<<<<<|=======|>>>>>>>" ...`
+
+**주의**:
+- `.scamguardian/training_sessions` 는 6GB 이상이며 Git 관리 대상이 아니다.
+- `wsl --export` 기반 WSL 백업은 WSL 내부가 아니라 Windows PowerShell 에서 실행해야 한다.
 
 ---
 

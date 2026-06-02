@@ -218,6 +218,77 @@ cd apps/web && npm run build
 - schema나 identity 경계를 건드리면 관련 pytest를 반드시 실행한다.
 - frontend를 건드리면 lint/build를 우선한다. dev server는 `next dev --webpack` 전제를 기억한다.
 
+## 11. 2026-06-02 KYY 병합 후 재분석
+
+오늘 기준 프로젝트는 세 팀원 작업본 + 현재 fine-tuning/RAG/라이브 분석 작업이 합쳐진 큰 단일 저장소다.
+소스 파일만 보아도 약 1,200개 이상이며, 런타임 산출물까지 포함하면 프로젝트 루트는 약 8.6GB다.
+용량의 대부분은 `.scamguardian/training_sessions`의 학습 체크포인트와 로그다.
+
+현재 큰 축:
+
+- **Signal Detection API**: `api_server_pkg/analyze.py`, `pipeline/runner.py`, `pipeline/signal_detector.py`
+- **Kakao/chatbot**: `api_server_pkg/kakao/*`, `pipeline/context_chat.py`, `pipeline/kakao_formatter.py`
+- **Live/stream analysis**: `api_server_pkg/stream_analyze.py`, `api_server_pkg/live_stream.py`, `apps/web/src/app/live/LiveVoiceUpload.tsx`
+- **STT 보정**: `pipeline/stt.py`, `pipeline/stt_correct.py`
+- **Fine-tuning/model ops**: `api_server_pkg/admin_training.py`, `training/*`, `apps/web/src/app/admin/training/*`
+- **Platform/admin**: `platform_layer/*`, `api_server_pkg/admin_platform.py`, `apps/web/src/app/admin/platform/*`
+- **Data/RAG**: `data/generated/*`, `data/generated/rag_index/*`, `pipeline/rag.py`
+- **Sandbox/APK**: `pipeline/sandbox.py`, `sandbox_server/*`, `pipeline/apk_analyzer.py`
+
+KYY 병합에서 새로 강하게 들어온 기능:
+
+- `api_server_pkg/live_stream.py`
+- `apps/web/src/app/api/live-analyze/*`
+- `pipeline/stt_correct.py`
+- `tests/test_clova_roles.py`
+- `tests/test_stream_alert_tier.py`
+- `tests/test_stream_window.py`
+- `tests/test_stt_correct.py`
+
+병합 중 보존해야 했던 최근 기능:
+
+- `/admin/training/compare`: raw/Claude/fine-tuned 비교, classifier/GLiNER 세션 선택
+- `/admin/training/models`: 완료된 모델 세션 관리 + active model 적용
+- GLiNER 학습 CUDA 강제, 메모리 절감, `max_steps`, `max_tokens`, bf16 처리
+- classifier+GLiNER 선택 시 병렬이 아니라 GLiNER 후 cooldown 후 classifier 순차 학습
+
+현재 구조상 가장 큰 위험:
+
+- `api_server_pkg/admin_training.py`와 `training/sessions.py`는 기능이 계속 모이는 hotspot이다.
+  학습 시작, 세션 상태, 모델 활성화, 비교 분석 API가 한곳에 있어서 작은 덮어쓰기에도 UI가 바로 깨진다.
+- `apps/web/src/app/live/LiveVoiceUpload.tsx`는 단일 컴포넌트가 매우 커졌다.
+  추후에는 upload/session panel, transcript timeline, alert badges, debug panel로 쪼개는 것이 좋다.
+- `.scamguardian/training_sessions`는 6GB 이상이다. Git 대상이 아니라 운영 데이터/모델 artifact로 취급해야 한다.
+- `.env`는 Git에 올리면 안 되지만, 복구 관점에서는 NAS 백업에 포함해야 한다. 백업 위치 접근권한을 조심한다.
+
+백업 지점:
+
+- KYY 병합 전 GitHub 커밋: `8eb2d5d` (`feat/training-compare-synthetic`)
+- Beestation 핵심 데이터 백업:
+  `/mnt/c/Users/kimju/BeeStation/A-EYE/ScamGuardianBackups/pre-kyy-20260602_223128/scamguardian-critical-data-with-env.tgz`
+
+백업 스크립트:
+
+- `scripts/backup_project_data_to_beestation.sh`
+  - `.env`, SQLite DB, active model pointer, generated data, RAG index, labeling drafts, task notes를 tar로 묶는다.
+  - `FULL_TRAINING=1`을 주면 `.scamguardian/training_sessions`까지 별도 아카이브로 묶는다.
+- `scripts/backup_wsl_export_to_beestation.ps1`
+  - Windows PowerShell에서 실행한다.
+  - 실행 중인 `ext4.vhdx`를 직접 복사하지 않고 `wsl --export Ubuntu ...tar`로 복구 가능한 WSL 스냅샷을 만든다.
+
+검증된 상태:
+
+- `python -m py_compile api_server.py api_server_pkg/*.py pipeline/*.py training/*.py platform_layer/*.py db/*.py`
+- `cd apps/web && npx tsc --noEmit`
+- `cd apps/web && npm run lint`
+
+다음 정리 추천:
+
+- `.gitignore`를 재점검해 `.scamguardian/*.bak*`, `data/generated/`, `.next/`, cache류가 우발적으로 stage 되지 않게 한다.
+- Live UI 대형 컴포넌트 분리.
+- `admin_training.py`를 `training_stats`, `training_sessions`, `training_compare`, `training_synthetic_graph` 등으로 나누기.
+- 모델 artifact는 Git이 아니라 Beestation/별도 artifact registry에 보관하고, Git에는 manifest만 남기기.
+
 ## 11. 알려진 함정과 교훈
 
 `tasks/lessons.md`에서 특히 중요한 항목:

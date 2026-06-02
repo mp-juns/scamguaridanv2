@@ -67,7 +67,64 @@ type StreamMatch = {
   label_ko: string;
   level: number;
   snippet: string;
+  instant?: boolean; // 돌이킬 수 없는 결정적 신호 (민감정보·송금동의)
+  action?: string; // 안전 행동 안내
+  speaker?: string | null; // "본인"(피해자) / "상대방"(사기범) / null — 화자별 심각도
 };
+
+// 화자 태그 — 같은 신호라도 누가 말했나로 의미가 다름 (본인 발설 = 결정적).
+function speakerTag(speaker?: string | null): string {
+  if (speaker === "본인") return "🙋 본인";
+  if (speaker === "상대방") return "🗣️ 상대방";
+  return "";
+}
+
+// 라이브 슬라이딩 윈도우용 — 누적 match 를 (flag,snippet,speaker) 로 dedup 병합.
+// 같은 발화가 겹치는 윈도우에 중복 등장하는 것 + 동일 flag 반복 부풀림을 함께 방지.
+function dedupMergeMatches(
+  prev: StreamMatch[],
+  incoming: StreamMatch[],
+): StreamMatch[] {
+  const key = (m: StreamMatch) => `${m.flag}|${m.snippet}|${m.speaker ?? ""}`;
+  const seen = new Set(prev.map(key));
+  const fresh = incoming.filter((m) => !seen.has(key(m)));
+  return fresh.length ? [...prev, ...fresh] : prev;
+}
+
+// 누적 dedup match → tier (백엔드 _compute_tier 와 동일 임계). 윈도우 분할로 backend tier
+// 가 윈도우 한정이 되므로, 누적 tier 는 프론트가 전체 match 로 계산한다.
+const TIER_CAUTION_SCORE = 3;
+const TIER_DANGER_SCORE = 6;
+function computeTierFromMatches(matches: StreamMatch[]): number {
+  if (matches.some((m) => m.instant)) return 3; // 본인 발설·송금동의 = 즉시 danger
+  const cum = matches
+    .filter((m) => !m.instant)
+    .reduce((s, m) => s + m.level, 0);
+  if (cum >= TIER_DANGER_SCORE) return 3;
+  if (cum >= TIER_CAUTION_SCORE) return 2;
+  return matches.length ? 1 : 0;
+}
+
+// 🔔 OS 시스템 알림 (크롬 등) — 탭을 안 보고 있을 때 화면 위로 경보. 서버·PII 불필요.
+// danger 진입 시 1회. 일부 모바일 브라우저는 SW 없이 생성자를 막으므로 try/catch.
+function fireDangerNotification(matches: StreamMatch[]) {
+  if (typeof window === "undefined" || !("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  try {
+    const action = pickAlertAction(matches)?.action ?? "지금 통화를 끊으세요.";
+    const noti = new Notification("🚨 위험 신호 감지", {
+      body: action,
+      tag: "scam-danger", // 같은 tag → 중복 알림 안 쌓임
+      requireInteraction: true, // 사용자가 닫을 때까지 유지
+    });
+    noti.onclick = () => {
+      window.focus(); // 클릭하면 우리 탭으로 → 풀스크린 경보 노출
+      noti.close();
+    };
+  } catch {
+    /* SW 필요 브라우저 등 — 무시 (풀스크린 경보는 그대로 동작) */
+  }
+}
 
 type StreamChunk = {
   chunk_index: number;
@@ -77,10 +134,12 @@ type StreamChunk = {
   turns?: Turn[];
   alert_level: number;
   matches: StreamMatch[];
+  tier?: number; // 0 watch / 1 / 2 caution / 3 danger (단조 증가)
+  tier_changed?: boolean; // 이 window 에서 tier 가 올라갔는가
   latency_ms: number;
 };
 
-type Mode = "single" | "stream";
+type Mode = "single" | "stream" | "live";
 
 function fmtTime(sec: number) {
   const m = Math.floor(sec / 60);
@@ -150,9 +209,42 @@ export default function LiveVoiceUpload() {
   const [selectedChunkIndex, setSelectedChunkIndex] = useState<number | null>(null); // null = latest follow
   const [streamTotal, setStreamTotal] = useState(0);
   const [streamError, setStreamError] = useState("");
-  const [cumulativeAlert, setCumulativeAlert] = useState(0);
   const [cumulativeMatches, setCumulativeMatches] = useState<StreamMatch[]>([]);
+  // 계층적 알림 — tier 는 단조 증가, danger 풀스크린은 확인 누르면 dismiss
+  const [tier, setTier] = useState(0);
+  const [dangerDismissed, setDangerDismissed] = useState(false);
   const streamAbortRef = useRef<AbortController | null>(null);
+  // 🎤 실시간 마이크 모드 (스피커폰 양쪽 — 누적 오디오 주기적 통째 재분석)
+  const [liveActive, setLiveActive] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [liveTurns, setLiveTurns] = useState<Turn[]>([]); // 화자분리 말풍선
+  const [liveAudioUrl, setLiveAudioUrl] = useState<string | null>(null); // 중지 후 재생용 blob URL
+  const [liveLatency, setLiveLatency] = useState(0);
+  const [liveError, setLiveError] = useState("");
+  const [liveFinalizing, setLiveFinalizing] = useState(false); // 중지 후 full 분석 대기
+  const liveMatchesRef = useRef<StreamMatch[]>([]); // 누적 dedup match 소스 (tier 계산용)
+  const notifiedDangerRef = useRef(false); // danger OS 알림 1회 발사 가드
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const LIVE_WINDOW_SEC = 45; // 실시간 tick 윈도우 (지배 비용 bound)
+  const liveStreamRef = useRef<MediaStream | null>(null);
+  const liveChunksRef = useRef<Blob[]>([]);
+  const liveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function stopLiveCapture() {
+    if (liveTimerRef.current) {
+      clearInterval(liveTimerRef.current);
+      liveTimerRef.current = null;
+    }
+    try {
+      mediaRecorderRef.current?.stop();
+    } catch {
+      /* already stopped */
+    }
+    liveStreamRef.current?.getTracks().forEach((t) => t.stop());
+    mediaRecorderRef.current = null;
+    liveStreamRef.current = null;
+    liveChunksRef.current = [];
+  }
 
   function reset() {
     setTranscriptPhase("idle");
@@ -166,10 +258,24 @@ export default function LiveVoiceUpload() {
     setSelectedChunkIndex(null);
     setStreamTotal(0);
     setStreamError("");
-    setCumulativeAlert(0);
     setCumulativeMatches([]);
+    setTier(0);
+    setDangerDismissed(false);
     streamAbortRef.current?.abort();
     streamAbortRef.current = null;
+    stopLiveCapture();
+    setLiveActive(false);
+    setLiveTranscript("");
+    setLiveTurns([]);
+    setLiveAudioUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setLiveLatency(0);
+    setLiveError("");
+    setLiveFinalizing(false);
+    liveMatchesRef.current = [];
+    notifiedDangerRef.current = false;
   }
 
   async function postFile<T>(endpoint: string, payload: File): Promise<T> {
@@ -295,7 +401,12 @@ export default function LiveVoiceUpload() {
       // history 에 append — 사용자가 이전 청크 다시 볼 수 있도록 보존.
       // 메인 패널은 selectedChunkIndex 가 null 이면 자동으로 최신 follow.
       setStreamHistory((prev) => [...prev, chunk]);
-      setCumulativeAlert((prev) => Math.max(prev, chunk.alert_level));
+      // 계층적 알림 — tier 단조 증가. danger 로 새로 올라가면 풀스크린 재노출.
+      const chunkTier = chunk.tier ?? 0;
+      setTier((prev) => Math.max(prev, chunkTier));
+      if (chunk.tier_changed && chunkTier >= 3) {
+        setDangerDismissed(false);
+      }
       if (chunk.matches.length > 0) {
         // 누적 — 같은 (flag, snippet) 조합은 한 번만
         setCumulativeMatches((prev) => {
@@ -307,12 +418,145 @@ export default function LiveVoiceUpload() {
         });
       }
     } else if (event.type === "done") {
-      const lvl = (event.cumulative_alert_level as number) ?? 0;
-      setCumulativeAlert((prev) => Math.max(prev, lvl));
+      setTier((prev) => Math.max(prev, (event.tier as number) ?? 0));
     } else if (event.type === "error") {
       setStreamError((event.message as string) ?? "스트리밍 서버 오류");
       setStreamPhase("error");
     }
+  }
+
+  // ── 🎤 실시간 마이크 (스피커폰 양쪽) ──
+  async function sendLiveCumulative(
+    mimeType: string,
+    windowSec: number,
+    isFinal: boolean,
+  ) {
+    const chunks = liveChunksRef.current;
+    if (!chunks.length) return;
+    const type = mimeType || "audio/webm";
+    const blob = new Blob(chunks, { type });
+    const ext = type.includes("ogg") ? "ogg" : type.includes("mp4") ? "mp4" : "webm";
+    const fd = new FormData();
+    fd.set("file", blob, `cumulative.${ext}`);
+    fd.set("window_sec", String(windowSec)); // 0 = full (중지 시), >0 = 최근 N초만 STT
+    try {
+      const resp = await fetch("/api/live-analyze", { method: "POST", body: fd });
+      if (!resp.ok) return;
+      const j = (await resp.json()) as {
+        transcript_text?: string;
+        turns?: Turn[];
+        matches?: StreamMatch[];
+        latency_ms?: number;
+      };
+      const incoming = Array.isArray(j.matches) ? j.matches : [];
+      setLiveLatency(j.latency_ms ?? 0);
+
+      if (isFinal) {
+        // 중지 시 full 분석 — 완전한 전사/화자분리(타임스탬프가 full 오디오와 정합).
+        liveMatchesRef.current = incoming; // 전체 집합 authoritative
+        setCumulativeMatches(incoming);
+        setLiveTranscript(j.transcript_text ?? "");
+        setLiveTurns(Array.isArray(j.turns) ? j.turns : []);
+        setLiveFinalizing(false);
+      } else {
+        // 윈도우 tick — match 누적(dedup), tier 는 누적분으로 계산(단조).
+        const merged = dedupMergeMatches(liveMatchesRef.current, incoming);
+        liveMatchesRef.current = merged;
+        setCumulativeMatches(merged);
+        setLiveTranscript(j.transcript_text ?? ""); // 최근 윈도우 전사 미리보기
+        setLiveTurns(Array.isArray(j.turns) ? j.turns : []);
+      }
+      const newTier = computeTierFromMatches(liveMatchesRef.current);
+      // danger 진입 시 OS 알림 1회 (탭 안 볼 때 화면 위로 경보)
+      if (newTier >= 3 && !notifiedDangerRef.current) {
+        notifiedDangerRef.current = true;
+        fireDangerNotification(liveMatchesRef.current);
+      }
+      setTier((prev) => Math.max(prev, newTier));
+      if (newTier >= 3) setDangerDismissed(false);
+    } catch {
+      /* 일시적 네트워크 오류 무시 — 다음 tick 에 재시도 */
+    }
+  }
+
+  async function startLive() {
+    reset();
+    setLiveError("");
+    // 🔔 크롬 알림 권한 요청 — 시작 버튼 제스처 안에서. 탭 안 볼 때 OS 토스트로 경보.
+    try {
+      if ("Notification" in window && Notification.permission === "default") {
+        void Notification.requestPermission();
+      }
+    } catch {
+      /* 미지원 브라우저 무시 */
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setLiveError("이 브라우저는 마이크 캡처를 지원하지 않습니다.");
+      return;
+    }
+    try {
+      // ⚠️ STT 정확도 핵심: 브라우저 음성 가공을 모두 끈다.
+      //  - autoGainControl: AGC 펌핑이 단어 오인식 유발 (업로드 모드에서 dynaudnorm 뺀 것과 동일 이유)
+      //  - noiseSuppression: STT 가 필요로 하는 음성 디테일까지 깎음
+      //  - echoCancellation: 스피커폰에서 *상대방 목소리를 에코로 착각해 지움* → 양쪽 캡처 불가
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1,
+        },
+      });
+      liveStreamRef.current = stream;
+      // Opus 압축 손실 줄이려 비트레이트 ↑ (미지원 브라우저는 기본값 fallback)
+      let mr: MediaRecorder;
+      try {
+        mr = new MediaRecorder(stream, { audioBitsPerSecond: 128000 });
+      } catch {
+        mr = new MediaRecorder(stream);
+      }
+      mediaRecorderRef.current = mr;
+      liveChunksRef.current = [];
+      mr.ondataavailable = (e) => {
+        if (e.data.size > 0) liveChunksRef.current.push(e.data);
+      };
+      mr.start(1000); // 1초마다 누적 chunk 확보
+      setLiveActive(true);
+      const mime = mr.mimeType;
+      // ~7초마다 전송 — 백엔드가 최근 LIVE_WINDOW_SEC 초만 STT (비용·지연 bound)
+      liveTimerRef.current = setInterval(() => {
+        void sendLiveCumulative(mime, LIVE_WINDOW_SEC, false);
+      }, 7000);
+    } catch (err) {
+      setLiveError(
+        err instanceof Error
+          ? `마이크 권한이 필요합니다 (${err.message})`
+          : "마이크 권한이 필요합니다.",
+      );
+      stopLiveCapture();
+      setLiveActive(false);
+    }
+  }
+
+  function stopLive() {
+    const mr = mediaRecorderRef.current;
+    const mime = mr?.mimeType ?? "audio/webm";
+    // 중지 = full 분석 1회 (window_sec=0) → 전체 전사·화자분리(타임스탬프 full 오디오 정합).
+    // 윈도우 turn 은 타임스탬프가 윈도우 기준이라, full 분석 올 때까지 말풍선 숨김(finalizing).
+    setLiveFinalizing(true);
+    setLiveTurns([]);
+    void sendLiveCumulative(mime, 0, true);
+    // 캡처한 누적 오디오로 재생용 blob URL 생성 (cleanup 이 chunks 를 비우기 전에).
+    const chunks = liveChunksRef.current;
+    if (chunks.length) {
+      const url = URL.createObjectURL(new Blob(chunks, { type: mime }));
+      setLiveAudioUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+    }
+    stopLiveCapture();
+    setLiveActive(false);
   }
 
   const submitting =
@@ -350,6 +594,7 @@ export default function LiveVoiceUpload() {
           [
             { v: "single" as Mode, label: "🔍 전체 분석" },
             { v: "stream" as Mode, label: "🔴 1분씩 스트리밍 + 화면 경고" },
+            { v: "live" as Mode, label: "🎤 실시간 마이크" },
           ] as const
         ).map((opt) => (
           <button
@@ -371,6 +616,7 @@ export default function LiveVoiceUpload() {
         ))}
       </div>
 
+      {mode !== "live" && (
       <form onSubmit={handleSubmit} className="mt-5 space-y-4">
         <label className="flex flex-col gap-2 text-sm text-slate-200">
           <span className="font-medium text-rose-100">
@@ -401,6 +647,130 @@ export default function LiveVoiceUpload() {
           {submitting ? "처리 중..." : "🚨 전사 + 신호 검출 시작"}
         </button>
       </form>
+      )}
+
+      {/* === 🎤 실시간 마이크 모드 === */}
+      {mode === "live" && (
+        <section className="mt-5 rounded-2xl border border-rose-400/20 bg-slate-950/60 p-5">
+          {tier >= 3 && !dangerDismissed && (
+            <DangerOverlay
+              matches={cumulativeMatches}
+              onDismiss={() => setDangerDismissed(true)}
+            />
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-base font-semibold text-white">
+              🎤 실시간 마이크 분석 {liveActive && <span className="animate-pulse text-rose-400">● REC</span>}
+            </h3>
+            {liveLatency > 0 && (
+              <span className="text-[10px] text-slate-400">분석 {liveLatency}ms</span>
+            )}
+          </div>
+          <p className="mt-2 text-xs leading-5 text-slate-400">
+            통화를 <strong>스피커폰</strong>으로 두고 시작하세요. ~7초마다 최근 음성을 분석해
+            화자별 위험 신호를 표시하고, 결정적 신호(본인 민감정보 발설·송금 동의) 시 🔴 경보합니다.
+            시작 시 <strong>알림 권한</strong>을 허용하면, 다른 화면을 보고 있어도 🔔 OS 알림으로 경보가 떠요.
+          </p>
+
+          {liveError && (
+            <div className="mt-3 rounded-xl border border-rose-400/50 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+              {liveError}
+            </div>
+          )}
+
+          <div className="mt-4 flex items-center gap-3">
+            {!liveActive ? (
+              <button
+                type="button"
+                onClick={() => void startLive()}
+                className="rounded-2xl bg-rose-500/80 px-5 py-2.5 text-sm font-semibold text-white shadow-lg transition hover:bg-rose-500"
+              >
+                🎤 실시간 분석 시작
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={stopLive}
+                className="rounded-2xl border border-rose-400/50 bg-slate-900/60 px-5 py-2.5 text-sm font-semibold text-rose-100 transition hover:bg-slate-800/60"
+              >
+                ⏹ 중지
+              </button>
+            )}
+          </div>
+
+          {/* 🔴 dismiss 후 잔류 빨간 바 */}
+          {tier >= 3 && (
+            <button
+              type="button"
+              onClick={() => setDangerDismissed(false)}
+              className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-rose-400/60 bg-rose-600/25 px-5 py-4 text-left text-rose-50 hover:bg-rose-600/35"
+            >
+              <span className="text-2xl leading-none">🚨</span>
+              <span>
+                <span className="block text-base font-bold">위험 신호 감지됨 — 통화를 끊으세요</span>
+                <span className="mt-0.5 block text-xs opacity-90">전체 경보 다시 보기</span>
+              </span>
+            </button>
+          )}
+          {tier === 2 && <CautionBanner matches={cumulativeMatches} />}
+
+          {/* 화자 분리 대화 (말풍선) — 중지 후 클릭하면 해당 음성 재생 */}
+          {liveFinalizing ? (
+            <div className="mt-4 rounded-xl border border-dashed border-white/15 bg-slate-950/40 px-4 py-6 text-center text-sm text-slate-400">
+              ⏳ 전체 통화 분석 마무리 중… (완료되면 말풍선 클릭으로 음성 재생 가능)
+            </div>
+          ) : liveTurns.length > 0 ? (
+            <div className="mt-4 rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3">
+              <div className="mb-2 flex items-center justify-between text-[11px] font-semibold text-slate-300">
+                <span>화자 분리 대화</span>
+                {liveAudioUrl ? (
+                  <span className="text-emerald-300">▶️ 말풍선 클릭 → 해당 음성 재생</span>
+                ) : (
+                  <span className="opacity-60">중지하면 말풍선 클릭으로 음성 재생</span>
+                )}
+              </div>
+              <Conversation turns={liveTurns} audioUrl={liveAudioUrl} />
+            </div>
+          ) : (
+            liveTranscript && (
+              <div className="mt-4 rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3">
+                <div className="mb-1 text-[11px] font-semibold text-slate-300">실시간 전사</div>
+                <p className="max-h-40 overflow-y-auto whitespace-pre-wrap text-sm leading-6 text-slate-100">
+                  {liveTranscript}
+                </p>
+              </div>
+            )
+          )}
+
+          {/* 누적 검출 신호 */}
+          {cumulativeMatches.length > 0 && (
+            <div className="mt-4 rounded-xl border border-rose-400/30 bg-rose-500/5 p-4">
+              <h4 className="text-sm font-semibold text-rose-100">
+                🚨 검출 신호 ({cumulativeMatches.length}개)
+              </h4>
+              <ul className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+                {cumulativeMatches.map((m, i) => (
+                  <li
+                    key={`live-${m.flag}-${i}`}
+                    className={`rounded-full px-2 py-0.5 ${
+                      m.instant
+                        ? "border border-rose-400/60 bg-rose-500/20 text-rose-50"
+                        : "border border-amber-400/40 bg-amber-500/15 text-amber-100"
+                    }`}
+                  >
+                    {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <p className="mt-4 text-[11px] leading-5 text-slate-500">
+            ⚠️ iOS 는 통화 중 브라우저 마이크 접근이 제한됩니다 — 스피커폰 + 별도 기기 권장.
+            ScamGuardian 은 신호만 알려드려요, 최종 판단은 본인이.
+          </p>
+        </section>
+      )}
 
       {mode === "single" && (transcriptPhase !== "idle" || analysisPhase !== "idle") && (
         <section className="mt-6 rounded-2xl border border-rose-400/20 bg-slate-950/60 p-5">
@@ -502,7 +872,7 @@ export default function LiveVoiceUpload() {
                           key={`scan-${m.flag}-${i}`}
                           className="rounded-full border border-rose-400/40 bg-rose-500/15 px-2 py-0.5 text-rose-100"
                         >
-                          {m.label_ko} · &quot;{m.snippet}&quot;
+                          {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · &quot;{m.snippet}&quot;
                         </li>
                       ))}
                     </ul>
@@ -571,10 +941,30 @@ export default function LiveVoiceUpload() {
             </div>
           )}
 
-          {/* === 화면 경고 banner — alert_level >= 2 누적되면 노출 === */}
-          {cumulativeAlert >= 2 && (
-            <AlertBanner level={cumulativeAlert} />
+          {/* === 계층적 알림 — tier 단조 증가 === */}
+          {/* 🔴 danger 풀스크린 takeover (확인 누르면 dismiss, 다시 누르면 재노출) */}
+          {tier >= 3 && !dangerDismissed && (
+            <DangerOverlay
+              matches={cumulativeMatches}
+              onDismiss={() => setDangerDismissed(true)}
+            />
           )}
+          {/* 🔴 dismiss 후에도 남는 빨간 바 */}
+          {tier >= 3 && (
+            <button
+              type="button"
+              onClick={() => setDangerDismissed(false)}
+              className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-rose-400/60 bg-rose-600/25 px-5 py-4 text-left text-rose-50 hover:bg-rose-600/35"
+            >
+              <span className="text-2xl leading-none">🚨</span>
+              <span>
+                <span className="block text-base font-bold">위험 신호 감지됨 — 통화 중이라면 끊으세요</span>
+                <span className="mt-0.5 block text-xs opacity-90">전체 경보 다시 보기</span>
+              </span>
+            </button>
+          )}
+          {/* 🟠 caution 배너 (pulse) */}
+          {tier === 2 && <CautionBanner matches={cumulativeMatches} />}
 
           {/* 진행률 */}
           <div className="mt-4 flex items-center gap-3 text-xs text-slate-300">
@@ -698,7 +1088,7 @@ export default function LiveVoiceUpload() {
                         : "border border-yellow-400/30 bg-yellow-500/10 text-yellow-100"
                     }`}
                   >
-                    {m.label_ko} · &quot;{m.snippet}&quot;
+                    {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · &quot;{m.snippet}&quot;
                   </li>
                 ))}
               </ul>
@@ -719,26 +1109,84 @@ export default function LiveVoiceUpload() {
   );
 }
 
-function AlertBanner({ level }: { level: number }) {
-  const tone =
-    level >= 3
-      ? "border-rose-400/60 bg-rose-600/25 text-rose-50 animate-pulse"
-      : "border-amber-400/50 bg-amber-500/15 text-amber-100";
-  const headline = level >= 3 ? "🚨 위험 신호 감지" : "⚠️ 주의 신호 감지";
-  const sub =
-    level >= 3
-      ? "송금·민감정보·공공기관 사칭 등 결정적 신호가 감지되었습니다. 통화 중이라면 즉시 끊으세요."
-      : "사기 의심 키워드가 감지되었습니다. 발화 맥락을 다시 확인하세요.";
+// 누적 match 중 가장 우선순위 높은(instant 먼저, 그다음 level 높은) 것의 행동 안내를 고른다.
+function pickAlertAction(
+  matches: StreamMatch[],
+): { action: string; label: string; speaker?: string | null } | null {
+  if (!matches.length) return null;
+  const sorted = [...matches].sort((a, b) => {
+    if (!!b.instant !== !!a.instant) return b.instant ? 1 : -1;
+    return b.level - a.level;
+  });
+  const top = sorted[0];
+  return {
+    action: top.action ?? "통화를 멈추고, 해당 기관 대표번호로 직접 확인하세요.",
+    label: top.label_ko,
+    speaker: top.speaker,
+  };
+}
+
+// 🟠 caution — 누적 주의 신호. 부드러운 pulse 로 시선 유도 (비차단).
+function CautionBanner({ matches }: { matches: StreamMatch[] }) {
+  const labels = Array.from(
+    new Set(matches.map((m) => m.label_ko)),
+  ).slice(0, 4);
   return (
     <div
       role="alert"
-      className={`mt-4 flex items-start gap-3 rounded-2xl border px-5 py-4 ${tone}`}
+      className="mt-4 flex animate-pulse items-start gap-3 rounded-2xl border border-amber-400/50 bg-amber-500/15 px-5 py-4 text-amber-100"
     >
-      <div className="text-2xl leading-none">{level >= 3 ? "🚨" : "⚠️"}</div>
+      <div className="text-2xl leading-none">⚠️</div>
       <div>
-        <div className="text-base font-bold">{headline}</div>
-        <div className="mt-1 text-xs leading-5 opacity-90">{sub}</div>
+        <div className="text-base font-bold">주의 신호가 쌓이고 있어요</div>
+        <div className="mt-1 text-xs leading-5 opacity-90">
+          {labels.length ? labels.join(" · ") : "사기 의심 신호"} 감지됨 — 발화 맥락을 다시 확인하세요.
+        </div>
       </div>
+    </div>
+  );
+}
+
+// 🔴 danger — 풀스크린 takeover + flash. 행동 안내 + 근거, 확인 버튼으로 dismiss.
+function DangerOverlay({
+  matches,
+  onDismiss,
+}: {
+  matches: StreamMatch[];
+  onDismiss: () => void;
+}) {
+  const picked = pickAlertAction(matches);
+  return (
+    <div
+      role="alertdialog"
+      aria-modal="true"
+      className="animate-danger-flash fixed inset-0 z-50 flex flex-col items-center justify-center px-6 text-center"
+    >
+      <div className="mb-3 text-6xl">🚨</div>
+      <div className="text-3xl font-black text-white drop-shadow-lg">
+        지금 전화를 끊으세요
+      </div>
+      {picked && (
+        <div className="mt-4 inline-block rounded-full bg-white/15 px-3 py-1 text-sm font-semibold text-white">
+          {speakerTag(picked.speaker) ? speakerTag(picked.speaker) + " · " : ""}
+          {picked.label}
+        </div>
+      )}
+      {picked && (
+        <div className="mt-3 max-w-md text-lg font-semibold text-rose-50">
+          {picked.action}
+        </div>
+      )}
+      <div className="mt-3 max-w-md text-sm text-rose-100/90">
+        위험 신호가 감지되었습니다. ScamGuardian 은 신호만 알려드려요 — 최종 판단은 본인이 하세요.
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="mt-8 rounded-full bg-white/95 px-7 py-3 text-base font-bold text-rose-700 shadow-lg hover:bg-white"
+      >
+        확인했어요
+      </button>
     </div>
   );
 }
@@ -794,7 +1242,7 @@ function ChunkRow({ chunk }: { chunk: StreamChunk }) {
               key={`${m.flag}-${i}`}
               className="rounded-full border border-rose-400/40 bg-rose-500/10 px-2 py-0.5 text-rose-100"
             >
-              {m.label_ko} · &quot;{m.snippet}&quot;
+              {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · &quot;{m.snippet}&quot;
             </li>
           ))}
         </ul>
@@ -882,7 +1330,15 @@ function Conversation({
             className={`flex ${isOther ? "justify-start" : "justify-end"}`}
           >
             <div
+              onClick={
+                canPlay
+                  ? () => (isPlaying ? stopPlayback() : playSegment(i, t))
+                  : undefined
+              }
+              title={canPlay ? "클릭하면 이 발화 음성 재생" : undefined}
               className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-6 ${
+                canPlay ? "cursor-pointer" : ""
+              } ${
                 isOther
                   ? "rounded-tl-sm bg-rose-500/15 text-rose-50"
                   : "rounded-tr-sm bg-sky-500/15 text-sky-50"
@@ -897,7 +1353,11 @@ function Conversation({
                 {canPlay && (
                   <button
                     type="button"
-                    onClick={() => (isPlaying ? stopPlayback() : playSegment(i, t))}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (isPlaying) stopPlayback();
+                      else playSegment(i, t);
+                    }}
                     className={`rounded-full px-1.5 py-0.5 text-[10px] normal-case tracking-normal transition ${
                       isPlaying
                         ? isOther

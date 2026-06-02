@@ -1,9 +1,6 @@
 # training/ — fine-tuning 골격
 
-ScamGuardian 라벨 데이터(+AI Hub·합성 데이터)로 분류기·NER 모델을 도메인 특화 학습합니다.
-
-> 📖 **상세 가이드 (데이터 준비 · 합성 생성 · 학습 · 평가 · 비교 분석 전 과정)**:
-> [`training/FINETUNING.md`](./FINETUNING.md) — 이 파일은 빠른 요약본입니다.
+ScamGuardian 라벨 데이터(+AI Hub 등 외부)로 분류기·NER 모델을 도메인 특화 학습합니다.
 
 ## 설치
 
@@ -84,9 +81,4 @@ python -m training.train_gliner \
 
 ## 학습된 모델 파이프라인 적용
 
-`/admin/training` 의 **"파이프라인 적용"** 버튼 → `.scamguardian/active_models.json` 갱신 →
-[`pipeline/active_models.py`](../pipeline/active_models.py) 가 60초 TTL 캐시로 읽어
-`classifier.py`·`extractor.py` 가 **자동 swap** 합니다. 경로 무효 시 base 모델로 안전 fallback.
-
-LoRA 어댑터 체크포인트는 `classifier.py:_load_finetuned_model()` 이 `adapter_config.json` 을 보고
-base + PeftModel 로 자동 로드합니다.
+`pipeline/classifier.py` 와 `pipeline/extractor.py` 의 모델 경로를 환경변수로 오버라이드하도록 추후 패치 예정. 현재는 `pipeline/config.py:MODELS` 에서 직접 교체합니다.

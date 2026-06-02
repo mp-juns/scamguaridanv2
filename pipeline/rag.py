@@ -19,9 +19,7 @@ def _project_hf_cache_dir() -> Path:
 def _resolve_local_hf_snapshot(model_id: str) -> str | None:
     candidate_roots = [
         _project_hf_cache_dir() / "hub",
-        _project_hf_cache_dir(),
         Path.home() / ".cache" / "huggingface" / "hub",
-        Path.home() / ".cache" / "huggingface",
     ]
     for cache_root in candidate_roots:
         model_dir = cache_root / f"models--{model_id.replace('/', '--')}"
