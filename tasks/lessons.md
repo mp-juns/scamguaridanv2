@@ -299,3 +299,16 @@ Rule:
 - After every external command, check `$LASTEXITCODE` and verify the expected file exists before printing success.
 
 ---
+
+# 2026-06-02 — Windows SMB allows one credential set per server
+
+When mapping `\\server\share` from PowerShell, Windows may reject a second connection to the same server
+with a different username: "multiple connections by the same user". Removing the PowerShell drive is not
+enough because the underlying SMB session can remain.
+
+Rule:
+- SMB backup scripts should offer a reset option that runs `net use \\server\share /delete /y` before
+  `New-PSDrive`.
+- If mapping fails, print the exact reset command instead of leaving the user to decode the Win32 error.
+
+---

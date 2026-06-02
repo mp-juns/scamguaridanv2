@@ -31,6 +31,9 @@
 **현재 192.168.0.23 확인**:
 - `192.168.0.23:445` 는 열려 있어 SMB 서비스는 네트워크상 접근 가능하다.
 - WSL에서 직접 CIFS 마운트하려면 sudo 비밀번호가 필요해 여기서 자동 실행은 중단했다.
+- Windows SMB 는 같은 서버에 서로 다른 계정으로 동시 연결할 수 없어 `New-PSDrive`가 실패할 수 있다.
+  두 SMB PowerShell 스크립트 모두 `-ResetExistingConnections` 옵션을 추가해 기존 `\\server\share`
+  연결을 끊고 재매핑할 수 있게 했다.
 
 **필요 정보**:
 - BeeStation 로컬 IP 또는 호스트명

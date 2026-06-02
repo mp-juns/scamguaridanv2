@@ -4,7 +4,8 @@ param(
   [Parameter(Mandatory = $true)][string]$Server,
   [Parameter(Mandatory = $true)][string]$Share,
   [string]$Subdir = "A-EYE\ScamGuardianBackups",
-  [string]$User = ""
+  [string]$User = "",
+  [switch]$ResetExistingConnections
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,11 +41,25 @@ if (Get-PSDrive -Name $DriveName -ErrorAction SilentlyContinue) {
   Remove-PSDrive -Name $DriveName -Force
 }
 
+if ($ResetExistingConnections) {
+  Write-Host "Removing existing SMB sessions for \\$Server before mapping..."
+  cmd.exe /c "net use \\$Server\$Share /delete /y" | Out-Null
+  cmd.exe /c "net use \\$Server\IPC$ /delete /y" | Out-Null
+}
+
 if ($User) {
   $Credential = Get-Credential -UserName $User -Message "BeeStation local SMB account"
-  New-PSDrive -Name $DriveName -PSProvider FileSystem -Root $Root -Credential $Credential | Out-Null
+  try {
+    New-PSDrive -Name $DriveName -PSProvider FileSystem -Root $Root -Credential $Credential | Out-Null
+  } catch {
+    throw "Failed to map $Root. If Windows says multiple connections are not allowed, rerun with -ResetExistingConnections or run: net use \\$Server\$Share /delete /y"
+  }
 } else {
-  New-PSDrive -Name $DriveName -PSProvider FileSystem -Root $Root | Out-Null
+  try {
+    New-PSDrive -Name $DriveName -PSProvider FileSystem -Root $Root | Out-Null
+  } catch {
+    throw "Failed to map $Root. If Windows says multiple connections are not allowed, rerun with -ResetExistingConnections or run: net use \\$Server\$Share /delete /y"
+  }
 }
 
 $Dest = "${DriveName}:\$Subdir\project-data-$Stamp"
