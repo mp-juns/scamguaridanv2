@@ -1,8 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import {
+  Bar,
+  BarChart,
   CartesianGrid,
+  Cell,
   Legend,
   Line,
   LineChart,
@@ -36,6 +39,137 @@ type SessionDetail = {
   log_tail: string;
 };
 
+type CompareScore = {
+  label: string;
+  score: number;
+};
+
+type CompareSample = {
+  id: string;
+  expected: string;
+  text: string;
+  raw: {
+    prediction: string;
+    confidence: number;
+    is_correct: boolean;
+    top_scores: CompareScore[];
+  };
+  fine_tuned: {
+    prediction: string;
+    confidence: number;
+    is_correct: boolean;
+    top_scores: CompareScore[];
+  };
+  delta: {
+    changed: boolean;
+    confidence: number;
+  };
+};
+
+type ComparisonResult = {
+  session_id: string;
+  output_dir: string;
+  sample_count: number;
+  raw: { correct: number; accuracy: number };
+  fine_tuned: { correct: number; accuracy: number };
+  delta: { correct: number; accuracy: number; changed_predictions: number };
+  samples: CompareSample[];
+};
+
+type ModelCompareResult = {
+  session_id: string;
+  output_dir: string;
+  input: {
+    source: string;
+    transcript_text: string;
+    source_type: string;
+    metadata: Record<string, unknown>;
+  };
+  existing: {
+    label: string;
+    method: string;
+    scam_type: string;
+    confidence: number;
+    is_uncertain: boolean;
+    top_scores: CompareScore[];
+  };
+  claude: {
+    label: string;
+    method: string;
+    scam_type: string;
+    confidence: number | null;
+    summary: string;
+    reasoning: string[];
+    suggested_flags: { flag: string; reason: string; evidence: string; confidence: number }[];
+    suggested_entities: { text: string; label: string; reason: string; confidence: number }[];
+    error: string;
+  };
+  fine_tuned: {
+    label: string;
+    method: string;
+    scam_type: string;
+    confidence: number;
+    is_uncertain: boolean;
+    top_scores: CompareScore[];
+  };
+  agreement: {
+    existing_vs_fine_tuned: boolean;
+    existing_vs_claude: boolean;
+    claude_vs_fine_tuned: boolean;
+  };
+};
+
+type SyntheticAttempt = {
+  session_id: string;
+  output_dir: string;
+  has_adapter: boolean;
+  saves_classifier_head: boolean;
+  label_count: number;
+  global_step: number | null;
+  epoch: number | null;
+  best_metric: number | null;
+  evals: Record<string, number | null>[];
+  final_eval: Record<string, number | null>;
+};
+
+type SyntheticGraphNode = {
+  id: string;
+  label: string;
+  kind: "corpus" | "scam_type" | "scenario" | "case" | "flag_group" | "flag" | "entity_label";
+  group: string;
+  weight: number;
+};
+
+type SyntheticGraphLink = {
+  source: string;
+  target: string;
+  kind: string;
+  weight: number;
+};
+
+type SyntheticSummary = {
+  dataset: {
+    path: string;
+    total: number;
+    labels: Record<string, number>;
+    label_count: number;
+    min_per_label: number;
+    max_per_label: number;
+  };
+  graph?: {
+    nodes: SyntheticGraphNode[];
+    links: SyntheticGraphLink[];
+  };
+  attempts: SyntheticAttempt[];
+  best_attempt: SyntheticAttempt | null;
+  status: {
+    headline: string;
+    activation_ready: boolean;
+    reason: string;
+    next_step: string;
+  };
+};
+
 type SessionsResponse = {
   sessions: SessionInfo[];
   active_models: Record<string, string>;
@@ -64,13 +198,43 @@ function fmtDuration(start: number, end: number | null | undefined): string {
   return `${h}시간 ${m % 60}분`;
 }
 
+function pct(value: unknown): string {
+  return typeof value === "number" ? `${Math.round(value * 1000) / 10}%` : "-";
+}
+
+function metricValue(value: unknown): string {
+  if (typeof value !== "number") return "-";
+  if (Math.abs(value) >= 10) return value.toFixed(1);
+  return value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function attemptName(id: string): string {
+  if (id.includes("lr5e6")) return "낮은 학습률";
+  if (id.includes("lora_head")) return "저장 보완";
+  if (id.includes("e3")) return "3회 반복";
+  if (id.includes("1542")) return "첫 확인";
+  return id.slice(-8);
+}
+
+function KnowledgeGraphCanvas(props: {
+  graph: { nodes: SyntheticGraphNode[]; links: SyntheticGraphLink[] };
+}) {
+  return <KnowledgeGraphCanvasImpl {...props} />;
+}
+
 export default function TrainingClient() {
   const [stats, setStats] = useState<DataStats | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [activeModels, setActiveModels] = useState<Record<string, string>>({});
+  const [synthetic, setSynthetic] = useState<SyntheticSummary | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
+  const [comparison, setComparison] = useState<ComparisonResult | null>(null);
+  const [modelComparison, setModelComparison] = useState<ModelCompareResult | null>(null);
+  const [comparing, setComparing] = useState(false);
+  const [modelComparing, setModelComparing] = useState(false);
   const [error, setError] = useState("");
+  const logRef = useRef<HTMLPreElement | null>(null);
 
   const [form, setForm] = useState({
     model: "classifier" as "classifier" | "gliner",
@@ -78,16 +242,23 @@ export default function TrainingClient() {
     batch_size: 8,
     lora: true,
     extra_jsonl: "",
+    early_stopping_patience: 2,
+  });
+  const [compareForm, setCompareForm] = useState({
+    text: "서울중앙지검 수사관입니다. 본인 명의 계좌가 사건에 연루되어 안전계좌로 3000만원 검증 이체가 필요합니다.",
+    source: "",
   });
   const [submitting, setSubmitting] = useState(false);
 
   const refreshList = useCallback(async () => {
     try {
-      const [s1, s2] = await Promise.all([
+      const [s1, s2, s3] = await Promise.all([
         fetch("/api/admin/training/data-stats", { cache: "no-store" }),
         fetch("/api/admin/training/sessions", { cache: "no-store" }),
+        fetch("/api/admin/training/synthetic-summary", { cache: "no-store" }),
       ]);
       if (s1.ok) setStats(await s1.json());
+      if (s3.ok) setSynthetic((await s3.json()) as SyntheticSummary);
       if (s2.ok) {
         const data = (await s2.json()) as SessionsResponse;
         setSessions(data.sessions);
@@ -101,22 +272,23 @@ export default function TrainingClient() {
     }
   }, [selectedId]);
 
+  const fetchSessionDetail = useCallback(async (sessionId: string) => {
+    const r = await fetch(`/api/admin/training/sessions/${sessionId}`, { cache: "no-store" });
+    if (!r.ok) return null;
+    return (await r.json()) as SessionDetail;
+  }, []);
+
   const refreshDetail = useCallback(async () => {
     if (!selectedId) {
       setDetail(null);
       return;
     }
     try {
-      const r = await fetch(`/api/admin/training/sessions/${selectedId}`, { cache: "no-store" });
-      if (!r.ok) {
-        setDetail(null);
-        return;
-      }
-      setDetail((await r.json()) as SessionDetail);
+      setDetail(await fetchSessionDetail(selectedId));
     } catch (err) {
       setError(err instanceof Error ? err.message : "상세 로드 실패");
     }
-  }, [selectedId]);
+  }, [fetchSessionDetail, selectedId]);
 
   useEffect(() => {
     void refreshList();
@@ -124,7 +296,19 @@ export default function TrainingClient() {
 
   useEffect(() => {
     void refreshDetail();
+    setComparison(null);
   }, [refreshDetail]);
+
+  useEffect(() => {
+    if (!synthetic?.dataset.path || form.extra_jsonl.trim()) return;
+    setForm((prev) => ({ ...prev, extra_jsonl: synthetic.dataset.path }));
+  }, [synthetic?.dataset.path, form.extra_jsonl]);
+
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [detail?.log_tail]);
 
   // 진행 중 세션이 있으면 5초마다 폴링
   useEffect(() => {
@@ -150,11 +334,14 @@ export default function TrainingClient() {
           batch_size: form.batch_size,
           lora: form.lora,
           extra_jsonl: form.extra_jsonl.trim() || null,
+          early_stopping_patience: form.early_stopping_patience,
         }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail ?? "세션 시작 실패");
       setSelectedId(data.session_id);
+      const startedDetail = await fetchSessionDetail(data.session_id);
+      if (startedDetail) setDetail(startedDetail);
       await refreshList();
     } catch (err) {
       setError(err instanceof Error ? err.message : "세션 시작 실패");
@@ -185,6 +372,52 @@ export default function TrainingClient() {
     await refreshList();
   }
 
+  async function runComparison(id: string) {
+    setComparing(true);
+    setError("");
+    try {
+      const r = await fetch(`/api/admin/training/sessions/${id}/compare`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail ?? "비교 실행 실패");
+      setComparison(data as ComparisonResult);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "비교 실행 실패");
+    } finally {
+      setComparing(false);
+    }
+  }
+
+  async function runModelComparison() {
+    setModelComparing(true);
+    setError("");
+    try {
+      const completedClassifier =
+        detail?.session.model === "classifier" && detail.session.status === "completed"
+          ? detail.session.session_id
+          : undefined;
+      const r = await fetch("/api/admin/training/compare-analysis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: compareForm.text.trim() || null,
+          source: compareForm.source.trim() || null,
+          session_id: completedClassifier,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail ?? "모델 비교 분석 실패");
+      setModelComparison(data as ModelCompareResult);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "모델 비교 분석 실패");
+    } finally {
+      setModelComparing(false);
+    }
+  }
+
   const chartData = useMemo(() => {
     if (!detail) return [];
     return detail.metrics
@@ -198,6 +431,28 @@ export default function TrainingClient() {
       }));
   }, [detail]);
 
+  const syntheticLabelBars = useMemo(() => {
+    if (!synthetic) return [];
+    return Object.entries(synthetic.dataset.labels)
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [synthetic]);
+
+  const attemptBars = useMemo(() => {
+    if (!synthetic) return [];
+    return synthetic.attempts
+      .slice()
+      .reverse()
+      .map((a) => ({
+        name: attemptName(a.session_id),
+        f1: typeof a.final_eval.eval_macro_f1 === "number" ? a.final_eval.eval_macro_f1 : 0,
+        accuracy: typeof a.final_eval.eval_accuracy === "number" ? a.final_eval.eval_accuracy : 0,
+      }));
+  }, [synthetic]);
+
+  const selectedSession = detail?.session ?? sessions.find((session) => session.session_id === selectedId) ?? null;
+  const lastMetric = detail?.metrics.at(-1) ?? selectedSession?.last_metrics ?? null;
+
   return (
     <div className="space-y-6">
       {error && (
@@ -206,17 +461,140 @@ export default function TrainingClient() {
         </div>
       )}
 
+      {synthetic && (
+        <section className="overflow-hidden rounded-2xl border border-cyan-400/20 bg-slate-950/50">
+          <div className="grid gap-0 lg:grid-cols-[1.05fr_0.95fr]">
+            <div className="border-b border-white/10 p-5 lg:border-b-0 lg:border-r">
+              <div className="text-xs uppercase tracking-widest text-cyan-200">이번 합성 데이터 학습 한눈에 보기</div>
+              <h2 className="mt-2 text-2xl font-semibold text-white">
+                {synthetic.status.headline}
+              </h2>
+              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-300">
+                이 화면은 모델 학습을 시험공부처럼 보여줍니다. 자료를 얼마나 봤는지, 몇 번 연습했는지,
+                연습 문제에서는 얼마나 맞혔는지, 그리고 실제 투입 전 왜 한 번 더 검사가 필요한지를 순서대로 보여줍니다.
+              </p>
+              <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                <PlainMetric label="공부한 문장" value={`${synthetic.dataset.total.toLocaleString("ko-KR")}건`} help="12가지 사기 유형을 고르게 넣었습니다" />
+                <PlainMetric label="유형 수" value={`${synthetic.dataset.label_count}개`} help="투자, 기관 사칭, 스미싱 등" />
+                <PlainMetric
+                  label="최고 연습 점수"
+                  value={pct(synthetic.best_attempt?.final_eval.eval_macro_f1)}
+                  help="모든 유형을 골고루 맞혔는지 보는 값"
+                />
+              </div>
+              <div className="mt-4 rounded-xl border border-amber-400/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                <div className="font-semibold">아직 자동 적용을 보류한 이유</div>
+                <p className="mt-1 text-amber-100/80">{synthetic.status.reason}</p>
+                <p className="mt-2 text-xs text-amber-100/70">다음 단계: {synthetic.status.next_step}</p>
+              </div>
+            </div>
+
+            <div className="p-5">
+              <div className="grid gap-3">
+                <LearningStep
+                  index="1"
+                  title="데이터 준비"
+                  body={`${synthetic.dataset.min_per_label}~${synthetic.dataset.max_per_label}건 사이로 유형별 개수가 거의 균형입니다.`}
+                  tone="cyan"
+                />
+                <LearningStep
+                  index="2"
+                  title="학습 안정화"
+                  body="처음에는 저장 방식과 학습률 때문에 흔들렸고, classifier head 저장 + 낮은 학습률로 안정화했습니다."
+                  tone="emerald"
+                />
+                <LearningStep
+                  index="3"
+                  title="적용 전 검문"
+                  body="연습 문제 점수만 믿지 않고, 실제 문장과 닮은 hard smoke set을 통과한 뒤 적용합니다."
+                  tone="amber"
+                />
+              </div>
+            </div>
+          </div>
+
+          {synthetic.graph && (
+            <div className="border-t border-white/10 p-5">
+              <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-white">데이터 연결망</h3>
+                  <p className="text-xs text-slate-400">
+                    유형, 시나리오, 사례, 검출 신호가 어떤 학습 재료로 묶이는지 보여줍니다.
+                  </p>
+                </div>
+                <div className="font-mono text-xs text-slate-500">
+                  {synthetic.graph.nodes.length.toLocaleString("ko-KR")} nodes ·{" "}
+                  {synthetic.graph.links.length.toLocaleString("ko-KR")} links
+                </div>
+              </div>
+              <KnowledgeGraphCanvas graph={synthetic.graph} />
+            </div>
+          )}
+
+          <div className="grid gap-0 border-t border-white/10 lg:grid-cols-2">
+            <div className="p-5">
+              <div className="mb-3">
+                <h3 className="text-sm font-semibold text-white">데이터 균형</h3>
+                <p className="text-xs text-slate-400">막대 길이가 비슷할수록 모델이 특정 유형만 편애할 가능성이 줄어듭니다.</p>
+              </div>
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={syntheticLabelBars} layout="vertical" margin={{ left: 42, right: 12 }}>
+                  <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" horizontal={false} />
+                  <XAxis type="number" stroke="#64748b" fontSize={11} />
+                  <YAxis dataKey="label" type="category" width={86} stroke="#94a3b8" fontSize={11} />
+                  <Tooltip
+                    contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}
+                    labelStyle={{ color: "#cbd5f5" }}
+                  />
+                  <Bar dataKey="count" radius={[0, 6, 6, 0]}>
+                    {syntheticLabelBars.map((entry, index) => (
+                      <Cell key={entry.label} fill={index % 2 ? "#38bdf8" : "#22c55e"} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="border-t border-white/10 p-5 lg:border-l lg:border-t-0">
+              <div className="mb-3">
+                <h3 className="text-sm font-semibold text-white">학습 시도별 개선</h3>
+                <p className="text-xs text-slate-400">초록선은 골고루 맞힌 정도, 보라선은 전체 정답률입니다.</p>
+              </div>
+              <ResponsiveContainer width="100%" height={260}>
+                <LineChart data={attemptBars}>
+                  <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
+                  <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} />
+                  <YAxis stroke="#64748b" fontSize={11} domain={[0, 1]} tickFormatter={(v) => `${Math.round(Number(v) * 100)}%`} />
+                  <Tooltip
+                    formatter={(value) => pct(value)}
+                    contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}
+                    labelStyle={{ color: "#cbd5f5" }}
+                  />
+                  <Legend />
+                  <Line type="monotone" dataKey="f1" name="골고루 맞힌 정도" stroke="#22c55e" strokeWidth={2} />
+                  <Line type="monotone" dataKey="accuracy" name="전체 정답률" stroke="#a78bfa" strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* 데이터 현황 + 활성 모델 */}
       <section className="grid gap-4 lg:grid-cols-3">
         <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
-          <div className="text-xs uppercase tracking-widest text-slate-400">분류기 학습 데이터</div>
+          <div className="text-xs uppercase tracking-widest text-slate-400">현재 학습 후보 전체</div>
           <div className="mt-2 text-3xl font-bold">
-            {stats?.classifier.total ?? "-"}
+            {(synthetic?.dataset.total ?? stats?.classifier.total)?.toLocaleString("ko-KR") ?? "-"}
             <span className="ml-2 text-base font-normal text-slate-400">건</span>
           </div>
-          {stats && (
+          <div className="mt-1 text-xs text-slate-500">
+            기본 검수 라벨 {stats?.classifier.total ?? 0}건
+            {synthetic ? ` + synthetic ${synthetic.dataset.path}` : ""}
+          </div>
+          {(synthetic || stats) && (
             <div className="mt-3 max-h-32 space-y-1 overflow-auto pr-2 text-xs text-slate-300">
-              {Object.entries(stats.classifier.labels).map(([label, n]) => (
+              {Object.entries(synthetic?.dataset.labels ?? stats?.classifier.labels ?? {}).map(([label, n]) => (
                 <div key={label} className="flex justify-between">
                   <span>{label}</span>
                   <span className="font-mono">{n}</span>
@@ -255,7 +633,7 @@ export default function TrainingClient() {
       {/* 세션 시작 폼 */}
       <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
         <h2 className="mb-4 text-lg font-semibold">새 학습 세션</h2>
-        <div className="grid gap-4 md:grid-cols-5">
+        <div className="grid gap-4 md:grid-cols-6">
           <label className="space-y-1 text-sm">
             <span className="block text-slate-300">모델</span>
             <select
@@ -299,6 +677,18 @@ export default function TrainingClient() {
             />
             <span>LoRA (classifier 만)</span>
           </label>
+          <label className="space-y-1 text-sm">
+            <span className="block text-slate-300">early stop</span>
+            <input
+              type="number"
+              min={0}
+              max={10}
+              value={form.early_stopping_patience}
+              onChange={(e) => setForm({ ...form, early_stopping_patience: Number(e.target.value) })}
+              className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2"
+              disabled={form.model !== "classifier"}
+            />
+          </label>
           <label className="space-y-1 text-sm md:col-span-1">
             <span className="block text-slate-300">extra JSONL (선택)</span>
             <input
@@ -318,6 +708,144 @@ export default function TrainingClient() {
           >
             {submitting ? "시작 중..." : "학습 시작"}
           </button>
+        </div>
+
+        {(submitting || selectedSession) && (
+          <div className="mt-5 overflow-hidden rounded-xl border border-cyan-400/20 bg-slate-950/60">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+              <div>
+                <div className="text-xs uppercase tracking-widest text-cyan-200">Live Training Console</div>
+                <div className="mt-1 text-sm font-semibold text-white">
+                  {submitting
+                    ? "세션을 만들고 있습니다"
+                    : `${selectedSession?.model ?? "training"} · ${selectedSession?.session_id ?? ""}`}
+                </div>
+              </div>
+              <span
+                className={`rounded-full border px-2.5 py-1 text-xs ${
+                  selectedSession
+                    ? STATUS_BADGE[selectedSession.status] ?? STATUS_BADGE.cancelled
+                    : "border-cyan-400/30 bg-cyan-500/20 text-cyan-200"
+                }`}
+              >
+                {selectedSession?.status ?? "starting"}
+              </span>
+            </div>
+
+            <div className="grid gap-0 lg:grid-cols-[0.9fr_1.1fr]">
+              <div className="border-b border-white/10 p-4 lg:border-b-0 lg:border-r">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Stat label="시작" value={selectedSession ? fmtSeconds(selectedSession.started_at) : "-"} />
+                  <Stat
+                    label="경과"
+                    value={selectedSession ? fmtDuration(selectedSession.started_at, selectedSession.ended_at) : "-"}
+                  />
+                  <Stat label="PID" value={selectedSession?.pid ? String(selectedSession.pid) : "-"} />
+                  <Stat
+                    label="마지막 step"
+                    value={typeof lastMetric?.step === "number" ? String(lastMetric.step) : "-"}
+                  />
+                </div>
+
+                <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3">
+                  <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">실행 설정</div>
+                  <div className="space-y-1 break-all font-mono text-xs text-slate-300">
+                    <div>model: {selectedSession?.model ?? form.model}</div>
+                    <div>epochs: {String(selectedSession?.params?.epochs ?? form.epochs)}</div>
+                    <div>batch_size: {String(selectedSession?.params?.batch_size ?? form.batch_size)}</div>
+                    <div>lora: {String(selectedSession?.params?.lora ?? form.lora)}</div>
+                    <div>
+                      early_stopping_patience:{" "}
+                      {String(selectedSession?.params?.early_stopping_patience ?? form.early_stopping_patience)}
+                    </div>
+                    <div>extra_jsonl: {String((selectedSession?.params?.extra_jsonl ?? form.extra_jsonl) || "-")}</div>
+                    {selectedSession?.output_dir && <div>output: {selectedSession.output_dir}</div>}
+                  </div>
+                </div>
+
+                {lastMetric && (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <MiniMetric label="loss" value={metricValue(lastMetric.loss)} />
+                    <MiniMetric label="eval loss" value={metricValue(lastMetric.eval_loss)} />
+                    <MiniMetric label="macro F1" value={pct(lastMetric.eval_macro_f1)} />
+                    <MiniMetric label="accuracy" value={pct(lastMetric.eval_accuracy)} />
+                  </div>
+                )}
+              </div>
+
+              <div className="p-4">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-xs uppercase tracking-widest text-slate-400">실시간 로그</div>
+                  <div className="text-xs text-slate-500">자동 갱신 · tail 8KB</div>
+                </div>
+                <pre
+                  ref={logRef}
+                  className="h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-white/10 bg-black/30 p-3 font-mono text-xs leading-relaxed text-slate-300"
+                >
+                  {detail?.log_tail || (submitting ? "세션 생성 요청을 보내는 중..." : "아직 출력 없음")}
+                </pre>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="overflow-hidden rounded-2xl border border-violet-300/20 bg-white/5">
+        <div className="border-b border-white/10 p-5">
+          <div className="text-xs uppercase tracking-widest text-violet-200">모델 비교 분석 세션</div>
+          <h2 className="mt-2 text-xl font-semibold text-white">같은 입력을 세 관점으로 비교</h2>
+          <p className="mt-1 text-sm text-slate-400">
+            문구나 링크를 넣으면 기존 raw 분류기, Claude 보조 분석, fine-tuned classifier 결과를 나란히 보여줍니다.
+          </p>
+        </div>
+
+        <div className="grid gap-0 lg:grid-cols-[1fr_0.9fr]">
+          <div className="border-b border-white/10 p-5 lg:border-b-0 lg:border-r">
+            <label className="block text-sm">
+              <span className="text-slate-300">분석 문구</span>
+              <textarea
+                value={compareForm.text}
+                onChange={(event) => setCompareForm({ ...compareForm, text: event.target.value })}
+                rows={6}
+                className="mt-2 w-full resize-y rounded-xl border border-white/10 bg-slate-950/70 px-3 py-3 text-sm leading-relaxed text-slate-100"
+              />
+            </label>
+            <label className="mt-4 block text-sm">
+              <span className="text-slate-300">링크 또는 파일 경로</span>
+              <input
+                type="text"
+                value={compareForm.source}
+                onChange={(event) => setCompareForm({ ...compareForm, source: event.target.value })}
+                placeholder="텍스트 대신 URL/YouTube 링크/로컬 파일 경로"
+                className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 font-mono text-xs text-slate-100"
+              />
+            </label>
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-xs text-slate-500">
+                fine-tuned 기준:{" "}
+                {detail?.session.model === "classifier" && detail.session.status === "completed"
+                  ? detail.session.session_id
+                  : "최신 완료 classifier 자동 선택"}
+              </div>
+              <button
+                onClick={() => void runModelComparison()}
+                disabled={modelComparing}
+                className="rounded-xl bg-violet-300 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-violet-200 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {modelComparing ? "비교 중..." : "비교 분석 실행"}
+              </button>
+            </div>
+          </div>
+
+          <div className="p-5">
+            {modelComparison ? (
+              <ModelComparePanel result={modelComparison} />
+            ) : (
+              <div className="flex h-full min-h-64 items-center justify-center rounded-xl border border-dashed border-white/10 bg-slate-950/30 px-4 py-8 text-center text-sm text-slate-500">
+                비교 분석을 실행하면 세 모델의 예측과 Claude의 근거 후보가 여기에 표시됩니다.
+              </div>
+            )}
+          </div>
         </div>
       </section>
 
@@ -379,6 +907,15 @@ export default function TrainingClient() {
                       파이프라인 적용
                     </button>
                   )}
+                  {detail.session.status === "completed" && detail.session.model === "classifier" && (
+                    <button
+                      onClick={() => void runComparison(detail.session.session_id)}
+                      disabled={comparing}
+                      className="rounded-xl border border-violet-300/40 bg-violet-500/10 px-4 py-2 text-sm font-semibold text-violet-100 hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {comparing ? "비교 중..." : "Raw와 비교"}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -410,6 +947,10 @@ export default function TrainingClient() {
                 </div>
               )}
 
+              {comparison && (
+                <ClassifierComparisonPanel comparison={comparison} />
+              )}
+
               <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
                 <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">로그 (tail 8KB)</div>
                 <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-slate-300">
@@ -435,11 +976,527 @@ export default function TrainingClient() {
   );
 }
 
+function ClassifierComparisonPanel({ comparison }: { comparison: ComparisonResult }) {
+  const improved = comparison.samples.filter((sample) => !sample.raw.is_correct && sample.fine_tuned.is_correct).length;
+  const regressed = comparison.samples.filter((sample) => sample.raw.is_correct && !sample.fine_tuned.is_correct).length;
+  return (
+    <div className="overflow-hidden rounded-xl border border-violet-300/20 bg-slate-950/50">
+      <div className="border-b border-white/10 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-xs uppercase tracking-widest text-violet-200">Raw vs Fine-tuned</div>
+            <h3 className="mt-1 text-lg font-semibold text-white">같은 문장으로 분류기 비교</h3>
+            <p className="mt-1 text-xs text-slate-400">
+              기본 zero-shot 모델과 이 세션의 fine-tuned checkpoint 를 12개 실전형 smoke 문장에 동시에 적용했습니다.
+            </p>
+          </div>
+          <div className="font-mono text-xs text-slate-500">{comparison.session_id}</div>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-4">
+          <PlainMetric
+            label="Raw 정답"
+            value={`${comparison.raw.correct}/${comparison.sample_count}`}
+            help={pct(comparison.raw.accuracy)}
+          />
+          <PlainMetric
+            label="Fine-tuned 정답"
+            value={`${comparison.fine_tuned.correct}/${comparison.sample_count}`}
+            help={pct(comparison.fine_tuned.accuracy)}
+          />
+          <PlainMetric
+            label="개선/악화"
+            value={`+${improved} / -${regressed}`}
+            help={`${comparison.delta.changed_predictions}개 예측 변경`}
+          />
+          <PlainMetric
+            label="정답 변화"
+            value={comparison.delta.correct >= 0 ? `+${comparison.delta.correct}` : String(comparison.delta.correct)}
+            help={pct(comparison.delta.accuracy)}
+          />
+        </div>
+      </div>
+
+      <div className="max-h-[520px] overflow-auto">
+        <table className="w-full min-w-[880px] text-left text-xs">
+          <thead className="sticky top-0 bg-slate-950 text-slate-400">
+            <tr className="border-b border-white/10">
+              <th className="px-4 py-3 font-medium">기대 유형</th>
+              <th className="px-4 py-3 font-medium">Raw</th>
+              <th className="px-4 py-3 font-medium">Fine-tuned</th>
+              <th className="px-4 py-3 font-medium">문장</th>
+            </tr>
+          </thead>
+          <tbody>
+            {comparison.samples.map((sample) => (
+              <tr key={sample.id} className="border-b border-white/5 align-top">
+                <td className="px-4 py-3 font-semibold text-slate-200">{sample.expected}</td>
+                <td className="px-4 py-3">
+                  <ComparePrediction prediction={sample.raw.prediction} hit={sample.raw.is_correct} confidence={sample.raw.confidence} />
+                </td>
+                <td className="px-4 py-3">
+                  <ComparePrediction
+                    prediction={sample.fine_tuned.prediction}
+                    hit={sample.fine_tuned.is_correct}
+                    confidence={sample.fine_tuned.confidence}
+                  />
+                </td>
+                <td className="px-4 py-3 leading-relaxed text-slate-400">{sample.text}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ModelComparePanel({ result }: { result: ModelCompareResult }) {
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <ModelVerdictCard
+          title="기존 분석"
+          subtitle={result.existing.method}
+          scamType={result.existing.scam_type}
+          confidence={result.existing.confidence}
+          tone="cyan"
+        />
+        <ModelVerdictCard
+          title="Claude 분석"
+          subtitle={result.claude.method}
+          scamType={result.claude.scam_type || "-"}
+          confidence={result.claude.confidence}
+          tone="violet"
+        />
+        <ModelVerdictCard
+          title="파인튜닝 모델"
+          subtitle={result.session_id}
+          scamType={result.fine_tuned.scam_type}
+          confidence={result.fine_tuned.confidence}
+          tone="emerald"
+        />
+      </div>
+
+      <div className="rounded-xl border border-white/10 bg-slate-950/50 p-3">
+        <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">일치 여부</div>
+        <div className="flex flex-wrap gap-2 text-xs">
+          <AgreementPill label="기존 = 파인튜닝" ok={result.agreement.existing_vs_fine_tuned} />
+          <AgreementPill label="기존 = Claude" ok={result.agreement.existing_vs_claude} />
+          <AgreementPill label="Claude = 파인튜닝" ok={result.agreement.claude_vs_fine_tuned} />
+        </div>
+      </div>
+
+      {result.claude.error ? (
+        <div className="rounded-xl border border-rose-400/25 bg-rose-500/10 p-3 text-sm text-rose-100">
+          Claude 분석 오류: {result.claude.error}
+        </div>
+      ) : (
+        <div className="rounded-xl border border-white/10 bg-slate-950/50 p-3">
+          <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">Claude 근거 후보</div>
+          <p className="text-sm leading-relaxed text-slate-300">
+            {result.claude.summary || "요약 없음"}
+          </p>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <CompareList title="신호 후보" items={result.claude.suggested_flags.map((flag) => `${flag.flag}: ${flag.evidence || flag.reason}`)} />
+            <CompareList title="엔티티 후보" items={result.claude.suggested_entities.map((entity) => `${entity.label}: ${entity.text}`)} />
+          </div>
+        </div>
+      )}
+
+      <details className="rounded-xl border border-white/10 bg-slate-950/40 p-3 text-sm">
+        <summary className="cursor-pointer text-slate-300">비교에 사용한 transcript</summary>
+        <p className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-slate-400">
+          {result.input.transcript_text}
+        </p>
+      </details>
+    </div>
+  );
+}
+
+function ModelVerdictCard({
+  title,
+  subtitle,
+  scamType,
+  confidence,
+  tone,
+}: {
+  title: string;
+  subtitle: string;
+  scamType: string;
+  confidence: number | null;
+  tone: "cyan" | "violet" | "emerald";
+}) {
+  const toneClass = {
+    cyan: "border-cyan-400/25 bg-cyan-500/10 text-cyan-100",
+    violet: "border-violet-400/25 bg-violet-500/10 text-violet-100",
+    emerald: "border-emerald-400/25 bg-emerald-500/10 text-emerald-100",
+  }[tone];
+  return (
+    <div className={`rounded-xl border p-3 ${toneClass}`}>
+      <div className="text-xs opacity-75">{title}</div>
+      <div className="mt-2 text-lg font-semibold text-white">{scamType}</div>
+      <div className="mt-1 truncate text-[11px] opacity-70">{subtitle}</div>
+      <div className="mt-2 font-mono text-xs opacity-80">confidence {confidence === null ? "-" : pct(confidence)}</div>
+    </div>
+  );
+}
+
+function AgreementPill({ label, ok }: { label: string; ok: boolean }) {
+  return (
+    <span
+      className={`rounded-full border px-2.5 py-1 ${
+        ok
+          ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200"
+          : "border-amber-400/30 bg-amber-500/10 text-amber-100"
+      }`}
+    >
+      {label}: {ok ? "일치" : "차이"}
+    </span>
+  );
+}
+
+function CompareList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div>
+      <div className="text-xs font-semibold text-slate-300">{title}</div>
+      <div className="mt-2 space-y-1">
+        {items.length === 0 ? (
+          <div className="text-xs text-slate-500">없음</div>
+        ) : (
+          items.slice(0, 4).map((item) => (
+            <div key={item} className="rounded-lg bg-white/5 px-2 py-1 text-xs text-slate-300">
+              {item}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ComparePrediction({
+  prediction,
+  hit,
+  confidence,
+}: {
+  prediction: string;
+  hit: boolean;
+  confidence: number;
+}) {
+  return (
+    <div>
+      <span
+        className={`inline-flex rounded-full border px-2 py-1 font-semibold ${
+          hit
+            ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200"
+            : "border-rose-400/30 bg-rose-500/10 text-rose-200"
+        }`}
+      >
+        {prediction || "-"}
+      </span>
+      <div className="mt-1 font-mono text-[11px] text-slate-500">{pct(confidence)}</div>
+    </div>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2">
       <div className="text-xs text-slate-400">{label}</div>
       <div className="mt-1 font-mono text-slate-100">{value}</div>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2">
+      <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-1 font-mono text-sm text-slate-100">{value}</div>
+    </div>
+  );
+}
+
+function PlainMetric({ label, value, help }: { label: string; value: string; help: string }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-slate-900/70 px-4 py-3">
+      <div className="text-xs text-slate-400">{label}</div>
+      <div className="mt-1 text-2xl font-semibold text-white">{value}</div>
+      <div className="mt-1 text-xs leading-relaxed text-slate-400">{help}</div>
+    </div>
+  );
+}
+
+function KnowledgeGraphCanvasImpl({
+  graph,
+}: {
+  graph: { nodes: SyntheticGraphNode[]; links: SyntheticGraphLink[] };
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [hovered, setHovered] = useState<SyntheticGraphNode | null>(null);
+
+  const layout = useMemo(() => buildGraphLayout(graph), [graph]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const wrap = wrapRef.current;
+    if (!canvas || !wrap) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    let frame = 0;
+    let raf = 0;
+    const resize = () => {
+      const rect = wrap.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      canvas.style.width = `${rect.width}px`;
+      canvas.style.height = `${rect.height}px`;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    const draw = () => {
+      const { width, height } = canvas.getBoundingClientRect();
+      const scale = Math.min(width, height) * 0.43;
+      const cx = width / 2;
+      const cy = height / 2;
+      frame += 1;
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#282b36";
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.lineWidth = 0.7;
+      ctx.globalCompositeOperation = "lighter";
+      for (const link of graph.links) {
+        const source = layout.positions.get(link.source);
+        const target = layout.positions.get(link.target);
+        if (!source || !target) continue;
+        const sx = cx + source.x * scale;
+        const sy = cy + source.y * scale;
+        const tx = cx + target.x * scale;
+        const ty = cy + target.y * scale;
+        const alpha = Math.min(0.34, 0.045 + Math.log1p(link.weight) * 0.018);
+        ctx.strokeStyle = `rgba(128, 160, 229, ${alpha})`;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(tx, ty);
+        ctx.stroke();
+      }
+
+      ctx.globalCompositeOperation = "source-over";
+      for (const node of graph.nodes) {
+        const point = layout.positions.get(node.id);
+        if (!point) continue;
+        const pulse = Math.sin(frame * 0.018 + point.phase) * 0.7;
+        const x = cx + point.x * scale;
+        const y = cy + point.y * scale;
+        const radius = nodeRadius(node) + (node.kind === "corpus" ? pulse : 0);
+        ctx.fillStyle = nodeColor(node);
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      raf = window.requestAnimationFrame(draw);
+    };
+
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(wrap);
+    raf = window.requestAnimationFrame(draw);
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(raf);
+    };
+  }, [graph, layout]);
+
+  const handlePointerMove = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const scale = Math.min(rect.width, rect.height) * 0.43;
+      const cx = rect.width / 2;
+      const cy = rect.height / 2;
+      const px = event.clientX - rect.left;
+      const py = event.clientY - rect.top;
+      let nearest: SyntheticGraphNode | null = null;
+      let nearestDist = 18;
+      for (const node of graph.nodes) {
+        const point = layout.positions.get(node.id);
+        if (!point) continue;
+        const x = cx + point.x * scale;
+        const y = cy + point.y * scale;
+        const dist = Math.hypot(px - x, py - y);
+        if (dist < nearestDist) {
+          nearest = node;
+          nearestDist = dist;
+        }
+      }
+      setHovered(nearest);
+    },
+    [graph.nodes, layout],
+  );
+
+  return (
+    <div ref={wrapRef} className="relative h-[520px] overflow-hidden rounded-lg border border-white/10 bg-[#282b36]">
+      <canvas
+        ref={canvasRef}
+        className="h-full w-full"
+        onPointerMove={handlePointerMove}
+        onPointerLeave={() => setHovered(null)}
+      />
+      <div className="pointer-events-none absolute left-4 top-4 flex flex-wrap gap-2 text-[11px] text-slate-300">
+        <GraphLegend color="bg-white" label="사례/유형" />
+        <GraphLegend color="bg-violet-400" label="신호/엔티티" />
+        <GraphLegend color="bg-sky-300" label="중심 데이터" />
+      </div>
+      {hovered && (
+        <div className="pointer-events-none absolute bottom-4 left-4 max-w-[min(360px,calc(100%-2rem))] rounded-md border border-white/15 bg-slate-950/90 px-3 py-2 text-xs text-slate-200 shadow-xl">
+          <div className="font-semibold text-white">{hovered.label}</div>
+          <div className="mt-1 text-slate-400">
+            {kindLabel(hovered.kind)} · 연결 가중치 {hovered.weight.toLocaleString("ko-KR")}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GraphLegend({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-black/20 px-2 py-1">
+      <span className={`h-2 w-2 rounded-full ${color}`} />
+      {label}
+    </span>
+  );
+}
+
+function buildGraphLayout(graph: { nodes: SyntheticGraphNode[]; links: SyntheticGraphLink[] }) {
+  const typeNodes = graph.nodes.filter((node) => node.kind === "scam_type");
+  const groupIndex = new Map(typeNodes.map((node, index) => [node.group, index]));
+  const groupTotal = Math.max(1, typeNodes.length);
+  const positions = new Map<string, { x: number; y: number; phase: number }>();
+
+  for (const node of graph.nodes) {
+    const h = hashString(node.id);
+    const jitter = (h % 1000) / 1000 - 0.5;
+    const group = groupIndex.get(node.group) ?? (h % groupTotal);
+    const baseAngle = (Math.PI * 2 * group) / groupTotal - Math.PI / 2;
+    const spread = node.kind === "case" ? 0.68 : node.kind === "entity_label" ? 0.9 : 0.42;
+    const angle = baseAngle + jitter * spread;
+    const radius = nodeLayoutRadius(node.kind) + (((h >> 5) % 1000) / 1000 - 0.5) * 0.16;
+    positions.set(node.id, {
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius,
+      phase: (h % 628) / 100,
+    });
+  }
+
+  positions.set("corpus", { x: 0, y: 0, phase: 0 });
+  return { positions };
+}
+
+function nodeLayoutRadius(kind: SyntheticGraphNode["kind"]) {
+  switch (kind) {
+    case "corpus":
+      return 0;
+    case "scam_type":
+      return 0.23;
+    case "flag_group":
+      return 0.36;
+    case "scenario":
+      return 0.52;
+    case "flag":
+      return 0.66;
+    case "case":
+      return 0.82;
+    case "entity_label":
+      return 0.95;
+    default:
+      return 0.7;
+  }
+}
+
+function nodeRadius(node: SyntheticGraphNode) {
+  switch (node.kind) {
+    case "corpus":
+      return 10;
+    case "scam_type":
+      return 6.5;
+    case "scenario":
+      return 4.5;
+    case "flag_group":
+      return 4.2;
+    case "flag":
+      return 3.4;
+    case "entity_label":
+      return 3.2;
+    case "case":
+      return 2.8;
+    default:
+      return 3;
+  }
+}
+
+function nodeColor(node: SyntheticGraphNode) {
+  if (node.kind === "corpus") return "#e0f2fe";
+  if (node.kind === "flag" || node.kind === "flag_group" || node.kind === "entity_label") return "#8b7ac7";
+  if (node.kind === "scam_type" || node.kind === "scenario") return "#ffffff";
+  return "#f8fafc";
+}
+
+function kindLabel(kind: SyntheticGraphNode["kind"]) {
+  const labels: Record<SyntheticGraphNode["kind"], string> = {
+    corpus: "전체 코퍼스",
+    scam_type: "사기 유형",
+    scenario: "시나리오",
+    case: "합성 사례",
+    flag_group: "신호 묶음",
+    flag: "검출 신호",
+    entity_label: "엔티티 라벨",
+  };
+  return labels[kind];
+}
+
+function hashString(value: string) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function LearningStep({
+  index,
+  title,
+  body,
+  tone,
+}: {
+  index: string;
+  title: string;
+  body: string;
+  tone: "cyan" | "emerald" | "amber";
+}) {
+  const toneClass = {
+    cyan: "border-cyan-400/25 bg-cyan-500/10 text-cyan-100",
+    emerald: "border-emerald-400/25 bg-emerald-500/10 text-emerald-100",
+    amber: "border-amber-400/25 bg-amber-500/10 text-amber-100",
+  }[tone];
+  return (
+    <div className={`rounded-xl border px-4 py-3 ${toneClass}`}>
+      <div className="flex items-center gap-3">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-current/30 bg-black/20 font-mono text-xs">
+          {index}
+        </span>
+        <div className="font-semibold">{title}</div>
+      </div>
+      <p className="mt-2 text-sm leading-relaxed opacity-80">{body}</p>
     </div>
   );
 }

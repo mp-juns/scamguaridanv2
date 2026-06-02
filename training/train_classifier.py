@@ -65,6 +65,10 @@ def main() -> None:
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=32)
     parser.add_argument("--lora-dropout", type=float, default=0.1)
+    parser.add_argument("--fp16", action="store_true", help="CUDA mixed precision FP16 사용")
+    parser.add_argument("--bf16", action="store_true", help="CUDA mixed precision BF16 사용")
+    parser.add_argument("--early-stopping-patience", type=int, default=2, help="eval macro-F1 개선이 멈춘 epoch 허용 횟수. 0 이하면 비활성화")
+    parser.add_argument("--early-stopping-threshold", type=float, default=0.0, help="개선으로 인정할 최소 eval macro-F1 증가폭")
     parser.add_argument("--no-negatives", action="store_true", help="정상 대화 샘플 제외")
     parser.add_argument("--dry-run", action="store_true", help="데이터 통계만 출력하고 학습 X")
     args = parser.parse_args()
@@ -154,6 +158,7 @@ def main() -> None:
             lora_dropout=args.lora_dropout,
             bias="none",
             target_modules=["query_proj", "value_proj", "key_proj", "dense"],
+            modules_to_save=["classifier", "pooler"],
         )
         model = get_peft_model(model, lora_cfg)
         model.print_trainable_parameters()
@@ -174,7 +179,7 @@ def main() -> None:
         }
 
     # 5) Trainer + 진행률 콜백 (UI 폴링용 metrics.jsonl 에 기록)
-    from transformers import TrainerCallback
+    from transformers import EarlyStoppingCallback, TrainerCallback
 
     class MetricsEmitCallback(TrainerCallback):
         """매 logging step / eval / epoch 마다 sessions.emit_metric() 으로 기록."""
@@ -224,19 +229,34 @@ def main() -> None:
         warmup_ratio=0.06,
         weight_decay=0.01,
         seed=args.seed,
-        fp16=torch.cuda.is_available(),
+        fp16=args.fp16,
+        bf16=args.bf16,
         report_to=["none"],
     )
+
+    callbacks: list[TrainerCallback] = [MetricsEmitCallback()]
+    if args.early_stopping_patience > 0:
+        callbacks.append(
+            EarlyStoppingCallback(
+                early_stopping_patience=args.early_stopping_patience,
+                early_stopping_threshold=args.early_stopping_threshold,
+            )
+        )
+        log.info(
+            "early stopping 활성화: patience=%d threshold=%s metric=eval_macro_f1",
+            args.early_stopping_patience,
+            args.early_stopping_threshold,
+        )
 
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=DataCollatorWithPadding(tokenizer),
         compute_metrics=compute_metrics,
-        callbacks=[MetricsEmitCallback()],
+        callbacks=callbacks,
     )
 
     trainer.train()

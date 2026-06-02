@@ -1,3 +1,512 @@
+# Training Status False Failure (2026-06-01)
+
+목적: 학습 로그와 metrics 는 갱신 중인데 status.json 이 `failed` 로 먼저 바뀌어 UI가
+실행 중인 학습을 실패로 표시하는 문제를 수정한다.
+
+- [x] 최신 학습 세션 로그/status/metrics 확인
+- [x] 최근 로그 활동이 있으면 failed 전환을 유예하도록 세션 상태 보정
+- [x] py_compile smoke 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**확인 결과**:
+- 최신 세션 `79e87597a8a2` 는 `batch_size=1`, `epochs=10` 설정이라 전체 step 이
+  `108250` 으로 커졌다. 이전 성공 세션 `382515ce0381` 의 `batch_size=5`, `epochs=5`,
+  `10825` step 대비 정확히 10배 규모다.
+- 로그의 처리 속도는 대략 10-13 it/s 로 GPU 학습 자체가 멈춘 상황은 아니다.
+- `status.json` 은 `failed` 로 바뀌었지만 `metrics.jsonl` 과 `train.log` 는 그 이후에도
+  계속 갱신되어 상태 추적 false failure 가 있었다.
+
+**수정**:
+- `training/sessions.py`
+  - metrics/log 파일이 최근 120초 안에 갱신됐으면 pid liveness 확인이 애매해도 바로
+    `failed` 로 전환하지 않는다.
+  - 이미 `failed` 로 표시됐더라도 `ended_at` 이후 새 로그 활동이 있으면 `running` 으로
+    복구하고 최신 metric 을 `last_metrics` 로 반영한다.
+
+**검증**:
+- `python -m py_compile training/sessions.py` 통과.
+- `sessions.get_session("79e87597a8a2")` 결과가 `running` 으로 복구되고 latest step 이
+  `10360`, epoch `0.957` 로 반영되는 것을 확인했다.
+
+---
+
+# Classifier Early Stopping (2026-06-01)
+
+목적: synthetic classifier fine-tuning 에 early stopping 을 추가해 validation metric 이 더 이상
+개선되지 않을 때 불필요한 epoch 를 멈추고 best checkpoint 를 사용하게 한다.
+
+- [x] `training/train_classifier.py` Trainer 설정 확인
+- [x] early stopping CLI 옵션과 callback 추가
+- [x] training session params/API/UI 에 patience 옵션 연결
+- [x] lint/type/py_compile smoke 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**구현**:
+- `training/train_classifier.py`
+  - `--early-stopping-patience` 추가. 기본값 2, 0 이하면 비활성.
+  - `--early-stopping-threshold` 추가. 기본값 0.0.
+  - `EarlyStoppingCallback` 연결.
+  - 기준 metric 은 기존 best model 설정과 동일한 `eval_macro_f1`.
+  - `load_best_model_at_end=True` 유지라 early stop 후 best checkpoint 를 사용.
+- `training/sessions.py`
+  - `SessionParams` 에 `early_stopping_patience`, `early_stopping_threshold` 추가.
+  - classifier 세션 시작 시 CLI 로 early stopping 옵션 전달.
+- `api_server_pkg/models.py`, `api_server_pkg/admin_training.py`
+  - training session API payload 에 early stopping 옵션 연결.
+- `/admin/training`
+  - 새 학습 세션 폼에 `early stop` 숫자 input 추가.
+  - classifier 에서만 활성, 기본값 2.
+  - Live Training Console 실행 설정에 patience 표시.
+
+**검증**:
+- `python -m py_compile training/train_classifier.py training/sessions.py api_server_pkg/models.py api_server_pkg/admin_training.py`
+- `python -m training.train_classifier --help` 에 early stopping 옵션 노출 확인.
+- `npm run lint` 통과.
+- `npx tsc --noEmit` 통과.
+- `git diff --check` 통과.
+- `SessionParams(... early_stopping_patience=2).to_dict()` smoke 확인.
+
+---
+
+# Model Comparison Analysis Session (2026-06-01)
+
+목적: 초기 분석 화면처럼 사용자가 텍스트나 링크를 입력하면, 같은 입력에 대해
+기존 ScamGuardian 분석, Claude/LLM 분석, fine-tuned classifier 분석을 나란히 비교하는
+별도 세션을 만든다. 단순 checkpoint smoke test 가 아니라 실제 입력 기반 분석 비교로
+`/admin/training` 에 연결한다.
+
+- [x] 기존 `/api/analyze` 입력/파이프라인/LLM 분석 구조 확인
+- [x] 비교 세션 backend API 설계 및 구현
+- [x] Next.js proxy route 추가
+- [x] `/admin/training` 에 입력 폼과 비교 결과 UI 연결
+- [x] py_compile/lint/type smoke 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**구현한 비교 세션**:
+- Backend: `POST /api/admin/training/compare-analysis`
+  - 입력: `text` 또는 `source`, 선택 `session_id`.
+  - `source` 가 링크/파일이면 `pipeline.stt.transcribe()` 로 transcript 를 만든 뒤 같은 텍스트를 비교한다.
+  - 비교 관점:
+    - `existing`: raw zero-shot classifier + keyword boost.
+    - `claude`: `llm_assessor.analyze_unified()` 기반 LLM 재판정/근거 후보.
+    - `fine_tuned`: 완료된 classifier 세션 checkpoint 직접 로드.
+  - session_id 미지정 시 최신 완료 classifier checkpoint 를 자동 선택한다.
+- Next proxy: `POST /api/admin/training/compare-analysis`.
+- UI: `/admin/training` 에 `모델 비교 분석 세션` 섹션 추가.
+  - 분석 문구 textarea + URL/파일 경로 input.
+  - 현재 선택된 완료 classifier 세션 또는 최신 완료 classifier 를 fine-tuned 기준으로 사용.
+  - 기존/Claude/fine-tuned 결과 카드, 일치 여부, Claude 신호/엔티티 후보, transcript 접기 영역 표시.
+
+**검증**:
+- `python -m py_compile api_server_pkg/admin_training.py` 통과.
+- `npm run lint` 통과.
+- `npx tsc --noEmit` 통과.
+- `git diff --check` 통과.
+- API smoke:
+  - session: `382515ce0381`
+  - existing: `기관 사칭`
+  - fine_tuned: `대출 사기`
+  - Claude: 현재 실행 환경에 `anthropic` Python module 이 없어 `No module named 'anthropic'` 오류를
+    결과 카드에 표시하는 fallback 확인.
+
+---
+
+# Raw vs Fine-tuned Classifier Comparison (2026-06-01)
+
+목적: `/admin/training` 에 raw 기본 classifier 와 fine-tuned classifier 를 같은 smoke 문장 세트로
+비교하는 별도 분석 세션을 추가한다. 학습 결과를 단순 metric 이 아니라 "기본 모델 대비
+어떤 유형 예측이 개선/악화됐는지"로 현재 fine-tuning 페이지에 연결해 보여준다.
+
+- [x] classifier 로딩/세션 구조 확인
+- [x] raw vs fine-tuned 비교용 smoke set 과 backend API 추가
+- [x] `/admin/training` 에 비교 실행/결과 UI 연결
+- [ ] py_compile/lint/type/API smoke 검증
+- [ ] Review 섹션에 결과 기록
+
+## Review
+
+진행 중.
+
+---
+
+# Training Start Live Feedback (2026-06-01)
+
+목적: `/admin/training` 에서 학습 시작 버튼을 누르면 새 세션의 상태, 실행 파라미터,
+로그 tail, metric 흐름이 즉시 보이게 한다. 사용자가 별도 세션을 찾아 누르지 않아도
+"지금 학습이 실제로 돌고 있다"를 확인할 수 있게 한다.
+
+- [x] 현재 세션 시작/상세 폴링 흐름 확인
+- [x] 시작 직후 selected session/detail/log 가 바로 보이도록 UI 상태 개선
+- [x] 실행 중 요약 패널과 로그 자동 스크롤 추가
+- [x] lint/type 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**수정 내용**:
+- 학습 시작 성공 직후 새 `session_id` 를 자동 선택하고 상세 정보를 즉시 fetch 하도록 변경.
+- 새 학습 세션 폼 아래에 `Live Training Console` 패널 추가.
+- 패널에서 상태, 시작 시각, 경과 시간, PID, 마지막 step, 실행 설정, output dir 을 표시.
+- 마지막 metric snapshot 을 `loss`, `eval loss`, `macro F1`, `accuracy` 로 표시.
+- `train.log` tail 8KB 를 실시간 로그 영역에 표시하고, 새 로그가 오면 자동으로 아래로 스크롤.
+- 기존 5초 폴링은 유지해서 running session 동안 목록/상세/로그가 계속 갱신된다.
+
+**검증**:
+- `npm run lint` 통과.
+- `npx tsc --noEmit` 통과.
+- `git diff --check` 통과.
+- `curl -sS http://127.0.0.1:3001/admin/training` HTML 응답 확인.
+- `curl -sS http://127.0.0.1:8000/health` 응답 확인.
+
+---
+
+# Training Data Count Clarification (2026-06-01)
+
+목적: `/admin/training` 에서 기본 DB 라벨 25건과 synthetic extra JSONL 포함 12025건이
+서로 다른 통계인데 같은 "학습 데이터"처럼 보여 혼동되는 문제를 바로잡는다.
+
+- [x] 원인 확인: data-stats 기본 DB vs synthetic summary extra JSONL
+- [x] UI 카드 문구와 표시값을 전체 학습 후보 기준으로 조정
+- [x] 새 학습 세션의 extra JSONL 기본값을 최신 synthetic corpus 로 채우기
+- [x] lessons.md 에 혼동 방지 규칙 기록
+- [x] lint/type smoke 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**원인**:
+- `GET /api/admin/training/data-stats` 는 기본 DB 라벨만 읽어서 25건을 표시했다.
+- `GET /api/admin/training/synthetic-summary` 와 실제 학습 명령의 `--extra-jsonl` 경로는
+  `data/generated/scamguardian_synthetic_12000.jsonl` 을 포함해 12025건을 읽는다.
+
+**수정**:
+- `/admin/training` 의 카드 제목을 `분류기 학습 데이터` 에서 `현재 학습 후보 전체` 로 변경.
+- 값은 synthetic summary 가 있으면 12025건 기준으로 표시.
+- 보조 문구에 `기본 검수 라벨 25건 + synthetic <path>` 를 표시해 source scope 를 분리.
+- 새 학습 세션 폼의 `extra JSONL` 기본값을 최신 synthetic corpus 경로로 자동 채움.
+- `tasks/lessons.md` 에 source/scope 를 분리해서 표시하라는 규칙 추가.
+
+**검증**:
+- `npm run lint` 통과.
+- `npx tsc --noEmit` 통과.
+
+---
+
+# Synthetic Knowledge Graph Visualization (2026-06-01)
+
+목적: `/admin/training` 에 합성 데이터의 유형·시나리오·사례·검출 신호 연결 구조를
+네트워크 그래프 형태로 시각화한다. 비전공자가 "데이터가 서로 어떻게 연결되어 학습 재료가
+되는지"를 한눈에 볼 수 있게 하되, ScamGuardian identity boundary 에 맞춰 판정/점수 표현은
+추가하지 않는다.
+
+- [x] synthetic summary API 에 graph nodes/links payload 추가
+- [x] 캔버스 기반 네트워크 그래프 컴포넌트 구현
+- [x] `/admin/training` 상단 시각화 패널에 그래프 배치
+- [x] lint/type/API smoke 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**추가한 API 데이터**:
+- `GET /api/admin/training/synthetic-summary` 응답에 `graph.nodes[]`, `graph.links[]` 추가.
+- graph 는 최신 synthetic corpus 에서 다음 연결을 구성한다:
+  - 전체 코퍼스 → 12개 scam_type
+  - scam_type → 60개 scenario/template
+  - scenario → sampled synthetic case
+  - scam_type/scenario/case → flag_group, flag, entity_label
+
+**그래프 규모**:
+- 기준 corpus: `data/generated/scamguardian_synthetic_12000.jsonl`.
+- graph nodes: 555.
+- graph links: 1774.
+
+**UI 구현**:
+- `/admin/training` synthetic panel 에 `데이터 연결망` 캔버스 추가.
+- 어두운 배경, 얇은 파란 edge, 흰색 사례/시나리오 node, 보라색 신호/엔티티 node 로 구성.
+- hover 시 node label, node kind, 연결 가중치를 표시.
+- runtime 확인 중 HMR 에서 component reference 오류가 한 번 떠서 wrapper component 를 상단에 두도록 보강했다.
+
+**검증**:
+- `python -m py_compile api_server_pkg/admin_training.py` 통과.
+- `npm run lint` 통과.
+- `npx tsc --noEmit` 통과.
+- `_synthetic_graph()` local smoke 통과: 555 nodes / 1774 links.
+- Next dev log 에서 `/admin/training`, `/api/admin/training/synthetic-summary`,
+  `/api/admin/training/data-stats`, `/api/admin/training/sessions` 200 응답 확인.
+
+---
+
+# Synthetic Corpus Expansion 12000 (2026-06-01)
+
+목적: 기존 3000건 synthetic corpus 를 보존하면서 12개 사기 유형별 균형을 유지한
+대형 학습용 corpus 를 추가 생성한다. 생성 후 span/schema/loader 검증까지 끝내
+다음 학습 또는 RAG 재인덱싱에 바로 사용할 수 있게 한다.
+
+- [x] 생성기 옵션과 기존 분포 확인
+- [x] 12000건 synthetic JSONL 별도 생성
+- [x] schema/entity span/유형 분포 검증
+- [x] training loader 호환성 확인
+- [x] 필요 시 admin training summary 가 새 corpus 를 인식하도록 조정
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**산출물**:
+- `data/generated/scamguardian_synthetic_12000.jsonl`
+  - 12개 scam_type × 1000건 = 총 12000건.
+  - 기존 `data/generated/scamguardian_synthetic_3000.jsonl` 은 보존.
+  - seed `20260602` 로 생성해 기존 3000건과 다른 값 조합을 사용.
+
+**분포/품질 검증**:
+- JSONL line count: 12000.
+- 유형 분포: 12개 유형 모두 1000건.
+- template families: 60개, family 당 200건.
+- unique text: 10610건.
+- entity span mismatch: 0건.
+- invalid flag / flag group mismatch: 0건.
+- 평균 relation 수: 16.45개/row.
+- 평균 slot value 수: 3.31개/row.
+
+**학습 로더 호환**:
+- `python -m training.data --extra-jsonl data/generated/scamguardian_synthetic_12000.jsonl`
+  - content gate examples: 12025.
+  - scam_type classifier examples: 12025.
+  - GLiNER examples: 12019.
+  - 평균 엔티티/문서: 3.3.
+
+**웹 요약 API 조정**:
+- `api_server_pkg/admin_training.py` 의 synthetic summary 가
+  `data/generated/scamguardian_synthetic_*.jsonl` 중 가장 큰 corpus 를 자동 선택하게 변경.
+- Next proxy `GET /api/admin/training/synthetic-summary` 에서
+  `data/generated/scamguardian_synthetic_12000.jsonl`, total 12025 로 표시 확인.
+
+**검증**:
+- `python -m py_compile api_server_pkg/admin_training.py` 통과.
+- `git diff --check` 통과.
+- `curl -sS http://127.0.0.1:8000/health` 응답 확인.
+- `curl -sS http://127.0.0.1:3001/api/admin/training/synthetic-summary` 응답 확인.
+
+---
+
+# Training Visualization for Beginners (2026-06-01)
+
+목적: synthetic classifier 학습 결과를 비전공자도 이해할 수 있게 `/admin/training` 에
+카드·막대·타임라인 형태로 시각화한다. 단순 metric 숫자 대신 "데이터", "학습 안정성",
+"검증 결과", "왜 아직 자동 적용 보류인지"를 단계별로 보여준다.
+
+- [x] 백엔드에서 로컬 synthetic 학습 산출물 요약 API 제공
+- [x] Next.js proxy route 추가
+- [x] `/admin/training` 에 초심자용 시각화 패널 추가
+- [x] lint/type/build 수준 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**추가한 화면**:
+- `/admin/training` 상단에 "이번 합성 데이터 학습 한눈에 보기" 패널 추가.
+- 비전공자도 이해할 수 있게 `공부한 문장`, `유형 수`, `최고 연습 점수`, `자동 적용 보류 이유`,
+  `다음 단계`를 문장형 카드로 표시한다.
+- 데이터 균형은 유형별 bar chart 로, 학습 시도별 개선은 F1/accuracy line chart 로 표시한다.
+
+**추가한 API**:
+- `GET /api/admin/training/synthetic-summary`
+  - `data/generated/scamguardian_synthetic_3000.jsonl` 기준 학습 데이터 분포 요약.
+  - `.scamguardian/training_sessions/synthetic_classifier_*` 산출물의 checkpoint trainer_state 를 읽어
+    시도별 eval metric 을 반환.
+- Next proxy route:
+  - `apps/web/src/app/api/admin/training/synthetic-summary/route.ts`
+
+**UI 설계 판단**:
+- 높은 validation 값만 보여주면 비전공자는 "왜 적용 안 하지?"로 오해하기 쉬워서,
+  패널에 `학습/재로드 성공` 과 `실전형 smoke set 전 자동 적용 보류`를 같이 보여준다.
+- ScamGuardian identity boundary 에 맞게 사기 판정/위험 점수 표현은 추가하지 않았다.
+
+**검증**:
+- `python -m py_compile api_server_pkg/admin_training.py`
+- synthetic summary 함수 smoke:
+  - dataset 3025건, 12개 유형, 학습 시도 4개 감지.
+  - best: `synthetic_classifier_20260601_1605_lora_head_lr5e6`.
+- `npm run lint` 통과.
+- `npx tsc --noEmit` 통과.
+- `git diff --check` 통과.
+- `npm run build` 는 sandbox 안 Turbopack 이 process 생성 중 port bind 권한 문제
+  (`Operation not permitted`) 로 실패했다. 타입 검사는 별도로 통과했고, escalation 으로
+  `npm run dev` 실행 후 `/admin/training` 과 `/api/admin/training/synthetic-summary` 응답을 확인했다.
+
+---
+
+# Synthetic Classifier Fine-Tuning (2026-06-01)
+
+목적: `data/generated/scamguardian_synthetic_3000.jsonl` 를 추가 학습 데이터로 사용해
+12개 사기 유형 scam_type 분류기를 fine-tune 한다. 우선 파이프라인 자동 적용 전,
+세션 산출물과 평가 지표를 확인 가능한 상태로 남긴다.
+
+- [x] 데이터 dry-run / 라벨 분포 확인
+- [x] synthetic JSONL 기반 classifier 학습 실행
+- [x] 3 epoch 본학습 실행
+- [x] 1 epoch smoke 학습 산출물/평가 지표 확인
+- [x] 필요 시 active model 적용 여부 판단
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**CUDA 확인**:
+- WSL sandbox 안에서는 `torch.cuda.is_available() == False` 로 보였지만, escalation 환경에서
+  `LD_LIBRARY_PATH=/usr/lib/wsl/lib` 를 지정하자 `NVIDIA GeForce RTX 5070 Ti`, BF16 지원 확인.
+- `tasks/lessons.md` 에 WSL CUDA 판정 시 sandbox/device 노출을 분리해서 확인하라는 교훈을 추가했다.
+
+**코드 수정**:
+- `training/train_classifier.py`
+  - Transformers 최신 API 호환: `Trainer(tokenizer=...)` → `processing_class=...`.
+  - mixed precision 옵션 추가: `--fp16`, `--bf16`.
+  - LoRA adapter 저장 시 classifier head/pooler 도 보존하도록 `modules_to_save` 설정.
+- `pipeline/classifier.py`
+  - 활성 classifier checkpoint 가 PEFT/LoRA adapter 인 경우 base model + adapter 로 로드.
+  - `label2id.json` 을 읽어 `id2label`/`label2id` 를 복원.
+
+**학습 결과**:
+- 1 epoch smoke: `.scamguardian/training_sessions/synthetic_classifier_20260601_1542/output`
+  - eval accuracy 0.23, macro-F1 0.1677.
+- 3 epoch LoRA without saved classifier head:
+  `.scamguardian/training_sessions/synthetic_classifier_20260601_1549_e3/output`
+  - eval accuracy 0.52, macro-F1 0.4857.
+  - adapter reload 시 classifier head 가 안정적으로 복원되지 않아 활성화 부적합.
+- 3 epoch LoRA with classifier head, LR 2e-5:
+  `.scamguardian/training_sessions/synthetic_classifier_20260601_1553_lora_head/output`
+  - eval accuracy 0.42, macro-F1 0.4053.
+  - 초반 gradient/loss 불안정, 스모크 예측 불량.
+- 3 epoch LoRA with classifier head, LR 5e-6:
+  `.scamguardian/training_sessions/synthetic_classifier_20260601_1605_lora_head_lr5e6/output`
+  - eval loss 0.6475, accuracy 0.84, macro-F1 0.8396, macro precision 0.8508, macro recall 0.84.
+  - 재로드 후 validation sample 24건 중 23건 정답.
+
+**활성화 판단**:
+- `.scamguardian/active_models.json` 은 수정하지 않았다.
+- 이유: synthetic validation 은 좋지만, 수동 smoke 문장(예: "검찰청 안전계좌", "대한통운 주소 오류",
+  "삼성 이재용 특별 투자")에서 일반화가 아직 약했다. 실서비스 자동 swap 전에는 별도 held-out
+  hard smoke set 또는 실제 라벨 데이터 기반 평가가 필요하다.
+
+---
+
+# Synthetic Multi-View RAG Index (2026-06-01)
+
+목적: `rag_texts.case/scenario/pattern/entity_pattern/evidence_terms` 를 각각 embedding view 로
+인덱싱해, 단순 문장 유사도뿐 아니라 scenario·flag 조합·entity 구조 기반 검색도 가능하게 한다.
+
+- [x] index artifact 형식 결정 (`metadata.jsonl` + `embeddings.npz`)
+- [x] build/query 겸용 스크립트 추가
+- [x] 3000건 synthetic corpus 로 multi-view index 생성
+- [x] smoke query 로 검색 결과 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**산출물**:
+- `scripts/build_synthetic_rag_index.py` — synthetic JSONL 의 `rag_texts` 를 multi-view embedding index 로
+  build/query 하는 CLI.
+- `data/generated/rag_index/synthetic_multiview_embeddings.npz` — float32 normalized embeddings.
+- `data/generated/rag_index/synthetic_multiview_metadata.jsonl` — view 별 검색 metadata.
+- `data/generated/rag_index/synthetic_multiview_manifest.json` — 모델명/차원/분포 manifest.
+
+**인덱스 구조**:
+- view 5종: `case`, `scenario`, `pattern`, `entity_pattern`, `evidence_terms`.
+- 각 synthetic row 가 5개 view 로 확장되어 3000건 → 15000 vectors.
+- embedding dimension 384, scam_type 12종 각각 1250 vectors.
+- query 는 cosine 기반 dot product + view weight + 가벼운 lexical boost 를 사용하고,
+  같은 `synthetic_id` 중복 결과를 제거한다.
+
+**구현 메모**:
+- `pipeline/rag.py` 의 로컬 Hugging Face snapshot 탐색 경로에 프로젝트 `.cache/huggingface`
+  루트와 사용자 `~/.cache/huggingface` 루트를 추가해, 기존 로컬 캐시를 쓰고 네트워크 fallback 을 피하게 했다.
+
+**검증**:
+- build 성공: rows 3000, vectors 15000, dimension 384.
+- smoke query:
+  - "검찰/안전계좌/5000만원" → top 3 모두 `기관 사칭`.
+  - "인스타그램/해외 군인/통관 수수료" → top 2 `로맨스 스캠`, top 3 `메신저 피싱`.
+  - "택배 주소 오류 링크/신분증 사진" → top 2 `스미싱`.
+
+---
+
+# Synthetic Corpus v2 — RAG/관계형 메타데이터 확장 (2026-06-01)
+
+목적: 3000건 synthetic_scam_message 를 classifier/GLiNER 학습뿐 아니라 multi-view RAG 에도
+쓸 수 있게 `scenario_id`, `scenario_ko`, `slots`, `relations`, `rag_texts`, `flag_groups`
+필드를 추가한다.
+
+- [x] 생성기 렌더 단계에서 slot value 보존
+- [x] flag group / relation / rag_texts 생성 로직 추가
+- [x] 3000건 JSONL 재생성
+- [x] 스키마·span·flag group·loader 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**산출물**:
+- `scripts/generate_synthetic_training_data.py` 확장.
+- `data/generated/scamguardian_synthetic_3000.jsonl` 재생성.
+
+**추가 필드**:
+- `scenario_id`: 템플릿 ID. 예: `smishing_tax_refund`.
+- `scenario_ko`: scam_type 별 한국어 scenario 설명 + 템플릿 ID.
+- `slots`: 렌더링에 사용된 slot value dict. 같은 slot 이 여러 번 나오면 list 로 보존.
+- `flag_groups`: `pipeline.flag_groups.group_of()` 기준 risk_flags 의 그룹 ID list.
+- `relations`: lightweight triples. `flag supports scam_type`, `group groups_signal_for scam_type`,
+  `entity typed_as label`, `entity evidence_candidate_for flag`.
+- `rag_texts`: `case`, `scenario`, `pattern`, `entity_pattern`, `evidence_terms` multi-view 검색 텍스트.
+
+**검증**:
+- 생성 로그: 3000 rows, 12개 유형 각 250건, template families 60개.
+- 커스텀 검증: 필수 v2 필드 누락 0, entity span mismatch 0, invalid flag/label 0,
+  flag_groups mismatch 0.
+- v2 통계: 평균 relations 16.37개/row, 평균 slots 3.27개/row.
+- `python -m training.data --extra-jsonl data/generated/scamguardian_synthetic_3000.jsonl`
+  기존 로더 호환 확인.
+
+---
+
+# Synthetic Training Data 3000 — scam_attempt 증강 (2026-06-01)
+
+목적: 실제 도메인 데이터 부족을 보완하기 위해 12개 사기 유형별 균형 synthetic_scam_message
+3000건을 생성한다. 본문은 `[사람이름]` 같은 마스킹 토큰이 아니라 자연스러운 가상값을 사용하고,
+엔티티는 `entities[]` span 라벨로 제공한다.
+
+- [x] 기존 학습 스키마/라벨/flag 확인
+- [x] 12개 유형별 템플릿과 슬롯 사전 기반 생성기 추가
+- [x] 3000건 JSONL 생성 (`data/generated/scamguardian_synthetic_3000.jsonl`)
+- [x] 분포/스키마/GLiNER 로더 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**산출물**:
+- `scripts/generate_synthetic_training_data.py` — deterministic generator. 기본 `--total 3000`,
+  `--seed 20260601`, 출력 `data/generated/scamguardian_synthetic_3000.jsonl`.
+- `data/generated/scamguardian_synthetic_3000.jsonl` — 12개 scam_type × 250건 = 총 3000건.
+
+**설계**:
+- 본문은 `[사람이름]` 같은 placeholder 노출 없이 가상 이름·기관·금액·URL 등 자연 문자열 사용.
+- `entities[]` 에 `text`, `label`, `start`, `end` span 포함 — GLiNER loader 가 바로 사용 가능.
+- `risk_flags[]` 는 `pipeline.config.DETECTED_FLAGS` 안의 기존 flag 만 사용.
+- `source_ref=synthetic_template/<scam_type>/<template_id>` 로 템플릿 family 를 묶어
+  `training/splits.py` 의 group split 이 train/val leakage 를 피할 수 있게 함.
+
+**검증**:
+- 생성 로그: 3000 rows, 12개 유형 각 250건, template families 60개, family 당 50건.
+- 커스텀 검증: content_label/scam_type/risk_flags/entity label/span mismatch 모두 0건.
+- `python -m training.data --extra-jsonl data/generated/scamguardian_synthetic_3000.jsonl`
+  - content gate examples: 3025 (`scam_attempt` 3025)
+  - scam_type classifier examples: 3025
+  - GLiNER examples: 3019, 평균 엔티티/문서 3.4
+
+---
+
 # 3단계 캐스케이드 — 콘텐츠 게이트 + multi-label 라우팅 (2026-05-19)
 
 목적: 12개 사기유형 단일 강제 분류의 두 결함 해결 —

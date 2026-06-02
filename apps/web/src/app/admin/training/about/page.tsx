@@ -102,7 +102,7 @@ export default function TrainingAboutPage() {
           <p className="max-w-3xl text-sm leading-relaxed text-slate-400">
             ScamGuardian 의 분석은 6 단계로 이뤄집니다. 그중 두 단계에는 작은 AI 모델 두 개가 일하고 있어요.
             처음에는 인터넷에 공개된 <strong className="text-cyan-200">공용 모델</strong>(누군가 미리 만들어 둔 신입 같은 존재) 을 그대로 가져다 씁니다.
-            여기에 우리 사기 자료로 연습을 시키면 점점 한국 사기 말투에 익숙해지고 실수가 줄어듭니다 — 그 연습이 바로 <strong className="text-fuchsia-200">"공부시키기"</strong>예요.
+            여기에 우리 사기 자료로 연습을 시키면 점점 한국 사기 말투에 익숙해지고 실수가 줄어듭니다 — 그 연습이 바로 <strong className="text-fuchsia-200">&quot;공부시키기&quot;</strong>예요.
             연습이 끝나면 <strong className="text-white">[적용]</strong> 버튼 한 번으로 다음 분석부터 새 모델이 자동으로 일하게 됩니다.
           </p>
         </header>
@@ -267,7 +267,7 @@ export default function TrainingAboutPage() {
           </div>
           <p className="mt-4 text-xs text-slate-400">
             자료가 부족할 때는 (1) 사람이 직접 정답을 매기는 화면(<code className="rounded bg-slate-950/40 px-1">/admin</code>)을 활용하거나,
-            (2) 정상 콜센터 통화 자료를 추가해 "정상 사례" 를 보강하거나,
+            (2) 정상 콜센터 통화 자료를 추가해 &quot;정상 사례&quot; 를 보강하거나,
             (3) AI 에게 합성 사례를 만들게 해 드물게 보이는 사기 종류(예: 코인·로맨스·납치 협박) 를 채우는 방법이 있습니다.
           </p>
         </section>
@@ -282,7 +282,7 @@ export default function TrainingAboutPage() {
             </li>
             <li className="rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3">
               <span className="mr-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-cyan-500/20 font-mono text-xs text-cyan-200">2</span>
-              "지금부터는 새 모델 사용" 이라는 메모가 시스템에 기록됩니다
+              &quot;지금부터는 새 모델 사용&quot; 이라는 메모가 시스템에 기록됩니다
             </li>
             <li className="rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3">
               <span className="mr-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-cyan-500/20 font-mono text-xs text-cyan-200">3</span>
@@ -308,7 +308,7 @@ export default function TrainingAboutPage() {
             <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
               <div className="text-sm font-semibold text-white">외부에서 가져온 자료 (선택 사항)</div>
               <p className="mt-1 text-xs text-slate-400">
-                예를 들어 정부의 공공 데이터(AI Hub) 의 정상 콜센터 통화 자료를 받아 "정상 사례" 로 추가하면, 모델이 정상 vs 사기 차이를 더 잘 구분합니다.
+                예를 들어 정부의 공공 데이터(AI Hub) 의 정상 콜센터 통화 자료를 받아 &quot;정상 사례&quot; 로 추가하면, 모델이 정상 vs 사기 차이를 더 잘 구분합니다.
                 또는 AI 가 만든 합성 사례로 드문 사기 유형을 채울 수도 있습니다.
               </p>
             </div>

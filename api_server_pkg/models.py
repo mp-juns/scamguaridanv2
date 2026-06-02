@@ -80,3 +80,5 @@ class StartTrainingRequest(BaseModel):
     val_ratio: float = 0.1
     seed: int = 17
     base_model: str | None = None
+    early_stopping_patience: int = 2
+    early_stopping_threshold: float = 0.0
