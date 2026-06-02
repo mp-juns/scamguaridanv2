@@ -1,3 +1,40 @@
+# BeeStation SMB Backup Rework (2026-06-02)
+
+목적: Windows BeeStation 동기화 폴더 기반 백업이 사용자 환경에서 확인되지 않아, BeeStation/SMB 방식으로
+프로젝트 DB·데이터·WSL 복구 백업 전략을 다시 설계한다.
+
+- [x] BeeStation SMB/공유 폴더 방식 공식 정보 확인
+- [x] 현재 생성된 백업 파일 경로 재검증
+- [x] SMB 마운트에 필요한 서버/share/계정 정보 정리
+- [x] SMB 백업 스크립트 또는 실행 절차 작성
+- [x] 검증 결과와 Review 기록
+
+## Review
+
+**확인**:
+- 이전 백업 파일은 Windows BeeStation 동기화 폴더 안에는 존재했다.
+  - `/mnt/c/Users/kimju/BeeStation/A-EYE/ScamGuardianBackups/pre-kyy-20260602_223128/scamguardian-critical-data-with-env.tgz`
+- 다만 BeeStation Desktop 동기화 폴더와 SMB 로컬 접근은 별개다.
+- Synology 공식 매뉴얼 기준 BeeStation SMB 접근은 `System Settings > Advanced Settings > Local Access`
+  에서 `Local Account`와 `SMB Service`를 켜야 한다.
+- WSL 현재 환경에는 `mount.cifs`/`smbclient`가 설치되어 있지 않았다.
+
+**추가**:
+- `scripts/backup_project_data_to_beestation_smb.sh`
+  - `BEE_SMB_URL='//<beestation-ip>/<share>'`, `BEE_SMB_USER`, `BEE_SMB_PASS`로 SMB 마운트 후 tar 백업.
+- `scripts/backup_wsl_export_to_beestation_smb.ps1`
+  - Windows PowerShell에서 `wsl --export` 결과를 BeeStation SMB 공유로 직접 저장.
+
+**필요 정보**:
+- BeeStation 로컬 IP 또는 호스트명
+- SMB share 이름 (`home`, 사용자 폴더, 또는 BeeStation에서 보이는 공유명)
+- BeeStation Local Account 사용자명/비밀번호
+
+**참고**:
+- WSL 데이터 백업은 실행 중인 `ext4.vhdx` 직접 복사보다 `wsl --export`가 안전하다.
+
+---
+
 # KYY Merge + Full Project Analysis (2026-06-02)
 
 목적: 현재 프로젝트 전체 변경분을 GitHub 에 먼저 올려 안전 지점을 만들고, 상위 폴더의

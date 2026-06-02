@@ -272,9 +272,16 @@ KYY 병합에서 새로 강하게 들어온 기능:
 - `scripts/backup_project_data_to_beestation.sh`
   - `.env`, SQLite DB, active model pointer, generated data, RAG index, labeling drafts, task notes를 tar로 묶는다.
   - `FULL_TRAINING=1`을 주면 `.scamguardian/training_sessions`까지 별도 아카이브로 묶는다.
+- `scripts/backup_project_data_to_beestation_smb.sh`
+  - BeeStation SMB 공유를 WSL에 CIFS로 마운트해 같은 핵심 백업을 직접 쓴다.
+  - 필요 환경변수: `BEE_SMB_URL`, `BEE_SMB_USER`, `BEE_SMB_PASS`.
+  - WSL에 `mount.cifs`가 없으면 `sudo apt install -y cifs-utils`가 먼저 필요하다.
 - `scripts/backup_wsl_export_to_beestation.ps1`
   - Windows PowerShell에서 실행한다.
   - 실행 중인 `ext4.vhdx`를 직접 복사하지 않고 `wsl --export Ubuntu ...tar`로 복구 가능한 WSL 스냅샷을 만든다.
+- `scripts/backup_wsl_export_to_beestation_smb.ps1`
+  - Windows PowerShell에서 BeeStation SMB 경로(`\\server\share`)로 WSL export tar를 직접 저장한다.
+  - BeeStation은 System Settings > Advanced Settings > Local Access 에서 Local Account와 SMB Service를 켜야 한다.
 
 검증된 상태:
 
