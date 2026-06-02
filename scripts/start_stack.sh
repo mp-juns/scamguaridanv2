@@ -85,6 +85,8 @@ echo "[start] starting backend (uvicorn :$BACKEND_PORT) in conda env '$CONDA_ENV
 cd "$ROOT_DIR"
 PYTHONUNBUFFERED=1 nohup conda run --no-capture-output -n "$CONDA_ENV" python -u -m uvicorn api_server:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload --log-level info \
   >"$LOG_DIR/backend.log" 2>&1 &
+# backend 가 ML 모델 로딩하는 동안 동시 시작 부하 분산 — 메모리 spike 완화.
+sleep 3
 
 # (CHANGED) sleep 3 대신 backend /health 폴링 — ML 워밍업이 끝나야 frontend 시작.
 # 두 프로세스가 동시에 메모리 spike 를 일으키면 8GB WSL 한도를 잠깐 넘기고

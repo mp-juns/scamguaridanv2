@@ -296,6 +296,12 @@ export default function Home() {
             >
               📚 EVIDENCE — 학술·법적 근거
             </Link>
+            <Link
+              className="rounded-full border border-rose-400/40 px-3 py-1 text-xs text-rose-200 transition hover:bg-rose-500/10"
+              href="/live"
+            >
+              🎙️ LIVE VOICE — 통화 중 사기 탐지
+            </Link>
           </div>
 
           <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">

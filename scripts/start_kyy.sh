@@ -36,26 +36,65 @@ pkill -f "cloudflared.*${FRONTEND_PORT}" >/dev/null 2>&1 || true
 
 echo "[kyy] root=$ROOT_DIR (ports: backend=$BACKEND_PORT, frontend=$FRONTEND_PORT)"
 
-# === 1. cloudflared 먼저 띄워서 public URL 확보 ===
+# === 1. cloudflared 먼저 띄워서 public URL 확보 (IPv4 A 레코드 보장) ===
+# trycloudflare quick tunnel 은 가끔 AAAA(IPv6) 만 가진 호스트네임을 줘서
+# IPv4-only 환경(한국 모바일/홈 인터넷)에서 접속 불가. IPv4 안 붙으면 재시도.
 PUBLIC_URL=""
 if [[ -x "$CLOUDFLARED_BIN" ]]; then
-  echo "[kyy] starting cloudflared quick tunnel → :$FRONTEND_PORT"
-  : > "$LOG_DIR/cloudflared-kyy.log"
-  nohup "$CLOUDFLARED_BIN" tunnel --url "http://localhost:${FRONTEND_PORT}" --no-autoupdate \
-    >"$LOG_DIR/cloudflared-kyy.log" 2>&1 &
-  # quick tunnel URL 이 로그에 찍힐 때까지 최대 15초 대기
-  # -a : 이전 프로세스 잔여 NUL 바이트 때문에 grep 이 binary 로 인식하는 거 방어
-  # || true : grep 비매칭 시 pipefail+set -e 가 스크립트 죽이는 거 방어
-  for _ in $(seq 1 30); do
-    PUBLIC_URL="$(grep -oaE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG_DIR/cloudflared-kyy.log" 2>/dev/null | head -1 || true)"
-    if [[ -n "$PUBLIC_URL" ]]; then break; fi
-    sleep 0.5
+  for attempt in 1 2 3; do
+    echo "[kyy] starting cloudflared quick tunnel → :$FRONTEND_PORT (attempt $attempt/3)"
+    pkill -f "cloudflared.*${FRONTEND_PORT}" >/dev/null 2>&1 || true
+    sleep 1
+    : > "$LOG_DIR/cloudflared-kyy.log"
+    nohup "$CLOUDFLARED_BIN" tunnel --url "http://localhost:${FRONTEND_PORT}" --no-autoupdate \
+      >"$LOG_DIR/cloudflared-kyy.log" 2>&1 &
+    # quick tunnel URL 이 로그에 찍힐 때까지 최대 15초 대기
+    # -a : 이전 프로세스 잔여 NUL 바이트 때문에 grep 이 binary 로 인식하는 거 방어
+    # || true : grep 비매칭 시 pipefail+set -e 가 스크립트 죽이는 거 방어
+    CANDIDATE=""
+    for _ in $(seq 1 30); do
+      CANDIDATE="$(grep -oaE 'https://[a-z0-9]+-[a-z0-9-]+\.trycloudflare\.com' "$LOG_DIR/cloudflared-kyy.log" 2>/dev/null | head -1 || true)"
+      if [[ -n "$CANDIDATE" ]]; then break; fi
+      sleep 0.5
+    done
+    if [[ -z "$CANDIDATE" ]]; then
+      echo "[kyy]   URL 추출 실패 — 재시도"
+      continue
+    fi
+    HOST="${CANDIDATE#https://}"
+    # Cloudflare IPv4 anycast 로 강제 접속해서 터널 라우팅 자체가 살아있는지 확인.
+    # WSL DNS resolver 는 trycloudflare A 레코드를 못 보는 경우가 잦지만 사용자 폰
+    # (KT/SKT/LG U+) 은 받기 때문에, DNS 시야 대신 IPv4 anycast 응답으로 채택.
+    # (104.16.231.132 = trycloudflare anycast IPv4)
+    #
+    # 중요: 이 시점엔 :3101 frontend 가 아직 안 떠 있어서 origin 으로 향한 응답은
+    # 보통 502 Bad Gateway. 502 라도 *Cloudflare 가 호스트네임을 알고 라우팅 중*
+    # 이라는 증거이므로 OK. 모르는 호스트면 SSL 에러 / HTTP 000 나옴 → 그것만 reject.
+    REACHABLE=""
+    CODE=""
+    for _ in $(seq 1 20); do
+      CODE="$(curl -sI -m 4 \
+        --resolve "${HOST}:443:104.16.231.132" \
+        -o /dev/null -w '%{http_code}' \
+        "https://${HOST}" 2>/dev/null || true)"
+      # 000 = connect/SSL 실패. 그 외 응답 코드는 모두 "터널 라우팅 OK" 로 간주.
+      if [[ -n "$CODE" && "$CODE" != "000" ]]; then
+        REACHABLE=1
+        break
+      fi
+      sleep 0.75
+    done
+    if [[ -n "$REACHABLE" ]]; then
+      PUBLIC_URL="$CANDIDATE"
+      echo "[kyy]   ✅ $PUBLIC_URL (IPv4 anycast reachable, HTTP $CODE — frontend 기동 후 200 예상)"
+      break
+    fi
+    echo "[kyy]   ⚠️  $CANDIDATE — IPv4 anycast 미응답 (HTTP $CODE), 새 터널 요청"
   done
   if [[ -n "$PUBLIC_URL" ]]; then
-    echo "[kyy] public URL: $PUBLIC_URL"
     export SCAMGUARDIAN_PUBLIC_URL="$PUBLIC_URL"
   else
-    echo "[kyy] cloudflared URL 추출 실패 — $LOG_DIR/cloudflared-kyy.log 확인"
+    echo "[kyy] cloudflared URL 확보 실패 (3회 모두 IPv4 anycast 무응답) — $LOG_DIR/cloudflared-kyy.log 확인"
   fi
 else
   echo "[kyy] cloudflared 바이너리 없음 ($CLOUDFLARED_BIN) — 로컬 전용으로만 동작"
@@ -69,11 +108,14 @@ PYTHONUNBUFFERED=1 nohup conda run --no-capture-output -n "$CONDA_ENV" \
   >"$LOG_DIR/backend-kyy.log" 2>&1 < /dev/null &
 
 # === 3. frontend ===
-echo "[kyy] starting frontend (next dev :$FRONTEND_PORT)..."
+# ⚠️ Next 16 의 `next dev` 기본 번들러가 Turbopack 인데, WSL 환경에서 freeze
+# 현상 (파일 watcher 폭증 추정) 이 발생해 webpack 으로 강제. --webpack 은 Next 16
+# 의 명시적 opt-out 플래그.
+echo "[kyy] starting frontend (next dev :$FRONTEND_PORT, webpack)..."
 cd "$ROOT_DIR/apps/web"
 nohup bash -lc "
   export SCAMGUARDIAN_API_URL='http://127.0.0.1:${BACKEND_PORT}'
-  npm run dev -- --hostname 0.0.0.0 --port '$FRONTEND_PORT'
+  npm run dev -- --webpack --hostname 0.0.0.0 --port '$FRONTEND_PORT'
 " >"$LOG_DIR/frontend-kyy.log" 2>&1 < /dev/null &
 
 echo "[kyy] up — logs:"
@@ -81,4 +123,7 @@ echo "  backend    : $LOG_DIR/backend-kyy.log"
 echo "  frontend   : $LOG_DIR/frontend-kyy.log"
 echo "  cloudflared: $LOG_DIR/cloudflared-kyy.log"
 echo "  로컬 접속  : http://127.0.0.1:${FRONTEND_PORT}"
-[[ -n "$PUBLIC_URL" ]] && echo "  공개 URL   : $PUBLIC_URL"
+if [[ -n "$PUBLIC_URL" ]]; then
+  echo "  공개 URL   : $PUBLIC_URL"
+  echo "  카카오 스킬: $PUBLIC_URL/webhook/kakao"
+fi

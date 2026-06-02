@@ -46,6 +46,11 @@ VIRUSTOTAL_API_KEY=...                 # Phase 0 안전성
 SCAMGUARDIAN_DATABASE_URL=postgresql:// # 없으면 SQLite
 SCAMGUARDIAN_PERSIST_RUNS=true          # 분석 결과 DB 저장
 SCAMGUARDIAN_PUBLIC_URL=https://...     # 결과 페이지 베이스
+
+# STT 백엔드 (음성·통화 분석)
+STT_BACKEND=whisper                     # whisper | claude | clova
+CLOVA_INVOKE_URL=https://...            # STT_BACKEND=clova 일 때 필수 (audio 화자 분리)
+CLOVA_SECRET_KEY=...                    # STT_BACKEND=clova 일 때 필수
 ```
 
 ### 실행
@@ -131,11 +136,27 @@ scripts/             배치 인제스트·운영 스크립트
 
 - **카카오톡 챗봇**: `POST /webhook/kakao` (오픈빌더 연동)
 - **웹 분석**: `https://<host>/` (프론트엔드)
+- **Live Voice**: `https://<host>/live` (통화 녹음 화자 분리 + chunk 스트리밍 분석)
 - **어드민**: `https://<host>/admin/*` (라벨링 / 플랫폼 / 학습)
 - **REST API**: `POST /api/analyze` (외부 클라이언트, API key 필요)
+- **STT only**: `POST /api/transcribe-upload` (Phase 1 전사만)
+- **스트리밍 분석**: `POST /api/analyze-stream` (긴 음성 chunk NDJSON)
 - **결과 공개 페이지**: `/result/[token]` (1시간 TTL)
 
 자세한 내용은 [`.scamguardian/README.md`](./.scamguardian/README.md) 참고.
+
+## 통화 녹음 분석 (STT + 화자 분리)
+
+보이스피싱 통화 녹음을 분석할 때 두 가지를 강화했습니다:
+
+- **STT 정확도** — Whisper 의 침묵·노이즈 구간 환각(학습 데이터 phrase 무한 반복)을
+  도메인 어휘 prompt 제거 + 알려진 phrase strip + 반복 squash + VAD 전처리로 차단.
+- **화자 분리** — `STT_BACKEND=clova` 면 Naver CLOVA Speech 의 audio-based diarization
+  으로 `상대방`(사기범) / `본인`(피해자)을 직접 분리. Whisper 백엔드는 `pipeline/diarize.py`
+  의 텍스트 기반 Claude Haiku 분리로 fallback.
+
+이로써 *피해자 측 compliance signal* (메타인식·민감정보 누설·송금 동의·권위 굴복)을
+분석할 수 있고, 이는 v4 Live Call Guard ("사기 후가 아닌 사기 중 차단")의 기반입니다.
 
 ## APK 검출 (4-tier — 정적 3 + 동적 1 인터페이스)
 

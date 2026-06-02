@@ -689,6 +689,120 @@
   - content gate examples: 3025 (`scam_attempt` 3025)
   - scam_type classifier examples: 3025
   - GLiNER examples: 3019, 평균 엔티티/문서 3.4
+# Project Analysis Refresh — 2026-05-29
+
+목적: 현재 워크트리 기준으로 ScamGuardian 의 구조, 진행 중 변경, 실행/로그 상태, 우선 리스크를 다시 진단한다.
+
+- [x] 저장소 구조와 기존 교훈/작업 기록 확인
+- [x] 백엔드/API 진입점과 파이프라인 현재 흐름 확인
+- [x] 프론트엔드/API proxy 및 새 live/stream 경로 확인
+- [x] 현재 로그에서 실행 상태와 대표 오류 확인
+- [x] 테스트/빌드/문서 정합성 확인
+- [x] 주요 강점, 리스크, 다음 개선 우선순위 정리
+
+## Review
+
+**요약**: `api_server.py` 는 여전히 얇은 FastAPI entrypoint 이고, 실제 앱 조립은
+`api_server_pkg.app.create_app()` 에서 라우터 단위로 관리된다. 핵심 검출 흐름은
+`pipeline.runner.ScamGuardianPipeline` 이 Phase 0/0.5/0.6/1/1.5~5 를 오케스트레이션하며,
+외부 응답은 `DetectionReport.detected_signals[]` 중심으로 점수·등급 없는 schema 를 유지한다.
+최근 작업의 중심은 CLOVA STT + audio diarization, `/api/transcribe-upload`, `/api/analyze-stream`,
+Next `/live` 페이지다.
+
+**현재 워크트리**:
+- 기존 수정/추가 파일이 많다. 주요 축: `pipeline/stt.py` CLOVA 백엔드/환각 완화,
+  `api_server_pkg/transcribe.py` STT-only endpoint, `api_server_pkg/stream_analyze.py`
+  청크 NDJSON 분석, `apps/web/src/app/live/*` 라이브 업로드 UI.
+- `tasks/todo.md` 는 이번 분석 기록 때문에 추가 수정됨. 그 외 변경은 기존 작업분으로 보이며 건드리지 않았다.
+
+**로그 관찰**:
+- `.scamguardian/logs/clova-kyy.log` 기준 CLOVA 는 60초 청크를 약 3.6~4.1초에 처리했고,
+  `segments` 와 `turns` 를 정상 생성했다.
+- `.scamguardian/logs/backend.log` 는 13:26 전후까지 admin/training API 200 응답이 반복되어
+  backend 가 정상 처리한 흔적이 있다.
+- `.scamguardian/logs/backend-kyy.log` 는 8001 서버가 워밍업 후 shutdown 된 기록이 있어
+  kyy 전용 stack 은 재확인이 필요하다. sandbox 제한으로 현재 host process/port 는 직접 확인하지 못했다.
+- `cloudflared-kyy.log` 는 quick tunnel 생성 성공. 단 quick tunnel 은 uptime 보장이 없으므로 시연용으로만 적합.
+
+**검증**:
+- `timeout 60s pytest tests/test_detection_report_schema.py tests/test_result_content_type.py tests/test_gate.py tests/test_stage2_routing.py -q`
+  → 59 passed.
+- `npm run lint` (`apps/web`) → 실패. `react/no-unescaped-entities` 14 errors
+  (`admin/training/about/page.tsx`, `live/LiveVoiceUpload.tsx`) + unused warning 2개
+  (`admin/stats/page.tsx`).
+
+**리스크**:
+- Identity Boundary 위반 잔여: `apps/web/src/app/methodology/page.tsx` 는 아직 점수·등급 산정 방식 페이지이고,
+  `apps/web/src/app/live/page.tsx`, `pipeline/kakao_formatter.py`, 일부 metadata 는 "차단/위험도/점수" 표현이 남아 있다.
+- `/live` 는 클라이언트 regex alert 를 쓰며 `level`/경보 표현을 노출한다. 제품 의도상 실시간 경고는 필요하지만,
+  "판정" 이 아니라 "검출된 통화 신호" 로 문구를 정렬해야 한다.
+- `SCAMGUARDIAN_INTERNAL_API_KEY` 가 없으면 Next proxy 의 `/api/transcribe-upload`,
+  `/api/analyze-stream`, `/api/analyze-upload` 는 백엔드 `PlatformMiddleware` 에서 401 이 난다.
+- README 의 `pytest # 114 passed` 는 현재 테스트 수와 맞지 않는다.
+
+**다음 우선순위**:
+1. 프론트 lint 14 errors 를 먼저 정리해 build gate 를 회복.
+2. `/methodology` 를 점수 산정 페이지에서 신호 근거 페이지로 전환하거나 route 를 숨김.
+3. `/live` 와 카카오 문구를 "위험 신호 검출" 언어로 재정렬하고 `score_delta`/`triggered_flags` compatibility 타입을 단계적으로 걷어냄.
+4. kyy stack 재기동 스크립트로 backend/frontend/cloudflared 실제 포트 상태를 검증.
+
+---
+
+# Project Analysis — 2026-05-28
+
+목적: 현재 ScamGuardian 코드베이스의 구조, 핵심 흐름, 실행 가능성, 리스크를 빠르게 진단한다.
+
+- [x] 저장소 구조와 기존 교훈/작업 기록 확인
+- [x] 백엔드/API 진입점과 파이프라인 흐름 확인
+- [x] 프론트엔드/API proxy 구조 확인
+- [x] 테스트/빌드/의존성 상태 확인
+- [x] 주요 강점, 리스크, 다음 개선 우선순위 정리
+
+## Review
+
+**요약**: FastAPI 진입점은 `api_server.py` → `api_server_pkg.app.create_app()` 로 잘 분리되어 있고,
+핵심 분석은 `pipeline.runner.ScamGuardianPipeline` 이 Phase 0/0.5/0.6/1/1.5~5 를 오케스트레이션한다.
+외부 응답은 `pipeline.signal_detector.DetectionReport` 중심으로 점수·등급 없이 `detected_signals[]` 를 노출하는
+Identity Boundary 를 대체로 잘 지킨다. Next.js 는 `apps/web/src/app/api/_lib/backend.ts` 의 thin proxy 구조다.
+
+**검증**:
+- `timeout 45s pytest tests/test_detection_report_schema.py tests/test_gate.py tests/test_stage2_routing.py tests/test_signal_detection.py -q`
+  → 57 passed.
+- `npm run lint` (`apps/web`) → 실패. `react/no-unescaped-entities` 14 errors, unused warnings 2개.
+- 전체 `pytest -q` 는 322개 수집 후 `tests/test_admin_auth.py` 구간에서 출력 없이 장시간 대기해 중단 판단. 별도 원인 확인 필요.
+
+**리스크**:
+- 프론트 lint 가 깨져 CI/build gate 로 쓰기 어렵다.
+- README 의 테스트 수(114 passed) 와 현재 수집 수(322 items)가 맞지 않아 문서 갱신 필요.
+- 작업 트리에 기존 수정/추가 파일이 많아 변경 전 소유권 확인이 필요하다.
+
+---
+
+# PHH Data Fine-Tuning Check — 2026-05-29
+
+목적: 상위 폴더 `scamguardian-v2-phh/data` 에 기존 학습 데이터/파인튜닝 산출물이 있는지 확인하고,
+현재 kyy 프로젝트의 training 파이프라인으로 재사용 가능한지 검증한다.
+
+- [x] sibling `scamguardian-v2-phh/data` 구조와 JSONL/checkpoint/metric 파일 확인
+- [x] 현재 training 로더가 읽을 수 있는 포맷인지 dry-run/stat 으로 검증
+- [x] 데이터가 충분하고 의존성이 준비되어 있으면 classifier LoRA fine-tuning 실행
+- [x] 기존 fine-tuned/benchmark 산출물 존재 여부와 실행 결과 정리
+
+## Review
+
+- PHH `data` 에서 `generated_data/scamguardianv2_manual_diverse_synthetic_nodup_2026-05-27.jsonl`, `processed/user_samples_2026-05-26.jsonl`, `run_drafts.reviewed.jsonl` 확인.
+- 세 JSONL을 `.scamguardian/phh_training/phh_combined_classifier_20260529.jsonl` 로 병합: 310 rows, dedupe skip 1.
+- training 로더 기준 전체 content gate 335 examples, scam_type classifier 182 examples. `min_per_class=5` 적용 후 9개 유형 172 examples 사용.
+- PHH 기존 `checkpoints/classifier-v1` 는 LoRA adapter 형태이며 `active_models.json` 에 호환성 오류로 비활성화 기록 있음.
+- 학습 중 발견한 호환성 수정:
+  - `Trainer(tokenizer=...)` → `Trainer(processing_class=...)`
+  - LoRA+FP16 gradient unscale 오류 회피를 위해 `fp16=False`
+  - LoRA 산출물은 adapter와 merged full model을 함께 저장하도록 수정
+- 최종 산출물: `.scamguardian/phh_training/classifier-lora-merged-20260529`
+  - train=158, val=14, epochs=3, LoRA trainable params 2,685,705 / total 281,501,970 (0.9541%)
+  - eval_accuracy=0.142857, eval_macro_f1=0.040404
+  - `AutoModelForSequenceClassification` 로 9개 한국어 scam_type label 로드 확인
+  - 품질이 낮아 운영 활성화는 보류 권장
 
 ---
 

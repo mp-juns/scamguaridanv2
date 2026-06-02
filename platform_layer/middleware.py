@@ -38,6 +38,8 @@ log = logging.getLogger("middleware")
 _REQUIRE_KEY_PATTERNS = [
     re.compile(r"^/api/analyze$"),
     re.compile(r"^/api/analyze-upload$"),
+    re.compile(r"^/api/transcribe-upload$"),
+    re.compile(r"^/api/analyze-stream$"),
 ]
 # API key 선택 (있으면 기록만)
 _OPTIONAL_KEY_PATTERNS = [

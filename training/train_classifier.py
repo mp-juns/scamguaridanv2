@@ -278,7 +278,16 @@ def main() -> None:
         json.dumps(label2id, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    trainer.save_model(args.output_dir)
+    if args.lora and hasattr(trainer.model, "merge_and_unload"):
+        (out_path / "adapter").mkdir(parents=True, exist_ok=True)
+        trainer.model.save_pretrained(out_path / "adapter")
+        merged_model = trainer.model.merge_and_unload()
+        merged_model.config.label2id = label2id
+        merged_model.config.id2label = id2label
+        merged_model.save_pretrained(args.output_dir)
+        tokenizer.save_pretrained(args.output_dir)
+    else:
+        trainer.save_model(args.output_dir)
     emit_metric({"kind": "done", "final_metrics": metrics})
     log.info("저장 완료 → %s", args.output_dir)
 
