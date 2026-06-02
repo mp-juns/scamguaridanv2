@@ -288,3 +288,14 @@ synthetic extra JSONL 포함 학습셋 12025건과 혼동을 만들었다.
 **적용 시점**: 다음번에도 정체성 변경·필드 폐기·token name rename 같은 큰 일이 있을 때 *반드시* 회귀 가드 테스트 동반.
 
 ---
+# 2026-06-02 — PowerShell PSDrive paths are not external program paths
+
+When a PowerShell script maps an SMB share with `New-PSDrive` (for example `BEE:`), do not pass that
+`BEE:\...` path directly to external programs such as `wsl.exe`. They may not understand PowerShell-only
+drive aliases and can fail while the script continues unless `$LASTEXITCODE` is checked.
+
+Rule:
+- Export/create large artifacts to a real local Windows path first, then `Copy-Item` to the PSDrive/SMB path.
+- After every external command, check `$LASTEXITCODE` and verify the expected file exists before printing success.
+
+---

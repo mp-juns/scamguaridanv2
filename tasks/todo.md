@@ -39,6 +39,8 @@
 
 **참고**:
 - WSL 데이터 백업은 실행 중인 `ext4.vhdx` 직접 복사보다 `wsl --export`가 안전하다.
+- `backup_wsl_export_to_beestation_smb.ps1`는 `wsl.exe`가 PowerShell 전용 `BEE:\...` 경로를 이해하지 못해
+  실패했던 문제를 수정했다. 이제 Windows `%TEMP%`에 먼저 export 한 뒤 SMB 경로로 복사하고, exit code와 파일 존재를 검증한다.
 
 ---
 
