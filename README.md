@@ -69,7 +69,7 @@ python run_analysis.py --text "투자 설명 텍스트"
 
 ### 테스트
 ```bash
-pytest    # 114 passed
+pytest    # 322 passed
 ```
 
 ## 브랜치별 작업 정리
@@ -213,6 +213,44 @@ Lv 3 는 인터페이스 + flag 카탈로그까지 박혔고, 실제 remote VM �
 2. **부족 4라벨** (취업알바·건강식품·납치·부동산) 시나리오 추가 합성
 3. **AI Hub 71768 일부 normal 발췌** (200~500건) — 분량 통제 후 머지
 4. **v2 도달 시 base 모델 ablation** — mDeBERTa-v3 vs KcELECTRA-base-v2022 vs klue/roberta-base
+
+## Fine-tuning & 합성 데이터
+
+검출 파이프라인의 학습 가능한 두 모델을 도메인 특화로 fine-tune 합니다. **전 과정 상세 가이드는
+[`training/FINETUNING.md`](./training/FINETUNING.md)** 를 참고하세요 (데이터 준비 → 합성 생성 →
+학습 → 평가 → 비교 → 파이프라인 적용).
+
+| 모델 | base | 역할 | 추론 위치 |
+|---|---|---|---|
+| 스캠 유형 분류기 | `mDeBERTa-v3-base-mnli-xnli` | scam_type 12종 multi-class | Phase 2 `classifier.py` |
+| 엔티티 추출기 | `taeminlee/gliner_ko` | 스캠 엔티티 NER | Phase 3 `extractor.py` |
+
+### 데이터 3소스
+
+1. **사람 라벨링** — `/admin` 큐에서 확정한 `human_annotations` (자동 유입)
+2. **외부 JSONL** — AI Hub 등 변환 데이터 (`--extra-jsonl`)
+3. **합성 데이터** — [`scripts/generate_synthetic_training_data.py`](./scripts/generate_synthetic_training_data.py):
+   12 scam_type × 5 템플릿 패밀리(=60 템플릿)를 슬롯 채우기로 렌더. 엔티티 span 자동 기록 +
+   risk_flags/flag_groups + RAG 뷰까지 생성, 고정 seed 로 재현 가능. 희귀 유형 클래스 불균형 보강용.
+
+```bash
+# 1) 합성 데이터 생성 (유형별 균등)
+python scripts/generate_synthetic_training_data.py --total 3000 --seed 20260601
+# 2) 분류기 LoRA fine-tune (early stopping)
+python -m training.train_classifier --output-dir checkpoints/classifier-v1 \
+    --extra-jsonl data/generated/scamguardian_synthetic_3000.jsonl --epochs 3 --lora --bf16
+# 3) /admin/training "파이프라인 적용" → active_models.json 등록 → 자동 swap
+```
+
+### 학습 시스템 특징
+
+- **웹 UI** (`/admin/training`): subprocess 백그라운드 학습 + `metrics.jsonl` 폴링 진행률 그래프 +
+  활성화 버튼. "가짜 실패(false failure)" 상태 보정 포함.
+- **LoRA/PEFT 어댑터** 체크포인트 자동 로딩, `--early-stopping`, `--fp16/--bf16` 지원.
+- **자동 swap**: `.scamguardian/active_models.json` 등록 시 60초 내 파이프라인 반영, 무효 경로는 base fallback.
+- **원본↔Fine-tuned 비교**: zero-shot vs 체크포인트 예측을 나란히 대조 + 합성 데이터 지식그래프 시각화.
+
+> `data/generated/` 합성 코퍼스·RAG 인덱스는 `.gitignore` 대상입니다 (스크립트로 재생성).
 
 ## 배포
 
