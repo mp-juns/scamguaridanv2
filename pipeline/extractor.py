@@ -119,6 +119,7 @@ class Entity:
 
 
 _gliner_loaded_path: str | None = None
+_compare_gliner_cache: dict[str, GLiNER] = {}
 
 
 def _resolve_gliner_source() -> str:
@@ -153,6 +154,25 @@ def _get_model() -> GLiNER | None:
         print(f"[추출] GLiNER 로드 실패({desired}), 규칙 기반 추출로 계속 진행합니다: {exc}")
         return None
     return _gliner_model
+
+
+def _get_model_from_path(model_path: str) -> GLiNER | None:
+    if model_path == MODELS["gliner"]:
+        try:
+            return _compare_gliner_cache.setdefault(model_path, GLiNER.from_pretrained(model_path))
+        except Exception as exc:
+            print(f"[추출] base GLiNER 로드 실패({model_path}): {exc}")
+            return None
+    cached = _compare_gliner_cache.get(model_path)
+    if cached is not None:
+        return cached
+    try:
+        model = GLiNER.from_pretrained(model_path)
+        _compare_gliner_cache[model_path] = model
+        return model
+    except Exception as exc:
+        print(f"[추출] 비교용 GLiNER 로드 실패({model_path}): {exc}")
+        return None
 
 
 def _extract_by_rules(text: str, target_labels: set[str]) -> list[Entity]:
@@ -275,13 +295,14 @@ def _extract_by_gliner(
     text: str,
     labels: list[str],
     threshold: float,
+    model_path: str | None = None,
 ) -> list[Entity]:
     """GLiNER로 의미적 엔티티를 추출한다."""
     gliner_labels = [l for l in labels if l not in RULE_BASED_LABELS]
     if not gliner_labels:
         return []
 
-    model = _get_model()
+    model = _get_model_from_path(model_path) if model_path else _get_model()
     if model is None:
         return []
 
@@ -365,6 +386,7 @@ def extract(
     scam_type: str,
     labels: list[str] | None = None,
     threshold: float | None = None,
+    model_path: str | None = None,
 ) -> list[Entity]:
     """
     하이브리드 방식으로 텍스트에서 엔티티를 추출한다.
@@ -388,7 +410,7 @@ def extract(
     target_labels = set(labels)
 
     rule_entities = _extract_by_rules(text, target_labels & RULE_BASED_LABELS)
-    gliner_entities = _extract_by_gliner(text, labels, threshold)
+    gliner_entities = _extract_by_gliner(text, labels, threshold, model_path=model_path)
 
     # GLiNER 결과 후처리: 스캠 유형 컨텍스트 기반 재분류
     gliner_entities = _postprocess(gliner_entities, scam_type, target_labels)

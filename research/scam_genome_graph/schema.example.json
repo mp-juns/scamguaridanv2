@@ -1,0 +1,68 @@
+{
+  "sample_id": "synthetic-000001",
+  "text": "서울중앙지검 수사관입니다. 본인 명의 계좌가 사건에 연루되어 오늘 오후 3시까지 안전계좌로 이체가 필요합니다.",
+  "source": "synthetic",
+  "source_ref": null,
+  "content_label": "scam_attempt",
+  "sample_kind": "synthetic_scam_message",
+  "scam_type": "기관 사칭",
+  "signals": [
+    "권위자 사칭",
+    "법적 압박",
+    "긴급성",
+    "금전 요구"
+  ],
+  "entities": [
+    {
+      "text": "서울중앙지검",
+      "label": "기관명"
+    },
+    {
+      "text": "수사관",
+      "label": "직함"
+    },
+    {
+      "text": "오늘 오후 3시",
+      "label": "시간"
+    }
+  ],
+  "entity_labels": [
+    "기관명",
+    "직함",
+    "시간"
+  ],
+  "expression_patterns": [
+    "본인 명의 계좌가 사건에 연루",
+    "안전계좌",
+    "오늘 오후 3시까지"
+  ],
+  "requested_actions": [
+    "이체"
+  ],
+  "edges": [
+    {
+      "type": "HAS_TYPE",
+      "target": "scam_type:기관 사칭"
+    },
+    {
+      "type": "HAS_SIGNAL",
+      "target": "signal:권위자 사칭"
+    },
+    {
+      "type": "HAS_SIGNAL",
+      "target": "signal:긴급성"
+    },
+    {
+      "type": "HAS_ENTITY_LABEL",
+      "target": "entity_label:기관명"
+    },
+    {
+      "type": "USES_PATTERN",
+      "target": "pattern:안전계좌"
+    },
+    {
+      "type": "REQUESTS_ACTION",
+      "target": "action:이체"
+    }
+  ]
+}

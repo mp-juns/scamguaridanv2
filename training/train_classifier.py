@@ -20,8 +20,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import time
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -69,6 +71,8 @@ def main() -> None:
     parser.add_argument("--bf16", action="store_true", help="CUDA mixed precision BF16 사용")
     parser.add_argument("--early-stopping-patience", type=int, default=2, help="eval macro-F1 개선이 멈춘 epoch 허용 횟수. 0 이하면 비활성화")
     parser.add_argument("--early-stopping-threshold", type=float, default=0.0, help="개선으로 인정할 최소 eval macro-F1 증가폭")
+    parser.add_argument("--diagnostic-loss-threshold", type=float, default=3.0, help="이 값 이상의 batch loss 는 loss_spikes.jsonl 에 배치 진단을 기록")
+    parser.add_argument("--diagnostic-max-records", type=int, default=200, help="한 학습 세션에서 기록할 loss spike 최대 개수")
     parser.add_argument("--no-negatives", action="store_true", help="정상 대화 샘플 제외")
     parser.add_argument("--dry-run", action="store_true", help="데이터 통계만 출력하고 학습 X")
     args = parser.parse_args()
@@ -131,10 +135,26 @@ def main() -> None:
         return Dataset.from_dict({
             "text": [e.text for e in examples],
             "label": [label2id[e.label] for e in examples],
+            "example_idx": list(range(len(examples))),
+            "text_len": [len(e.text) for e in examples],
         })
 
     train_ds = to_hf(train_examples)
     val_ds = to_hf(val_examples)
+    train_meta: dict[int, dict[str, Any]] = {
+        i: {
+            "idx": i,
+            "label": e.label,
+            "source": e.source,
+            "content_label": e.content_label,
+            "sample_kind": e.sample_kind,
+            "run_id": e.run_id,
+            "source_ref": e.source_ref,
+            "text_len": len(e.text),
+            "preview": e.text[:180].replace("\n", " "),
+        }
+        for i, e in enumerate(train_examples)
+    }
 
     def tokenize(batch):
         return tokenizer(
@@ -189,6 +209,10 @@ def main() -> None:
     # 5) Trainer + 진행률 콜백 (UI 폴링용 metrics.jsonl 에 기록)
     from transformers import EarlyStoppingCallback, TrainerCallback
 
+    out_path = Path(args.output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    diag_path = out_path / "loss_spikes.jsonl"
+
     class MetricsEmitCallback(TrainerCallback):
         """매 logging step / eval / epoch 마다 sessions.emit_metric() 으로 기록."""
 
@@ -220,6 +244,87 @@ def main() -> None:
                 "max_epoch": args.num_train_epochs,
             })
 
+    class DiagnosticTrainer(Trainer):
+        """High-loss batch 를 역추적하기 위한 per-sample 진단을 남긴다."""
+
+        def __init__(self, *trainer_args, **trainer_kwargs):
+            super().__init__(*trainer_args, **trainer_kwargs)
+            self._diagnostic_records = 0
+
+        def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+            import torch
+            import torch.nn.functional as F
+
+            example_idx = inputs.pop("example_idx", None)
+            text_len = inputs.pop("text_len", None)
+            labels = inputs.get("labels")
+            outputs = model(**inputs)
+            logits = outputs.logits
+            per_sample_loss = F.cross_entropy(logits, labels, reduction="none")
+            loss = per_sample_loss.mean()
+
+            should_record = (
+                self.model.training
+                and args.diagnostic_loss_threshold > 0
+                and self._diagnostic_records < args.diagnostic_max_records
+                and float(loss.detach().cpu()) >= args.diagnostic_loss_threshold
+            )
+            if should_record:
+                probs = torch.softmax(logits.detach(), dim=-1)
+                preds = torch.argmax(probs, dim=-1)
+                top_values, top_positions = torch.topk(
+                    per_sample_loss.detach(),
+                    k=min(3, int(per_sample_loss.numel())),
+                )
+                example_idx_list = example_idx.detach().cpu().tolist() if example_idx is not None else []
+                text_len_list = text_len.detach().cpu().tolist() if text_len is not None else []
+                labels_list = labels.detach().cpu().tolist()
+                preds_list = preds.detach().cpu().tolist()
+                probs_list = probs.detach().cpu().tolist()
+                examples_payload: list[dict[str, Any]] = []
+                for value, position in zip(top_values.cpu().tolist(), top_positions.cpu().tolist()):
+                    idx = int(example_idx_list[position]) if position < len(example_idx_list) else -1
+                    gold_id = int(labels_list[position])
+                    pred_id = int(preds_list[position])
+                    meta = train_meta.get(idx, {"idx": idx})
+                    examples_payload.append({
+                        **meta,
+                        "sample_loss": float(value),
+                        "gold_id": gold_id,
+                        "gold_label": id2label.get(gold_id, str(gold_id)),
+                        "pred_id": pred_id,
+                        "pred_label": id2label.get(pred_id, str(pred_id)),
+                        "pred_confidence": float(probs_list[position][pred_id]),
+                        "batch_text_len": int(text_len_list[position]) if position < len(text_len_list) else None,
+                    })
+                payload = {
+                    "kind": "loss_spike",
+                    "model": "classifier",
+                    "step": int(self.state.global_step),
+                    "epoch": self.state.epoch,
+                    "loss": float(loss.detach().cpu()),
+                    "max_sample_loss": float(top_values[0].detach().cpu()),
+                    "batch_size": int(per_sample_loss.numel()),
+                    "learning_rate": self._get_learning_rate(),
+                    "examples": examples_payload,
+                    "ts": time.time(),
+                }
+                with diag_path.open("a", encoding="utf-8") as fp:
+                    fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                emit_metric({
+                    "kind": "loss_spike",
+                    "model": "classifier",
+                    "step": payload["step"],
+                    "epoch": payload["epoch"],
+                    "loss": payload["loss"],
+                    "max_sample_loss": payload["max_sample_loss"],
+                    "batch_size": payload["batch_size"],
+                    "learning_rate": payload["learning_rate"],
+                })
+                self._diagnostic_records += 1
+
+            return (loss, outputs) if return_outputs else loss
+
     emit_metric({"kind": "start", "model": "classifier", "labels": labels_sorted, "train_size": len(train_examples), "val_size": len(val_examples)})
 
     training_args = TrainingArguments(
@@ -240,6 +345,7 @@ def main() -> None:
         fp16=args.fp16,
         bf16=args.bf16,
         report_to=["none"],
+        remove_unused_columns=False,
     )
 
     callbacks: list[TrainerCallback] = [MetricsEmitCallback()]
@@ -256,7 +362,7 @@ def main() -> None:
             args.early_stopping_threshold,
         )
 
-    trainer = Trainer(
+    trainer = DiagnosticTrainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
@@ -272,8 +378,6 @@ def main() -> None:
     log.info("최종 평가: %s", json.dumps(metrics, ensure_ascii=False, indent=2))
 
     # label2id 같이 저장 — 추론 시 필요
-    out_path = Path(args.output_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
     (out_path / "label2id.json").write_text(
         json.dumps(label2id, ensure_ascii=False, indent=2),
         encoding="utf-8",

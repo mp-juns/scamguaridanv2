@@ -5,6 +5,25 @@
 
 ---
 
+## 2026-06-02 — GLiNER 완료 판정은 train/val JSON 이 아니라 모델 가중치로 확인
+
+**상황**: GLiNER 세션이 `completed` 로 보였지만 실제 산출물은 `train.json`, `val.json`,
+`labels.json` 뿐이었다. 현재 `capstone` 의 GLiNER `0.2.26` 은 `fit()` 메서드가 없어
+fine-tune 을 실행하지 못했는데도, 세션 관리자가 output directory 에 파일이 있다는 이유만으로
+성공으로 오판했다.
+
+**처방**:
+- 학습 세션의 성공 여부는 준비 데이터가 아니라 실제 모델 artifact 로 판단한다.
+- GLiNER 는 최소한 weight 파일(`model.safetensors`/`pytorch_model.bin` 등)과 config 파일이
+  있어야 활성화 가능하게 한다.
+- trainer API 가 없는 버전에서 JSON 만 저장한 경우 `completed` 가 아니라 `failed` 로 끝낸다.
+- 추출기 성능 비교를 할 때는 추출기 자체 변화와 classifier 가 예측한 `scam_type` 변화가 섞이지 않도록
+  같은 scam_type 으로 raw/fine-tuned extractor 를 따로 비교한다.
+
+**적용 시점**: GLiNER/NER/fine-tuning 세션, active model swap, 학습 완료 UI 표시를 만들거나 고칠 때.
+
+---
+
 ## 2026-06-02 — 학습 환경은 `python`이 아니라 목표 conda env 이름으로 확인
 
 **상황**: 사용자는 `capstone` conda env 에서 학습하길 원했지만, assistant 가 현재 shell 의

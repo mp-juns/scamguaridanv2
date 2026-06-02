@@ -1,3 +1,441 @@
+# KYY Merge + Full Project Analysis (2026-06-02)
+
+목적: 현재 프로젝트 전체 변경분을 GitHub 에 먼저 올려 안전 지점을 만들고, 상위 폴더의
+`scamguardian-v2-kyy` 내용물만 현재 프로젝트에 병합 복사한 뒤 전체 프로젝트 규모와 구조를 다시 분석한다.
+
+- [ ] 현재 저장소/원격/상위 KYY 폴더 상태 확인
+- [ ] 현재 변경분을 커밋하고 원격 브랜치에 푸시
+- [ ] `../scamguardian-v2-kyy/` 내용물만 현재 프로젝트 루트로 병합 복사
+- [ ] 병합 후 Git diff/주요 충돌/위험 파일 확인
+- [ ] 전체 프로젝트 구조·규모·핵심 모듈 분석 기록
+- [ ] 검증 결과와 Review 기록
+
+## Review
+
+진행 중.
+
+---
+
+# Model Compare Selection + Model Management Page (2026-06-02)
+
+목적: 모델 비교 분석에서 사용할 fine-tuned 모델 세션을 사용자가 선택하게 하고, 학습 페이지와 분리된
+모델 관리 페이지를 추가한다.
+
+- [x] 현재 compare API/session/active model 구조 확인
+- [x] compare 페이지에 fine-tuned classifier/GLiNER 세션 선택 UI 추가
+- [x] backend compare API 가 선택된 세션을 사용하도록 확장
+- [x] 별도 모델 관리 페이지/API 연결 추가
+- [x] lint/type/smoke 검증 및 Review 기록
+
+## Review
+
+**수정**:
+- `apps/web/src/app/admin/training/compare/CompareClient.tsx`
+  - 완료된 classifier/GLiNER 학습 세션을 불러와 비교에 사용할 모델을 선택할 수 있게 했다.
+  - 비교 범위가 classifier only 일 때는 GLiNER 선택을 비활성화한다.
+- `api_server_pkg/admin_training.py`
+  - compare API 가 `classifier_session_id`, `gliner_session_id` 를 받아 선택된 체크포인트로 비교한다.
+  - raw 추출기는 base GLiNER, fine-tuned 추출기는 선택한 GLiNER 세션을 사용한다.
+- `pipeline/extractor.py`
+  - 활성 모델을 바꾸지 않고도 특정 GLiNER 경로로 추출할 수 있게 비교용 모델 캐시를 추가했다.
+- `apps/web/src/app/admin/training/models/`
+  - 별도 모델 관리 페이지를 추가했다.
+  - 완료된 classifier/GLiNER 세션을 목록화하고, 각 모델을 파이프라인 active 모델로 적용할 수 있게 했다.
+- `apps/web/src/app/admin/training/page.tsx`, `apps/web/src/app/admin/training/compare/page.tsx`
+  - Fine-tuning, 모델 비교, 모델 관리 화면 사이 이동 링크를 추가했다.
+
+**검증**:
+- `python -m py_compile api_server_pkg/admin_training.py pipeline/extractor.py`
+- `cd apps/web && npx tsc --noEmit`
+- `cd apps/web && npm run lint`
+- `git diff --check`
+
+---
+
+# Sequential Dual Training Order (2026-06-02)
+
+목적: classifier+GLiNER 동시 학습 선택 시 병렬 실행을 막고, GLiNER 완료 후 GPU 휴식 시간을 둔 뒤
+classifier 를 시작하도록 변경한다.
+
+- [x] 현재 multi-model 학습 시작 API/세션 흐름 확인
+- [x] GLiNER → cooldown → classifier 순차 실행 구조로 수정
+- [x] UI/API 상태 표시가 깨지지 않는지 확인
+- [x] smoke/문법 검증 및 Review 기록
+
+## Review
+
+**수정**:
+- `api_server_pkg/admin_training.py`
+  - `models=["classifier", "gliner"]` 요청은 병렬 시작하지 않고 `["gliner", "classifier"]` 로 재정렬한다.
+  - 둘 이상 선택 시 `training.sessions.start_sequential_sessions(...)` 로 넘긴다.
+  - cooldown 기본값은 `SCAMGUARDIAN_TRAINING_COOLDOWN_SECONDS` 또는 `120`초.
+- `training/sessions.py`
+  - `start_sequential_sessions(...)` 추가.
+  - 첫 세션만 즉시 시작하고 나머지는 `queued` 로 둔다.
+  - 이전 세션이 `completed` 여야 cooldown 후 다음 세션을 시작한다.
+  - 이전 세션이 `failed/cancelled` 면 뒤 세션은 `skipped`.
+- `apps/web/src/app/admin/training/TrainingClient.tsx`
+  - 버튼 문구를 `동시 학습 시작` 에서 `순차 학습 시작` 으로 변경했다.
+
+**검증**:
+- monkeypatch smoke 로 dual request 시 최초 `gliner` 만 시작되고 `classifier` 는 queued 임을 확인.
+- `python -m py_compile training/sessions.py api_server_pkg/admin_training.py`
+- `cd apps/web && npx tsc --noEmit`
+- `git diff --check`
+
+---
+
+# Optimize GLiNER Training Memory (2026-06-02)
+
+목적: GLiNER 학습 시 RAM/디스크/VRAM 사용량을 줄이고, 웹 기본값이 과도한 장기 학습으로
+빠지지 않도록 한다.
+
+- [x] 현재 GLiNER 메모리 사용 원인 후보 정리
+- [x] Transformers/GLiNER Trainer 가 지원하는 절감 옵션 확인
+- [x] `train_gliner.py` 에 token truncation / checkpoint 경량화 / bf16 옵션 추가
+- [x] 웹 세션 기본 GLiNER max steps/저장 정책 조정
+- [x] smoke 검증 및 Review 기록
+
+## Review
+
+**수정**:
+- `training/train_gliner.py`
+  - `--max-tokens` 기본 384 를 추가해 긴 `tokenized_text` 를 잘라 메모리와 느린 샘플을 줄인다.
+  - `--no-bf16` 옵션을 추가하고, CUDA bf16 지원 시 자동 bf16 학습을 켠다.
+  - GLiNER wrapper 가 gradient checkpointing 을 지원하지 않으면 자동 비활성화한다.
+  - `save_strategy="no"` + `save_only_model=True` 로 중간 checkpoint 의 optimizer/scheduler/rng 저장을 막는다.
+  - 최종 `trainer.save_model()` 만 수행해 실제 모델 artifact 는 유지한다.
+- `training/sessions.py`
+  - 웹 GLiNER 세션 기본 `--max-steps` 를 `3000` 으로 제한한다.
+  - 필요 시 `SCAMGUARDIAN_GLINER_MAX_STEPS` 로 조정 가능하다.
+
+**검증**:
+- `conda run -n capstone python -m training.train_gliner ... --max-steps 1 --device cuda`
+  - CUDA 장치 `NVIDIA GeForce RTX 5070 Ti` 확인.
+  - bf16 enabled, gradient checkpointing unsupported → 자동 disabled 확인.
+  - 1 step smoke 성공.
+  - 이전 smoke 에서 생기던 `optimizer.pt`/`scheduler.pt`/`rng_state.pth` 가 더 이상 생성되지 않음.
+- `python -m py_compile training/train_gliner.py training/sessions.py`
+- `git diff --check`
+
+---
+
+# GLiNER Runtime Device Check (2026-06-02)
+
+목적: GLiNER 학습이 CPU/RAM 을 쓰는지 GPU/VRAM 을 쓰는지 현재 실행 상태와 코드 경로로 확인한다.
+
+- [x] 실행 중인 GLiNER/학습 프로세스 확인
+- [x] capstone 환경의 torch CUDA 가시성 확인
+- [x] GLiNER train script 의 device 이동/Trainer 설정 확인
+- [x] 필요 시 GPU 강제 설정 패치
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**관찰**:
+- 실행 중이던 GLiNER 세션 `d3f23bde9203` 는 `max_steps=21570`, `batch_size=5`,
+  `epochs=10` 으로 전체 학습을 시작했다.
+- 사용자가 본 RAM 10GiB 수준 사용은 GLiNER/HF Trainer 학습에서 가능하다. 모델 weight,
+  optimizer/checkpoint state, tokenizer/processor, train/val records, Python object overhead 가 합쳐진다.
+- sandbox 내부 일반 CUDA probe 는 `cuda_available=False` 였지만, 승인된 실제 학습 실행 경로에서는
+  `NVIDIA GeForce RTX 5070 Ti` 가 확인됐다.
+- CPU/RAM 폭주를 피하기 위해 해당 세션에 SIGTERM 을 보냈고 `exit_code=-15` 로 종료됐다.
+  이후 메모리는 `available 12Gi`, swap `0B` 로 회복됐다.
+
+**수정**:
+- `training/train_gliner.py`
+  - `--device auto|cuda|cpu` 옵션을 추가했다.
+  - `--device cuda` 인데 CUDA 가 없으면 `cuda_unavailable` metric 을 남기고 즉시 실패한다.
+  - CUDA 사용 시 `model.to("cuda")` 를 명시하고 장치명을 로그에 남긴다.
+- `training/sessions.py`
+  - 웹 UI 에서 시작하는 GLiNER 세션은 기본 `--device cuda` 로 실행된다.
+
+**검증**:
+- `conda run -n capstone python -m training.train_gliner ... --max-steps 1 --device cuda`
+  - `GLiNER CUDA 학습 장치: NVIDIA GeForce RTX 5070 Ti` 확인.
+  - 1 step 학습 완료.
+- `python -m py_compile training/train_gliner.py training/sessions.py`
+- `git diff --check`
+
+---
+
+# Fix GLiNER Train API (2026-06-02)
+
+목적: GLiNER `0.2.26` 환경에서 `fit()` 부재로 실패하던 학습 스크립트를 실제 지원 API인
+`train_model(...)` 경로로 전환한다.
+
+- [x] GLiNER `0.2.26` 학습 API 확인
+- [x] `training/train_gliner.py` 를 `fit()`/`train_model()` 호환 구조로 수정
+- [x] 작은 smoke 학습으로 실제 trainer 진입 확인
+- [x] py_compile 및 산출물 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**수정**:
+- `training/train_gliner.py`
+  - 기존 `model.fit(...)` 경로를 유지하되, 현재 GLiNER `0.2.26` 에서는
+    `model.train_model(...)` 로 학습하도록 fallback 을 추가했다.
+  - `--max-steps`, `--logging-steps`, `--save-steps` 옵션을 추가해 smoke/짧은 검증이 가능하게 했다.
+  - `--local-files-only` 옵션을 추가했다.
+  - local-only 일 때 GLiNER config 의 `model_name` 을 HuggingFace repo id 가 아니라 로컬 backbone
+    snapshot 경로로 바꾼 `_local_base_model` 을 만들어 HTTP metadata 요청을 막았다.
+- `training/sessions.py`
+  - 웹 UI 에서 시작하는 GLiNER 세션은 기본적으로 `SCAMGUARDIAN_HF_LOCAL_ONLY=1` 로 실행되게 했다.
+
+**검증**:
+- `conda run -n capstone python -m training.train_gliner ... --max-steps 1`
+  - `train_model 시작` 로그 확인.
+  - 1 step 학습 완료.
+  - `pytorch_model.bin`, `gliner_config.json`, tokenizer, `labels.json` 생성 확인.
+- `conda run -n capstone python -m training.train_gliner ... --max-steps 1 --local-files-only`
+  - HTTP 요청 없이 로컬 snapshot 경로로 1 step 학습 완료.
+- `python -m py_compile training/train_gliner.py training/sessions.py`
+- `git diff --check`
+
+---
+
+# GLiNER Training Failure Log Audit (2026-06-02)
+
+목적: GLiNER 학습 세션이 반복해서 오류나는 원인을 로그와 코드 경로 기준으로 분해한다.
+
+- [x] 최근 GLiNER 세션 로그/상태 파일 위치 확인
+- [x] GLiNER 세션별 status/train.log/metrics 핵심 에러 확인
+- [x] 학습 스크립트와 세션 매니저의 실패 판정 경로 확인
+- [x] 원인과 데이터 라벨 상태를 사용자에게 설명
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**관찰**:
+- 최근 GLiNER 세션 `94c6f3513c43`, `8ab60b5b4d37`, `7a8e5de7ba55` 는 모두
+  `status=failed`, `exit_code=2` 로 끝났다.
+- metrics 마지막 행은 모두 `kind=trainer_unavailable`, `gliner_version=0.2.26`,
+  `gliner_progress=0.2` 이다.
+- train 로그는 데이터 준비와 base model 로딩까지 성공한 뒤
+  "현재 GLiNER 버전(0.2.26)에 fit() 메서드가 없습니다" 경고를 찍고 종료한다.
+- 최신 synthetic corpus 기준 GLiNER 데이터는 `12019` 샘플, `39984` 엔티티, `50` 라벨로
+  로딩된다. token span 변환 후 최근 세션의 `train.json/val.json` 에는 `11984` 샘플,
+  `36005` 엔티티, `47` 라벨이 남았다.
+
+**원인**:
+- 직접 원인은 데이터 라벨 부재가 아니라 `training/train_gliner.py` 가 `model.fit(...)` 만
+  학습 API 로 가정하는 점이다.
+- 현재 capstone 환경의 GLiNER `0.2.26` 에는 `fit()` 이 없고, 대신
+  `UniEncoderSpanGLiNER.train_model(...)` 과 `create_training_args(...)` 가 있다.
+- 세션 매니저는 `train.json/val.json/labels.json` 만 생긴 상태를 실제 모델 학습 완료로 보지
+  않으므로, 모델 weight/config artifact 가 없으면 실패 처리하는 것이 맞다.
+
+**데이터 주의점**:
+- 직접 실패 원인은 아니지만 라벨 분포가 약간 불균형하다. 예: `금액` 6201개, `협박 대상 관계`
+  1개, `명제` 24개.
+- 일부 긴 원문/비사기성처럼 보이는 샘플이 entity 1개만 가진 채 들어가 있어, 학습 API 수정 후에는
+  데이터 품질 필터도 같이 보는 게 좋다.
+
+---
+
+# Split Model Compare Page + GLiNER Data Distribution (2026-06-02)
+
+목적: `/admin/training` 이 너무 많은 기능을 담고 있으므로 모델 비교 분석을 별도 페이지로 분리하고,
+training 페이지에는 GLiNER/추출기 전용 entity label 분포 그래프를 추가한다.
+
+- [x] 현재 training page / compare API / UI 위치 확인
+- [x] backend data-stats 에 GLiNER entity label 분포 추가
+- [x] training page 에 GLiNER entity distribution chart 추가
+- [x] 모델 비교 UI 를 별도 page/client 로 분리
+- [x] training page 에 비교 페이지 링크만 남기고 bulky compare section 제거
+- [x] py_compile/lint/type smoke 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**수정**:
+- `api_server_pkg/admin_training.py`
+  - data-stats 응답에 GLiNER 전용 entity label 분포를 추가했다.
+  - 최신 synthetic corpus 를 포함해 문서 수, entity 수, label 수, label별 count 를 반환한다.
+- `apps/web/src/app/admin/training/TrainingClient.tsx`
+  - GLiNER entity distribution 그래프를 추가했다. 상위 24개 label 을 막대그래프로 보여준다.
+  - 모델 비교 분석 UI 는 제거하고 별도 페이지 링크만 남겼다.
+- `apps/web/src/app/admin/training/compare/page.tsx`
+  - 모델 비교 분석 전용 페이지를 추가했다.
+- `apps/web/src/app/admin/training/compare/CompareClient.tsx`
+  - 기존 분석/Claude 분석/fine-tuned 분석 비교 UI 를 별도 client 로 분리했다.
+  - 비교 범위는 분류기+추출기, 분류기만, 추출기만 중 선택 가능하다.
+
+**검증**:
+- `python -m py_compile api_server_pkg/admin_training.py`
+- `npm run lint`
+- `npx tsc --noEmit`
+- `git diff --check`
+
+---
+
+# ScamGenomeGraph Research Plan (2026-06-02)
+
+목적: 사기 데이터를 단순 `text -> scam_type` 학습셋으로만 보지 않고, 데이터 간 연결성,
+특징 간 연결성, 유형 간 경계 구조를 연구 가능한 형태로 정리한다. 시각화는 선택 사항이며,
+우선은 분류기가 무엇을 보고 분류하는지 이해하고 관계 기반 데이터 구조를 설계한다.
+
+- [x] 현재 classifier 가 문맥을 어떻게 보고 분류하는지 설명
+- [x] 데이터 관계 그래프의 node/edge/schema 초안 설계
+- [x] 관계 점수 산식 초안 설계
+- [x] 이 구조가 fine-tuning/RAG/라벨 검수에 어떻게 쓰일지 정리
+- [x] 구현 전 검증 가능한 실험 계획 수립
+
+## Review
+
+**생성**:
+- `research/scam_genome_graph/README.md`
+- `research/scam_genome_graph/classifier_behavior.md`
+- `research/scam_genome_graph/graph_schema.md`
+- `research/scam_genome_graph/experiments.md`
+- `research/scam_genome_graph/schema.example.json`
+
+**내용**:
+- classifier 가 전체 문맥을 sequence classification 방식으로 처리하는 구조를 정리했다.
+- ScamGenomeGraph 를 sample/type/signal/entity/pattern/action 노드로 설계했다.
+- embedding similarity 와 structural similarity 를 결합하는 relation score 초안을 정의했다.
+- same-type cohesion, boundary mining, label error detection, RAG re-ranking,
+  loss spike explanation 실험 계획을 분리했다.
+
+---
+
+# Classifier Loss Spike Diagnostics (2026-06-02)
+
+목적: classifier 학습 중 loss 가 갑자기 튀는 이유를 최대한 추적할 수 있게 현재 로그/metrics 를
+확인하고, 필요한 배치 단위 진단 정보를 추가한다.
+
+- [x] 현재 train.log/metrics.jsonl 의 spike 구간 확인
+- [x] 학습 스크립트가 기록하는 metric 필드 확인
+- [x] loss spike 원인 후보를 데이터/optimizer/평가 기준으로 분해
+- [x] 필요 시 batch-level diagnostic logging 추가
+- [x] smoke 검증 및 Review 기록
+
+## Review
+
+**관찰**:
+- 현재 running classifier 세션 `1adb25f47004` 기준 loss spike 는 epoch 0.45~0.88 사이에 집중됐다.
+- top spike:
+  - step 1200: loss 7.166 / grad_norm 38.23 / lr 1.846e-05
+  - step 1900: loss 6.675 / grad_norm 2.927 / lr 1.941e-05
+  - step 1680: loss 4.883 / grad_norm 7068.015 / lr 1.963e-05
+- `step 1680` 은 gradient spike 성격이 강하고, `step 1200/1900` 은 high-loss hard batch 성격이 강하다.
+- 기존 기록은 20 step 평균 loss 만 있어 어떤 샘플이 원인인지는 역추적할 수 없었다.
+
+**수정**:
+- `training/train_classifier.py`
+  - `DiagnosticTrainer` 를 추가해 batch loss 가 `--diagnostic-loss-threshold` 이상이면
+    `output/loss_spikes.jsonl` 에 배치 진단을 남긴다.
+  - 기록 내용: step, epoch, batch loss, max sample loss, lr, batch size, top 3 sample.
+  - sample 별 기록: 정답 라벨, 예측 라벨, 예측 confidence, source, content_label, sample_kind,
+    run_id/source_ref, 길이, 본문 preview.
+  - 기본 threshold 는 3.0, 최대 기록 수는 200개.
+- `training/sessions.py`
+  - `read_loss_spikes()` 추가.
+- `GET /api/admin/training/sessions/{session_id}`
+  - `loss_spikes` 를 함께 반환.
+- `/admin/training`
+  - 세션 상세 그래프 아래 `손실 튐 진단` 패널 추가.
+  - spike step 별 top hard sample 을 펼쳐 볼 수 있게 했다.
+
+**주의**:
+- 이미 실행 중인 세션에는 새 진단 코드가 적용되지 않는다. 다음 classifier 학습부터
+  `loss_spikes.jsonl` 이 생성된다.
+
+**검증**:
+- `python -m py_compile training/train_classifier.py training/sessions.py api_server_pkg/admin_training.py` 통과.
+- `python -m training.train_classifier --dry-run --extra-jsonl data/generated/scamguardian_synthetic_12000.jsonl` 통과.
+- `npm run lint` 통과.
+- `npx tsc --noEmit` 통과.
+- `git diff --check` 통과.
+
+---
+
+# GLiNER Extractor Regression Guard (2026-06-02)
+
+목적: 추출기 성능이 더 나빠져 보이는 원인을 확인하고, GLiNER 가 실제 모델 가중치 없이
+`completed`/활성화되는 경로를 차단한다.
+
+- [x] 최근 GLiNER 세션의 metrics/log/output artifact 확인
+- [x] GLiNER 성공 판정을 실제 모델 artifact 기준으로 변경
+- [x] trainer unavailable 상태는 성공 종료가 아니라 실패로 처리
+- [x] 잘못된 GLiNER 체크포인트 활성화 방지
+- [x] py_compile/smoke 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**원인**:
+- 최근 GLiNER 세션 `4eb111e9fcbe`, `9e6344dad3b2` 는 `completed` 로 보였지만
+  `output/` 에 실제 모델 가중치가 없었다.
+- 산출물은 `train.json`, `val.json`, `labels.json` 뿐이었다. 이는 fine-tune 된 추출기 모델이 아니라
+  GLiNER 학습용 데이터 파일이다.
+- `capstone` 환경의 GLiNER 는 `0.2.26` 이고 `GLiNER.fit` 이 없다. 따라서 현재 스크립트는
+  내장 fine-tune 을 실행할 수 없었다.
+- 기존 `training/sessions.py` 는 GLiNER 성공 artifact 를 `output/` 에 파일이 하나라도 있으면
+  성공으로 봐서 data-only 세션을 완료로 오판했다.
+
+**수정**:
+- GLiNER 세션 완료 판정을 실제 모델 artifact 기준으로 변경했다.
+  - weight 후보: `model.safetensors`, `pytorch_model.bin`, `adapter_model.safetensors`
+  - config 후보: `config.json`, `gliner_config.json`, `tokenizer_config.json`
+- 기존 completed GLiNER 세션도 모델 artifact 가 없으면 조회 시 `failed` 로 보정한다.
+- GLiNER 학습 프로세스가 `rc=0` 으로 종료돼도 모델 artifact 가 없으면 `failed` 로 기록한다.
+- `activate_session()` 은 실제 체크포인트가 없으면 활성화를 거부한다.
+- `train_gliner.py` 는 `fit()` 이 없는 GLiNER 버전에서 더 이상 성공 종료하지 않고 `SystemExit(2)` 로 실패 처리한다.
+
+**검증**:
+- `python -m py_compile training/sessions.py training/train_gliner.py` 통과.
+- 기존 GLiNER 세션 3개가 `failed` 로 보정됨 확인.
+- data-only GLiNER 세션 활성화 시 `ValueError` 발생 확인.
+- `capstone` 환경에서 `gliner_version 0.2.26`, `class_has_fit False` 확인.
+- `git diff --check` 통과.
+
+---
+
+# Aggregated Training Data Graph + Extractor Direction (2026-06-02)
+
+목적: 추출기는 분류기와 달리 span 단위 수작업/검수 라벨링이 핵심임을 반영한다. 또한 데이터
+시각화는 세부 synthetic id 가 아니라 분류기/추출기 두 축과 각 축의 데이터 개수를 원 크기로 보여준다.
+
+- [x] 기존 synthetic corpus 의 classifier label / entity label 분포 확인
+- [x] extractor synthetic-only balancing 방향 보류
+- [x] synthetic graph 를 집계형 classifier/extractor 두 축 구조로 변경
+- [x] 원 크기가 데이터 개수를 반영하도록 frontend graph 조정
+- [x] py_compile/lint/type smoke 검증
+- [x] Review 섹션에 결과 기록
+
+## Review
+
+**판단**:
+- 기존 synthetic corpus 는 `scam_type` 기준으로는 12개 유형이 거의 균형이다.
+- GLiNER/추출기 관점에서는 12,019개 문서, 39,984개 엔티티가 있지만 entity label 분포가 불균형이다.
+  예: `금액` 6,201개, 일부 번호/주소류 200개, DB 유래 극소수 라벨은 1~26개.
+- 따라서 추출기는 synthetic 자동 증강만으로 끝내기보다, 기존 방식처럼 span 단위 수작업 라벨링과
+  초안 검수 workflow 가 핵심이다. synthetic 은 bootstrap/보조 재료로만 두는 게 안전하다.
+
+**구현**:
+- `/admin/training` synthetic graph payload 를 세부 id 그래프에서 집계형 그래프로 변경.
+  - 중심: `학습 데이터`
+  - 큰 축 1: `분류기`
+  - 큰 축 2: `추출기`
+  - 분류기 축 하위: scam_type 별 데이터 개수
+  - 추출기 축 하위: entity label 별 엔티티 개수
+- frontend graph layout 도 두 축 구조로 변경.
+  - 분류기 축은 왼쪽, 추출기 축은 오른쪽.
+  - 원 크기는 `weight` 로그 스케일로 데이터 개수를 반영.
+  - hover tooltip 은 `데이터 N개` 로 표시.
+- 기존 unrelated lint 에러였던 `LiveVoiceUpload.tsx` 의 unescaped quote 도 함께 정리했다.
+
+**검증**:
+- graph smoke: 63 nodes / 62 links, kind=`axis`, `corpus`, `entity_label`, `scam_type`.
+- `python -m py_compile api_server_pkg/admin_training.py` 통과.
+- `npm run lint` 통과.
+- `npx tsc --noEmit` 통과.
+- `git diff --check` 통과.
+
+---
+
 # Compare Scope Selection (2026-06-02)
 
 목적: raw/fine-tuned 비교 분석 시 분류기만 볼지, 추출기만 볼지, 둘 다 볼지 선택할 수 있게 한다.

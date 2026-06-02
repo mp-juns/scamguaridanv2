@@ -502,7 +502,7 @@ export default function LiveVoiceUpload() {
                           key={`scan-${m.flag}-${i}`}
                           className="rounded-full border border-rose-400/40 bg-rose-500/15 px-2 py-0.5 text-rose-100"
                         >
-                          {m.label_ko} · "{m.snippet}"
+                          {m.label_ko} · &quot;{m.snippet}&quot;
                         </li>
                       ))}
                     </ul>
@@ -698,7 +698,7 @@ export default function LiveVoiceUpload() {
                         : "border border-yellow-400/30 bg-yellow-500/10 text-yellow-100"
                     }`}
                   >
-                    {m.label_ko} · "{m.snippet}"
+                    {m.label_ko} · &quot;{m.snippet}&quot;
                   </li>
                 ))}
               </ul>
@@ -794,7 +794,7 @@ function ChunkRow({ chunk }: { chunk: StreamChunk }) {
               key={`${m.flag}-${i}`}
               className="rounded-full border border-rose-400/40 bg-rose-500/10 px-2 py-0.5 text-rose-100"
             >
-              {m.label_ko} · "{m.snippet}"
+              {m.label_ko} · &quot;{m.snippet}&quot;
             </li>
           ))}
         </ul>
