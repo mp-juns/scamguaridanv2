@@ -276,6 +276,9 @@ KYY 병합에서 새로 강하게 들어온 기능:
   - BeeStation SMB 공유를 WSL에 CIFS로 마운트해 같은 핵심 백업을 직접 쓴다.
   - 필요 환경변수: `BEE_SMB_URL`, `BEE_SMB_USER`, `BEE_SMB_PASS`.
   - WSL에 `mount.cifs`가 없으면 `sudo apt install -y cifs-utils`가 먼저 필요하다.
+- `scripts/backup_project_data_to_beestation_smb.ps1`
+  - Windows PowerShell에서 BeeStation SMB 공유를 매핑하고, WSL 내부 tar 파일을 `\\wsl$` 경유로 SMB에 복사한다.
+  - WSL sudo 없이 프로젝트 핵심 데이터 백업을 만들 때 사용한다.
 - `scripts/backup_wsl_export_to_beestation.ps1`
   - Windows PowerShell에서 실행한다.
   - 실행 중인 `ext4.vhdx`를 직접 복사하지 않고 `wsl --export Ubuntu ...tar`로 복구 가능한 WSL 스냅샷을 만든다.

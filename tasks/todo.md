@@ -22,8 +22,15 @@
 **추가**:
 - `scripts/backup_project_data_to_beestation_smb.sh`
   - `BEE_SMB_URL='//<beestation-ip>/<share>'`, `BEE_SMB_USER`, `BEE_SMB_PASS`로 SMB 마운트 후 tar 백업.
+- `scripts/backup_project_data_to_beestation_smb.ps1`
+  - Windows PowerShell에서 SMB 공유를 매핑한 뒤, WSL 내부 tar 파일을 `\\wsl$` 경유로 SMB에 복사.
+  - WSL sudo 비밀번호 없이 프로젝트 핵심 데이터 백업 가능.
 - `scripts/backup_wsl_export_to_beestation_smb.ps1`
   - Windows PowerShell에서 `wsl --export` 결과를 BeeStation SMB 공유로 직접 저장.
+
+**현재 192.168.0.23 확인**:
+- `192.168.0.23:445` 는 열려 있어 SMB 서비스는 네트워크상 접근 가능하다.
+- WSL에서 직접 CIFS 마운트하려면 sudo 비밀번호가 필요해 여기서 자동 실행은 중단했다.
 
 **필요 정보**:
 - BeeStation 로컬 IP 또는 호스트명
