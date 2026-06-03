@@ -19,6 +19,36 @@ apk_dynamic_server (이 VM)
 - 실제 악성 APK 실행은 본질적으로 위험 → production DB·키·`/mnt/c` 가 없는 빈 VM 에서만.
 - production 은 `APK_DYNAMIC_BACKEND=remote` + REMOTE_URL/TOKEN 이 있을 때만 호출 (로컬 실행 HARD BLOCK 유지).
 
+## WSL 에서 VM 전체 제어 (권장)
+
+수동으로 Windows PowerShell 에서 Multipass 를 켜고, VM 안에서 redroid/frida-server/API 서버를
+각각 띄우는 대신 WSL ScamGuardian repo 에서 컨트롤러를 실행한다.
+
+```bash
+# 최초 1회: VM 이 없으면 Windows/WSL 에서 생성
+multipass launch 22.04 --name sg-sandbox --cpus 4 --memory 6G --disk 30G
+
+# 최초 1회 또는 VM 패키지 깨졌을 때
+./scripts/apk_dynamic_vm_ctl.sh bootstrap
+
+# 평소 실행: VM 시작 → 코드 sync → redroid → frida-server → FastAPI → health
+./scripts/apk_dynamic_vm_ctl.sh start
+
+# 메인 ScamGuardian .env 에 APK_DYNAMIC_* 자동 반영
+./scripts/apk_dynamic_vm_ctl.sh apply-env
+
+# 이후 메인 서버 재시작
+./scripts/start_stack.sh
+```
+
+자주 쓰는 점검:
+
+```bash
+./scripts/apk_dynamic_vm_ctl.sh status
+./scripts/apk_dynamic_vm_ctl.sh health
+./scripts/apk_dynamic_vm_ctl.sh logs
+```
+
 ## 1. VM 부트스트랩 (Multipass Ubuntu 22.04)
 
 ```bash

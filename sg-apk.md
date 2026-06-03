@@ -115,6 +115,15 @@ adb shell "setsid /data/local/tmp/frida-server >/dev/null 2>&1 </dev/null &"
 
 ## 4. 서버 실행 + 검증 (Phase 2~4)
 
+현재는 아래 수동 절차 대신 WSL repo 에서 컨트롤러를 쓰는 것을 권장:
+
+```bash
+./scripts/apk_dynamic_vm_ctl.sh bootstrap   # 최초 1회
+./scripts/apk_dynamic_vm_ctl.sh start       # VM/redroid/frida/API 전부 기동
+./scripts/apk_dynamic_vm_ctl.sh apply-env   # 메인 ScamGuardian .env 에 연결값 반영
+./scripts/start_stack.sh                    # 메인 서버 재시작
+```
+
 ```bash
 # 코드 전달 (git clone 또는 multipass transfer)
 cd ~/sg-apkdyn/apk_dynamic_server      # apk_dynamic_server/ 가 여기 있다고 가정

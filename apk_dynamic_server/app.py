@@ -35,7 +35,10 @@ from typing import Any
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 
-import analyzer
+try:
+    from . import analyzer
+except ImportError:  # `cd apk_dynamic_server && python3 app.py` 실행 호환
+    import analyzer  # type: ignore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
 log = logging.getLogger("apk_dynamic_server")

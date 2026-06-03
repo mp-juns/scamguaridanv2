@@ -64,9 +64,10 @@ Java.perform(function () {
   });
   safe('abortBroadcast', function () {
     var BR = Java.use('android.content.BroadcastReceiver');
-    BR.abortBroadcast.implementation = function () {
+    var abort = BR.abortBroadcast.overload();
+    abort.implementation = function () {
       emit({ flag: 'apk_runtime_sms_intercepted', api: 'BroadcastReceiver.abortBroadcast' });
-      return this.abortBroadcast();
+      return abort.call(this);
     };
   });
 
@@ -85,19 +86,23 @@ Java.perform(function () {
   }
   safe('WindowManagerImpl.addView', function () {
     var WMImpl = Java.use('android.view.WindowManagerImpl');
-    WMImpl.addView.implementation = function (view, params) {
-      checkOverlayParams(params, 'WindowManagerImpl.addView');
-      return this.addView(view, params);
-    };
+    WMImpl.addView.overloads.forEach(function (ov) {
+      ov.implementation = function () {
+        if (arguments.length >= 2) checkOverlayParams(arguments[1], 'WindowManagerImpl.addView');
+        return ov.apply(this, arguments);
+      };
+    });
     send({ marker: 'hook_ok', target: 'WindowManagerImpl.addView' });
   });
   safe('WindowManagerGlobal.addView', function () {
     var WMG = Java.use('android.view.WindowManagerGlobal');
-    WMG.addView.implementation = function () {
-      // addView(view, params, display, parentWindow, ...) — params 는 두 번째 인자
-      if (arguments.length >= 2) checkOverlayParams(arguments[1], 'WindowManagerGlobal.addView');
-      return this.addView.apply(this, arguments);
-    };
+    WMG.addView.overloads.forEach(function (ov) {
+      ov.implementation = function () {
+        // addView(view, params, display, parentWindow, ...) — params 는 두 번째 인자
+        if (arguments.length >= 2) checkOverlayParams(arguments[1], 'WindowManagerGlobal.addView');
+        return ov.apply(this, arguments);
+      };
+    });
     send({ marker: 'hook_ok', target: 'WindowManagerGlobal.addView' });
   });
 

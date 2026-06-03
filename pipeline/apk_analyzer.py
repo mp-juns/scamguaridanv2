@@ -433,6 +433,7 @@ class APKDynamicStatus(str, Enum):
     DISABLED = "disabled"           # APK_DYNAMIC_ENABLED=0 기본
     BLOCKED_LOCAL = "blocked_local"  # 로컬 실행 시도 — HARD BLOCK 정책상 절대 안 돌림
     NOT_CONFIGURED = "not_configured"  # remote backend 인데 URL/TOKEN 없음
+    SKIPPED_STATIC = "skipped_static"  # Lv1/Lv2 정적 분석에서 이미 신호 검출 — VM 호출 생략
     COMPLETED = "completed"         # remote VM 에서 정상 완료
     ERROR = "error"                 # remote 호출 실패
 
@@ -441,7 +442,7 @@ class APKDynamicStatus(str, Enum):
 class APKDynamicReport:
     """Lv 3 동적 분석 결과 — 격리 VM 안에서 실제 실행 후 behavior 모니터링.
 
-    ⚠️ 현재 인터페이스만. 실제 remote VM 통합은 future work.
+    ⚠️ 실제 APK 실행은 remote 격리 VM 에서만 수행한다.
     로컬 실행은 절대 안 함 (호스트 위험).
     """
     status: APKDynamicStatus = APKDynamicStatus.DISABLED

@@ -395,20 +395,33 @@ class ScamGuardianPipeline:
             except Exception as exc:  # noqa: BLE001
                 print(f"[Phase 0.6] Lv 2 실패 (무시): {exc}")
 
-            # Lv 3 — 동적 분석 (기본 비활성, 격리 VM 만 허용)
-            print("[Phase 0.6] APK 동적 분석 (Lv 3 — 격리 VM 에뮬레이터)...")
-            try:
-                apk_dynamic_result = apk_analyzer.analyze_apk_dynamic(source)
-                self.last_apk_dynamic_result = apk_dynamic_result
-                status_val = apk_dynamic_result.status.value
-                print(
-                    f"      ← Lv 3: status={status_val} "
-                    f"backend={apk_dynamic_result.backend or '-'} "
-                    f"flags={len(apk_dynamic_result.detected_flags)}"
-                    + (f" — {apk_dynamic_result.error[:60]}" if apk_dynamic_result.error else "")
+            static_flags = set((apk_static_result.detected_flags if apk_static_result else []) or [])
+            static_flags.update((apk_bytecode_result.detected_flags if apk_bytecode_result else []) or [])
+            if static_flags:
+                apk_dynamic_result = apk_analyzer.APKDynamicReport(
+                    status=apk_analyzer.APKDynamicStatus.SKIPPED_STATIC,
+                    error="Lv1/Lv2 정적 분석에서 이미 신호가 검출되어 remote VM 동적 분석 생략.",
                 )
-            except Exception as exc:  # noqa: BLE001
-                print(f"[Phase 0.6] Lv 3 실패 (무시): {exc}")
+                self.last_apk_dynamic_result = apk_dynamic_result
+                print(
+                    "[Phase 0.6] APK 동적 분석 생략 "
+                    f"(Lv 1/2 정적 신호 {len(static_flags)}개 검출 — VM 호출 불필요)"
+                )
+            else:
+                # Lv 3 — 동적 분석 (기본 비활성, 격리 VM 만 허용)
+                print("[Phase 0.6] APK 동적 분석 (Lv 3 — 격리 VM 에뮬레이터)...")
+                try:
+                    apk_dynamic_result = apk_analyzer.analyze_apk_dynamic(source)
+                    self.last_apk_dynamic_result = apk_dynamic_result
+                    status_val = apk_dynamic_result.status.value
+                    print(
+                        f"      ← Lv 3: status={status_val} "
+                        f"backend={apk_dynamic_result.backend or '-'} "
+                        f"flags={len(apk_dynamic_result.detected_flags)}"
+                        + (f" — {apk_dynamic_result.error[:60]}" if apk_dynamic_result.error else "")
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[Phase 0.6] Lv 3 실패 (무시): {exc}")
 
             self._log_step(
                 "APK",
