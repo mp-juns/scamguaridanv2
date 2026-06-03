@@ -86,17 +86,24 @@ def sample_malware(
     *,
     min_vt: int = 10,
     pkg_filters: list[str] | None = None,
-    max_scan: int = 2_000_000,
+    max_scan: int = 1_000_000,
+    progress=None,
 ) -> list[dict]:
     """리스트를 스트리밍하며 vt_detection >= min_vt 인 샘플을 count 개 골라 메타 dict 리스트 반환.
 
     각 dict: {sha256, pkg_name, vt_detection(int), apk_size, scanned(누적 스캔 행수)}.
+
+    progress(scanned:int, found:int) -> bool|None — 25,000행마다 호출. True 반환 시 즉시 중단(취소).
+    max_scan 초과해도 중단 (pkg_filters 가 희귀하면 무한 스캔 방지).
     """
     pkg_filters = [p.lower() for p in (pkg_filters or []) if p]
     picked: list[dict] = []
     scanned = 0
     for row in iter_list_rows():
         scanned += 1
+        if progress is not None and scanned % 25_000 == 0:
+            if progress(scanned, len(picked)):
+                break
         if scanned > max_scan:
             break
         try:

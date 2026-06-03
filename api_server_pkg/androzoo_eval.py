@@ -34,6 +34,13 @@ _OUT_DIR = Path("data") / "androzoo" / "malware"
 _jobs: dict[str, dict[str, Any]] = {}
 _guard = threading.Lock()
 _run_lock = threading.Lock()  # 동시 벤치마크 1개 (네트워크/androguard 부하 제한)
+_active_id: str | None = None  # 현재 활성 벤치마크 — 새 요청이 이걸 취소하고 대체
+
+
+def _is_cancelled(bid: str) -> bool:
+    with _guard:
+        rec = _jobs.get(bid)
+        return bool(rec and rec.get("cancelled"))
 
 # self_signed 는 거의 모든 sideload APK 에 떠서 약한 신호 — strong 집계에서 제외.
 _WEAK_FLAGS = {"apk_self_signed"}
@@ -104,19 +111,38 @@ def _summarize(results: list[dict]) -> dict[str, Any]:
 
 
 def _run_benchmark(bid: str, req: BenchmarkRequest) -> None:
+    # 앞선(취소된) 벤치마크가 스트리밍을 멈추고 락을 놓을 때까지 대기 후 진행.
     with _run_lock:
+        if _is_cancelled(bid):
+            _update(bid, status="cancelled", phase="cancelled", message="취소됨")
+            return
         try:
             pkg_filters = [p.strip() for p in (req.pkg_grep or "").split(",") if p.strip()]
-            _update(bid, phase="sampling", message="AndroZoo 리스트 스트리밍 중…")
-            picked = az.sample_malware(req.count, min_vt=req.min_vt, pkg_filters=pkg_filters)
+            _update(bid, phase="sampling", message="AndroZoo 리스트 스트리밍 중… (0행)")
+
+            def _progress(scanned: int, found: int) -> bool:
+                if _is_cancelled(bid):
+                    return True
+                _update(bid, message=f"리스트 스트리밍 중… {scanned:,}행 스캔, {found}개 발견")
+                return False
+
+            picked = az.sample_malware(
+                req.count, min_vt=req.min_vt, pkg_filters=pkg_filters, progress=_progress
+            )
+            if _is_cancelled(bid):
+                _update(bid, status="cancelled", phase="cancelled", message="취소됨")
+                return
             if not picked:
                 _update(bid, status="error", phase="error",
-                        message="조건에 맞는 악성 샘플을 찾지 못했습니다 (min_vt/pkg_grep 조정).")
+                        message="조건에 맞는 악성 샘플을 못 찾았습니다 (min_vt 낮추거나 pkg 필터 완화).")
                 return
             _update(bid, phase="analyzing", total=len(picked),
                     message=f"{len(picked)}개 샘플 다운로드 + 분석…")
             results: list[dict] = []
             for i, meta in enumerate(picked):
+                if _is_cancelled(bid):
+                    _update(bid, status="cancelled", phase="cancelled", message="취소됨")
+                    return
                 rec = _analyze_one(meta["sha256"], meta)
                 results.append(rec)
                 _update(bid, results=list(results), done=i + 1,
@@ -135,19 +161,34 @@ def _update(bid: str, **fields: Any) -> None:
 
 
 def start_benchmark(req: BenchmarkRequest) -> dict[str, Any]:
-    if _run_lock.locked():
-        raise HTTPException(status_code=409, detail="이미 실행 중인 벤치마크가 있습니다.")
+    global _active_id
     bid = uuid.uuid4().hex[:12]
     rec = {
         "benchmark_id": bid, "status": "running", "phase": "queued",
         "message": "대기 중…", "total": req.count, "done": 0,
-        "results": [], "summary": None,
+        "results": [], "summary": None, "cancelled": False,
         "params": {"count": req.count, "min_vt": req.min_vt, "pkg_grep": req.pkg_grep},
     }
     with _guard:
+        # 직전 활성 벤치마크가 아직 돌고 있으면 취소 표시 → 그 스레드가 곧 멈추고 락을 놓는다.
+        prev = _jobs.get(_active_id) if _active_id else None
+        if prev is not None and prev.get("status") == "running":
+            prev["cancelled"] = True
+            prev["message"] = "새 벤치마크로 대체됨 (취소 중)…"
         _jobs[bid] = rec
+        _active_id = bid
     threading.Thread(target=_run_benchmark, args=(bid, req), daemon=True).start()
     return {"benchmark_id": bid, "status": "running"}
+
+
+def cancel_active() -> dict[str, Any]:
+    """현재 활성 벤치마크를 취소한다 (멈춘 잡 정리용)."""
+    with _guard:
+        rec = _jobs.get(_active_id) if _active_id else None
+        if rec is not None and rec.get("status") == "running":
+            rec["cancelled"] = True
+            return {"cancelled": True, "benchmark_id": rec["benchmark_id"]}
+    return {"cancelled": False}
 
 
 @router.post(
@@ -181,3 +222,12 @@ async def androzoo_benchmark_status(benchmark_id: str) -> dict[str, Any]:
     if rec is None:
         raise HTTPException(status_code=404, detail="벤치마크를 찾을 수 없습니다.")
     return rec
+
+
+@router.post(
+    "/api/admin/apk-dynamic/androzoo/benchmark/cancel",
+    tags=[_TAG],
+    summary="현재 활성 벤치마크 취소 (멈춘 잡 정리)",
+)
+async def androzoo_benchmark_cancel() -> dict[str, Any]:
+    return cancel_active()

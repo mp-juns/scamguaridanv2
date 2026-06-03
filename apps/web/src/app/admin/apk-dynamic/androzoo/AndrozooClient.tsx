@@ -87,6 +87,18 @@ export default function AndrozooClient() {
     }
   }
 
+  async function cancel() {
+    try {
+      await fetch("/api/admin/apk-dynamic/androzoo/benchmark/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const s = bench?.summary;
 
   return (
@@ -123,14 +135,28 @@ export default function AndrozooClient() {
               className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-slate-100 placeholder:text-slate-500"
             />
           </label>
-          <button
-            onClick={start}
-            disabled={busy}
-            className="mt-auto rounded-2xl bg-cyan-300 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 disabled:opacity-40"
-          >
-            {busy ? "실행 중…" : "벤치마크 시작"}
-          </button>
+          <div className="mt-auto flex gap-2">
+            <button
+              onClick={start}
+              disabled={busy}
+              className="rounded-2xl bg-cyan-300 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 disabled:opacity-40"
+            >
+              {busy ? "실행 중…" : "벤치마크 시작"}
+            </button>
+            {busy ? (
+              <button
+                onClick={cancel}
+                className="rounded-2xl border border-rose-400/40 px-4 py-2 text-sm text-rose-200 transition hover:bg-rose-500/10"
+              >
+                중단
+              </button>
+            ) : null}
+          </div>
         </div>
+        <p className="mt-2 text-xs text-slate-500">
+          멈춘 것처럼 보이면 다시 <strong>벤치마크 시작</strong>을 누르면 이전 잡을 취소하고 새로 시작합니다.
+          패키지 필터가 좁으면 매칭이 드물어 스캔이 길어집니다(최대 100만 행).
+        </p>
         {notice ? (
           <div className="mt-3 rounded-2xl border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-100">
             {notice}
