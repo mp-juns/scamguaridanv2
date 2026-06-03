@@ -240,3 +240,6 @@ data/generated/
 .scamguardian/*.backup-*
 *.sqlite3.backup-*
 *.sqlite3.bak-*
+
+# AndroZoo 다운로드 샘플 (실제 멀웨어 — 절대 커밋 금지)
+data/androzoo/
