@@ -136,13 +136,69 @@ def persist_run(
 _EXECUTABLE_URL_RE = re.compile(
     r"\.(apk|exe|dmg|msi|jar|bat|cmd|scr|app|ipa|deb|rpm)(\?|$)", re.IGNORECASE
 )
+# Content-Disposition 의 filename="...apk" 처럼 확장자 뒤에 따옴표·세미콜론·공백이 오는 경우용.
+_EXECUTABLE_FILENAME_RE = re.compile(
+    r"\.(apk|exe|dmg|msi|jar|bat|cmd|scr|app|ipa|deb|rpm)\b", re.IGNORECASE
+)
 _MAX_EXECUTABLE_DOWNLOAD_BYTES = 150 * 1024 * 1024  # 150MB
 
 
 def is_executable_url(source: str) -> bool:
-    """source 가 http(s) 실행파일 다운로드 링크인지."""
+    """source 가 http(s) 실행파일 다운로드 링크인지 (확장자 기반 빠른 판단)."""
     s = (source or "").strip()
     return s.startswith(("http://", "https://")) and bool(_EXECUTABLE_URL_RE.search(s))
+
+
+# 실행파일/APK 다운로드를 가리키는 Content-Type — 확장자 없는 링크(예: 토큰 URL,
+# CDN 리다이렉트) 판별용. APK 는 vnd.android.package-archive.
+_EXECUTABLE_CONTENT_TYPES = frozenset({
+    "application/vnd.android.package-archive",  # apk
+    "application/x-msdownload",                 # exe
+    "application/x-msdos-program",              # exe
+    "application/x-apple-diskimage",            # dmg
+    "application/java-archive",                 # jar
+    "application/x-debian-package",             # deb
+    "application/vnd.debian.binary-package",    # deb
+    "application/x-redhat-package-manager",     # rpm
+    "application/x-ios-app",                    # ipa
+})
+
+
+def probe_executable_url(source: str, *, timeout: float = 8.0) -> bool:
+    """확장자가 없는 http(s) URL 이라도 응답 헤더로 실행파일 다운로드인지 판단한다.
+
+    확장자 기반 `is_executable_url` 이 놓치는 토큰/리다이렉트 링크(예: `/api/apk-dummy/{token}`)를
+    위해 HEAD 로 Content-Type / Content-Disposition 을 먼저 *판단*한다. STT/웹 분석으로 잘못
+    흘러가지 않도록, 다운로드 *전에* 무엇인지 결정하는 단계.
+
+    엄격 판정 — 확실한 실행파일 Content-Type 또는 Content-Disposition 의 실행파일 파일명만 True.
+    (generic `application/octet-stream` 단독은 오탐 위험으로 False 처리.)
+    """
+    s = (source or "").strip()
+    if not s.startswith(("http://", "https://")):
+        return False
+    if is_executable_url(s):
+        return True
+    import requests
+
+    headers: dict[str, str] = {}
+    try:
+        resp = requests.head(s, allow_redirects=True, timeout=timeout)
+        headers = {k.lower(): v for k, v in resp.headers.items()}
+        # HEAD 미지원(405/501) 또는 content-type 누락 → GET 으로 헤더만 확인 후 즉시 close.
+        if resp.status_code >= 400 or "content-type" not in headers:
+            with requests.get(s, stream=True, allow_redirects=True, timeout=timeout) as g:
+                headers = {k.lower(): v for k, v in g.headers.items()}
+    except Exception:
+        return False
+
+    ctype = (headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if ctype in _EXECUTABLE_CONTENT_TYPES:
+        return True
+    disposition = headers.get("content-disposition") or ""
+    if _EXECUTABLE_FILENAME_RE.search(disposition):
+        return True
+    return False
 
 
 def materialize_executable_url(url: str) -> str:
@@ -195,13 +251,20 @@ def run_pipeline(payload: AnalyzeRequest) -> dict:
     if not source:
         raise ValueError("분석할 텍스트 또는 URL을 입력해주세요.")
 
-    # 시연 편의 — APK/실행파일 *다운로드 링크* 를 넣으면 받아서 분석한다.
-    # URL → 로컬 임시 파일 materialize → 기존 Phase 0(VT 파일) + Phase 0.6(APK 정적/동적) 그대로.
+    # APK/실행파일 *다운로드 링크* 를 넣으면 STT/웹 분석이 아니라 받아서 파일 분석한다.
+    # 무엇인지 *먼저 판단* — 확장자(빠름) 또는 응답 헤더(확장자 없는 토큰/CDN 링크, 예: /api/apk-dummy/{token}).
+    # 다운로드된 파일은 apk_analyzer.is_apk_file 의 ZIP magic byte 로 APK 여부가 확정되어
+    # Phase 0(VT 파일) + Phase 0.6(APK 정적/동적) 으로 흐른다. youtube 등 영상 URL 은 probe skip(STT 경로).
     original_source = source
     downloaded_path: str | None = None
     if is_executable_url(source):
         downloaded_path = materialize_executable_url(source)
         source = downloaded_path
+    elif source.startswith(("http://", "https://")):
+        from pipeline import stt as _stt
+        if not _stt._is_youtube_url(source) and probe_executable_url(source):
+            downloaded_path = materialize_executable_url(source)
+            source = downloaded_path
 
     try:
         pipeline = ScamGuardianPipeline(whisper_model=normalized_payload.whisper_model)
