@@ -433,6 +433,7 @@ class APKDynamicStatus(str, Enum):
     DISABLED = "disabled"           # APK_DYNAMIC_ENABLED=0 기본
     BLOCKED_LOCAL = "blocked_local"  # 로컬 실행 시도 — HARD BLOCK 정책상 절대 안 돌림
     NOT_CONFIGURED = "not_configured"  # remote backend 인데 URL/TOKEN 없음
+    SKIPPED_STATIC = "skipped_static"  # Lv1/Lv2 정적 분석에서 이미 신호 검출 — VM 호출 생략
     COMPLETED = "completed"         # remote VM 에서 정상 완료
     ERROR = "error"                 # remote 호출 실패
 
@@ -441,7 +442,7 @@ class APKDynamicStatus(str, Enum):
 class APKDynamicReport:
     """Lv 3 동적 분석 결과 — 격리 VM 안에서 실제 실행 후 behavior 모니터링.
 
-    ⚠️ 현재 인터페이스만. 실제 remote VM 통합은 future work.
+    ⚠️ 실제 APK 실행은 remote 격리 VM 에서만 수행한다.
     로컬 실행은 절대 안 함 (호스트 위험).
     """
     status: APKDynamicStatus = APKDynamicStatus.DISABLED
@@ -469,6 +470,29 @@ def _resolved_dynamic_backend() -> str:
     if APK_DYNAMIC_REMOTE_URL and APK_DYNAMIC_REMOTE_TOKEN:
         return "remote"
     return "local"
+
+
+def configure_remote(
+    url: str,
+    token: str,
+    *,
+    enabled: bool = True,
+    timeout: int | None = None,
+) -> None:
+    """런타임에 remote 동적 분석 설정을 주입한다 (VM 기동 후 컨트롤러가 호출).
+
+    `analyze_apk_dynamic` / `_analyze_apk_dynamic_remote` 는 모듈 레벨 상수를 읽으므로,
+    서버 재시작 없이 VM 을 켠 직후 이 함수로 상수를 갱신하면 즉시 remote 분석이 가능하다.
+    (테스트의 monkeypatch.setattr 와 동일한 메커니즘 — env 가 아니라 모듈 상수.)
+    """
+    global APK_DYNAMIC_ENABLED, APK_DYNAMIC_BACKEND
+    global APK_DYNAMIC_REMOTE_URL, APK_DYNAMIC_REMOTE_TOKEN, APK_DYNAMIC_TIMEOUT
+    APK_DYNAMIC_ENABLED = enabled
+    APK_DYNAMIC_BACKEND = "remote"
+    APK_DYNAMIC_REMOTE_URL = (url or "").strip().rstrip("/")
+    APK_DYNAMIC_REMOTE_TOKEN = (token or "").strip()
+    if timeout is not None:
+        APK_DYNAMIC_TIMEOUT = int(timeout)
 
 
 def analyze_apk_dynamic(apk_path: str | Path) -> APKDynamicReport:

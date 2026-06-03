@@ -1,3 +1,213 @@
+# Admin 사용자 관리 — 마스터 + 승인요청 시스템 (2026-06-04)
+
+목적: admin 허용을 정적 `ADMIN_EMAILS` env(4곳 체크)에서 → **마스터 + DB 승인요청** 모델로.
+모르는 Google 계정 로그인 시 pending 적재 → 마스터가 `/admin/users`에서 승인. 계획서: `~/.claude/plans/glittery-growing-flute.md`.
+
+- [x] DB: `admin_users` 테이블 + `upsert_access_request`/`get_admin_user`/`list_admin_users`/`set_admin_user_status` + facade + kimjunsung5 approved seed
+- [x] 백엔드 `api_server_pkg/admin_users.py` — `/access/check`(unauth) + `/users` + approve/deny/revoke(master-only via X-Admin-Email) + app mount + 미들웨어 public 패턴
+- [x] 프론트 게이트 전환: `auth.ts` signIn → 백엔드 `/access/check` 위임(단일 게이트), `proxy.ts`/`backend.ts` 세션 존재만 신뢰 + `X-Admin-Email` forward
+- [x] 마스터 UI `/admin/users` + 프록시 4라우트 + admin 탭 + login 페이지 pending 안내
+- [x] root `.env` `SCAMGUARDIAN_MASTER_EMAILS=minecrsft64@gmail.com`
+
+## Review
+- **모델**: master=env(항상 허용, 락아웃 방지), 그 외=`admin_users` DB(pending/approved/denied). signIn 콜백이 백엔드 `/access/check`를 호출해 단일 게이트 — 비승인자는 세션 자체가 안 생기므로 proxy/backend는 세션만 신뢰.
+- **검증**: pytest 336 passed (admin_users 7 신규), tsc/eslint 클린. 재시작 후 E2E — minecrsft64→master, kimjunsung5→admin(seed), 모르는 계정→pending, `/api/admin/users` 무세션 401, `/admin/users` 307→login, 메인/APK 다운로드 200(공개 유지).
+- **잔여**: revoke는 기존 JWT(30d) 만료 전까지 유효(v1 한계). Funnel 로그인하려면 Google OAuth 콜백 `https://scamguardian.tail7e5dfc.ts.net/api/auth/callback/google` 등록 필요.
+
+---
+
+# APK Lv3 동적 분석 — API 기반 VM 제어 + 웹 콘솔 (2026-06-03)
+
+목적: APK Lv3 동적 분석이 "VM 이 이미 떠 있다" 가정에 의존하던 것을, **VM 라이프사이클(기동/상태/정지)
++ APK 분석을 API 로 통제하고 전용 admin 웹 콘솔에 노출**. 분석 자체는 그대로 실제 격리 VM(redroid+Frida)
+에서 수행. 계획서: `~/.claude/plans/glittery-growing-flute.md`.
+
+- [x] `scripts/apk_dynamic_vm_ctl.sh` — `stop`(VM 정지 + bridge kill), `status-json`(머신리더블, VM 안 켬) 추가
+- [x] `pipeline/apk_analyzer.configure_remote()` — 런타임 모듈 상수 주입 (서버 재시작 없이 remote 활성)
+- [x] `api_server_pkg/apk_dynamic_control.py` — vm_ctl.sh 래핑, op 백그라운드+로그, status 캐시, 분석 잡 레지스트리
+- [x] `api_server_pkg/apk_dynamic.py` — `/api/admin/apk-dynamic/` 6 엔드포인트 + `app.py` 마운트
+- [x] 프론트: 프록시 6 라우트 + `/admin/apk-dynamic` 콘솔(VM 배지·기동/정지·APK 업로드·폴링·tier 결과) + admin 탭
+- [x] `result/[token]` detection_source 태그에 static_lv1/lv2/dynamic_lv3 보완 (page.tsx 는 이미 완비)
+- [x] `tests/test_apk_dynamic_control.py` (7) + 전체 329 통과 / tsc·eslint 클린 / bash -n
+
+## Review
+
+**백엔드**:
+- `apk_dynamic_control.py` — `vm_ctl.sh` subprocess 래핑. VM op(start/stop)은 전역 `_op_lock`(동시 1개)
+  + 백그라운드 스레드 + `.scamguardian/apk_dynamic/ops/{id}.log`. status 는 `status-json` 파싱 + 8s 캐시
+  (VM 을 켜지 않음). start 성공 시 `apk_analyzer.configure_remote(enabled=True)`, stop 시 enabled=False.
+  분석 잡은 in-memory 레지스트리; `force_dynamic`이면 `analyze_apk_dynamic` 직접, 아니면 전체 파이프라인.
+- 모듈 상수 주입 방식 채택 이유: `analyze_apk_dynamic` 이 모듈 레벨 상수를 읽고 테스트도 `monkeypatch.setattr`
+  로 그 상수를 패치 → os.getenv 리팩토링은 70개 테스트 회귀. `configure_remote` 가 동일 메커니즘.
+- 라우터 `/api/admin/apk-dynamic/` 6개 → `^/api/admin/` 패턴으로 admin 토큰 강제(기존 미들웨어). 검증:
+  ADMIN_AUTH_DISABLED=false 에서 no-token 401 / with-token 200.
+
+**프론트**:
+- `proxyGet`/`proxyJsonRequest`/`proxyRaw`(multipart) 기존 헬퍼 재사용. Next 16 route 는 `params: Promise<>`.
+- 콘솔: VM 배지(emerald/회색) + 기동/정지 + op 로그 tail + APK 업로드(.apk) + 동적 강제 토글 + 5s 폴링.
+  결과는 Lv1/Lv2/Lv3 tier 카드 + observations JSON + (전체 모드) detected_signals 한국어 라벨.
+- VM 꺼짐 + 동적 강제 시 "먼저 기동" 배너 (수동 기동 정책).
+
+**보안**: 로컬 실행 HARD BLOCK 유지 — 컨트롤러는 host 에서 APK 실행 안 함, 항상 격리 VM 위임.
+
+**검증**: pytest 329 passed (322+7), `bash -n`/py_compile OK, `tsc --noEmit`/eslint 클린,
+TestClient 로 라우팅+admin 게이팅 확인.
+
+**남은 것 (실제 VM 필요 — 자동화 불가)**: `/admin/apk-dynamic` 에서 "VM 기동" → 배지 green →
+`tests/fixtures/dynamic_active.apk` 업로드 + 동적 강제 → 5개 런타임 flag E2E (Multipass sg-sandbox 가용 시).
+
+---
+
+# APK Dynamic Main-Server Integration (2026-06-03)
+
+목적: WSL 메인 ScamGuardian 서버에서 별도 VM/redroid/Frida APK 동적 분석 서버를 안정적으로 호출하도록
+연결 경로를 정리하고, 리뷰에서 찾은 실행 버그를 함께 수정한다.
+
+- [x] 사용자 정정 반영 및 통합 목표 재설정
+- [x] 현재 main server 원격 호출/env/startup 흐름 확인
+- [x] Frida hook 재귀 위험 및 dynamic server import 문제 수정
+- [x] 정적 분석 결과가 있을 때 동적 호출 gating 정책 정렬
+- [x] WSL main server 연결 검증 helper/docs/test 보강
+- [x] py_compile/pytest 등 targeted 검증
+- [x] Review 결과 기록
+
+## Review
+
+**수정**:
+- `scripts/apk_dynamic_vm_ctl.sh` 추가.
+  - WSL 에서 Windows `multipass.exe` 를 호출해 VM 시작/상태 확인을 수행한다.
+  - `sync`: `apk_dynamic_server/` 와 APK fixture 를 VM 의 `/home/ubuntu/sg-apkdyn` 으로 복사한다.
+  - `bootstrap`: binder/ashmem, adb, Docker, frida 16.x 계열 의존성을 VM 에 설치한다.
+  - `redroid`: redroid 컨테이너를 만들거나 시작하고 `sys.boot_completed=1` 까지 대기한다.
+  - `frida`: frida python package 와 버전 일치 frida-server 를 준비하고 Android 안에서 기동한다.
+  - `server`: VM 안에서 `apk_dynamic_server/app.py` 를 token 포함 FastAPI 서버로 기동한다.
+  - `bridge`: WSL 로컬 FastAPI bridge 를 `127.0.0.1:18002` 에 띄워 Multipass VM 으로 전달한다.
+  - `start`: 위 흐름을 한 번에 실행하고 `.env.apk-dynamic.local` 을 생성한 뒤 `/health` 를 확인한다.
+  - `apply-env`: `.env` 백업 후 메인 ScamGuardian 이 읽을 `APK_DYNAMIC_*` 값을 반영한다.
+- `scripts/apk_dynamic_wsl_bridge.py` 추가.
+  - WSL 메인 서버가 `127.0.0.1:18002` 로 호출하면 bridge 가 `multipass transfer/exec` 로
+    VM 내부 `127.0.0.1:8002` 동적 분석 서버에 전달한다.
+  - WSL 에서 Multipass NAT IP(`172.20.x.x`) 로 직접 라우팅되지 않는 문제를 우회한다.
+- `scripts/check_apk_dynamic_remote.py` 추가.
+  - WSL 메인 서버 관점에서 remote `/health` 와 선택적 APK POST 를 점검한다.
+- `scripts/apk_dynamic_windows_relay.ps1` 추가.
+  - Windows TCP relay fallback. 현재 환경에서는 WSL→Windows gateway inbound 가 timeout 되어
+    기본 경로는 WSL bridge 로 전환했다.
+- `apk_dynamic_server/frida_hooks.js`
+  - replacement 내부에서 같은 Java 메서드를 다시 호출하던 부분을 overload 원본 호출 패턴으로 수정했다.
+- `apk_dynamic_server/app.py`
+  - package import 와 `cd apk_dynamic_server && python3 app.py` 실행을 둘 다 지원하게 했다.
+- `pipeline/runner.py`
+  - Lv1/Lv2 정적 분석에서 이미 신호가 있으면 remote VM 동적 분석을 생략한다.
+- `.env.example`, `apk_dynamic_server/README.md`, `sg-apk.md`
+  - WSL 컨트롤러 기반 운영 흐름을 추가했다.
+- `README.md`
+  - APK Lv3 를 더 이상 future-work-only 로 적지 않고, WSL bridge 기반 수동 활성화 절차를 추가했다.
+  - `start_stack.sh` 기본 자동 기동은 피하고, 필요 시 수동 또는 별도 옵션으로 켜는 정책을 기록했다.
+
+**검증**:
+- `bash -n scripts/apk_dynamic_vm_ctl.sh`
+- `scripts/apk_dynamic_vm_ctl.sh --help`
+- `python3 -m py_compile scripts/check_apk_dynamic_remote.py apk_dynamic_server/app.py apk_dynamic_server/analyzer.py pipeline/apk_analyzer.py pipeline/runner.py`
+- `conda run --no-capture-output -n capstone python - <<PY import apk_dynamic_server.app ... PY`
+- `conda run --no-capture-output -n capstone python -m pytest tests/test_apk_analyzer.py -q` → 70 passed
+- `conda run --no-capture-output -n capstone python -m pytest tests/test_detection_report_schema.py tests/test_flag_groups.py -q`
+  → 35 passed
+- `git diff --check`
+- 실제 기동:
+  - VM `sg-sandbox` running, redroid booted, frida-server running.
+  - VM 내부 `apk_dynamic_server` 는 `0.0.0.0:8002` 에서 uvicorn listening.
+  - WSL bridge `127.0.0.1:18002` health 성공:
+    `{"status":"ok","redroid_booted":true,"auth":true,"bridge":"wsl-multipass"}`.
+  - `scripts/check_apk_dynamic_remote.py --apk tests/fixtures/dynamic_active.apk --timeout 30`
+    → HTTP 200, 5개 런타임 flag 전부 검출.
+
+**잔여 리스크**:
+- Windows relay fallback 은 현재 WSL→Windows gateway timeout 으로 직접 사용하지 않는다.
+- `.env` 에 dev token(`dev-secret-123`) 이 들어간 상태다. 운영용으로는 반드시 긴 랜덤 토큰으로 교체한다.
+
+---
+
+# APK Dynamic Analysis Review (2026-06-03)
+
+목적: 최신 커밋 `04f1c25 feat(apk-dynamic)` 의 redroid+Frida APK 동적 분석 서버와 active fixture를
+코드 리뷰 관점으로 점검한다.
+
+- [x] 리뷰 범위 재설정 및 누락 lesson 기록
+- [x] APK 동적 분석 서버/API/analyzer/hook/fixture diff 확인
+- [x] 보안 경계·실행 가능성·테스트 연결성 점검
+- [x] 가능한 정적/스모크 검증 실행
+- [x] 발견사항과 잔여 리스크 정리
+
+## Review
+
+**검토 범위**:
+- 최신 ahead 커밋 `04f1c25 feat(apk-dynamic): redroid+Frida APK 동적 분석 서버 + active fixture`
+- `apk_dynamic_server/app.py`, `apk_dynamic_server/analyzer.py`, `apk_dynamic_server/frida_hooks.js`
+- `tests/fixtures/dynamic_active_app/*`, `tests/fixtures/dynamic_active.apk`
+- 기존 연동부: `pipeline/apk_analyzer.py`, `pipeline/runner.py`, `pipeline/signal_detector.py`,
+  `tests/test_apk_analyzer.py`
+
+**발견사항**:
+- `frida_hooks.js` 일부 hook 이 replacement 내부에서 같은 Java 메서드를 다시 호출한다.
+  `WindowManagerImpl.addView`, `WindowManagerGlobal.addView`, `BroadcastReceiver.abortBroadcast` 등은
+  `ov.apply(...)`/overload `.call(...)` 로 원본을 호출해야 한다. 현재 형태는 재귀/스택오버플로우로
+  overlay/SMS 계열 이벤트 수집을 불안정하게 만들 수 있다.
+- `apk_dynamic_server/app.py` 는 `import analyzer` 절대 import 를 사용한다. README 방식처럼
+  `cd apk_dynamic_server && python3 app.py` 는 동작하지만, repo root 에서
+  `uvicorn apk_dynamic_server.app:app` / package import 는 `ModuleNotFoundError: analyzer` 로 실패한다.
+- README 는 "정적 분석(Lv1/Lv2)이 0 신호일 때만 runner 가 동적 서버를 호출"한다고 설명하지만,
+  실제 `pipeline/runner.py` 는 APK 입력이면 Lv1/Lv2 결과와 무관하게 `analyze_apk_dynamic()` 을 호출한다.
+  운영에서 enabled+remote 설정 시 문서보다 더 많은 VM 호출/지연이 발생할 수 있다.
+
+**검증**:
+- `python3 -m py_compile apk_dynamic_server/app.py apk_dynamic_server/analyzer.py`
+- `conda run --no-capture-output -n capstone python -m pytest tests/test_apk_analyzer.py -q` → 70 passed
+- `conda run --no-capture-output -n capstone python -m pytest tests/test_detection_report_schema.py tests/test_flag_groups.py -q`
+  → 35 passed
+- `conda run --no-capture-output -n capstone python - <<PY import apk_dynamic_server.app ... PY`
+  → `ModuleNotFoundError: No module named 'analyzer'`
+- `cd apk_dynamic_server && conda run --no-capture-output -n capstone python - <<PY import app ... PY`
+  → OK
+- `git diff --check`
+
+**잔여 리스크**:
+- redroid/Frida VM 실제 동적 실행은 현재 환경에서 수행하지 못했다. 따라서 active fixture 의 5개 런타임
+  flag 실검출은 코드/문서/테스트 계약 기준 리뷰이며, VM smoke 는 별도 필요하다.
+
+---
+
+# Changed Files Review (2026-06-03)
+
+목적: 최근 변경된 `api_server_pkg/app.py` 와 신규 TUI 스크립트를 코드 리뷰 관점으로 점검한다.
+
+- [x] 현재 작업트리와 기존 lessons 확인
+- [x] 변경 diff 및 주변 호출 경로 확인
+- [x] 가능한 정적/스모크 검증 실행
+- [x] 발견사항과 잔여 리스크 정리
+
+## Review
+
+**검토 범위**:
+- 추적 변경: `api_server_pkg/app.py`
+- 미추적 신규: `scripts/sg_tui.py`, `scripts/sg-tui.sh`
+- 미추적 기타: `.scamguardian/scamguardian.sqlite3.broken-selflink-20260602-235057`
+
+**발견사항**:
+- TUI 기본 시작 경로가 `scripts/start_stack.sh` 를 호출하고, 이 스크립트는 Next 16 dev 서버를
+  `--webpack` 없이 실행한다. 기존 lessons 의 Turbopack/WSL freeze 회귀 위험이 있다.
+- TUI의 detached 학습 실행은 `subprocess.run(...)` 반환 코드를 확인하지 않아, 학습 프로세스를
+  띄우지 못해도 즉시 `tail -F` 로 넘어갈 수 있다.
+
+**검증**:
+- `python3 -m py_compile api_server_pkg/app.py scripts/sg_tui.py`
+- `bash -n scripts/sg-tui.sh scripts/start_stack.sh scripts/start_kyy.sh`
+- `git diff --check`
+- `conda run --no-capture-output -n capstone python - <<PY ... create_app() ... PY`
+
+**주의**:
+- 일반 `python3` 는 `fastapi` 가 없어 앱 import 검증이 실패했다. 프로젝트 검증은 `capstone`
+  conda env 기준으로 해야 한다.
 # Training Status False Failure (2026-06-01)
 
 목적: 학습 로그와 metrics 는 갱신 중인데 status.json 이 `failed` 로 먼저 바뀌어 UI가

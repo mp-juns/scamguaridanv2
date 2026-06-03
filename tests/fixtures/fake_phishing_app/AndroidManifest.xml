@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ⚠️ 정적 분석 검증용 합성 피셔 픽스처 (STATIC dead-code).
+
+  dynamic_active_app(실제 실행) 과 달리 이 앱은 *행동을 실행하지 않는다*. 의심 API 호출과
+  사칭 키워드·C2 URL 문자열을 dex 안에 dead-code 로만 박아 ScamGuardian 정적 분석
+  (Lv1 manifest/권한/서명 + Lv2 bytecode xref)이 신호를 잡는지 검증한다.
+
+  무해함:
+  - 패키지명 com.kakao.taik 은 정상 com.kakao.talk 의 typo-squat (실제 카카오 아님)
+  - 모든 의심 코드는 호출되지 않는 dead method (설치/실행해도 동작 0)
+  - C2 URL 은 RFC5737 문서화 IP / 가짜 .tk 도메인 → 라우팅 안 됨
+
+  절대 실제 단말에 배포하지 말 것. 분석기 테스트 전용.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.kakao.taik">
+
+    <!-- 위험 권한 조합 (4종 이상) → apk_dangerous_permissions_combo -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:label="카카오톡 보안"
+        android:hasCode="true">
+
+        <activity
+            android:name="com.kakao.taik.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- AccessibilityService 선언 → apk_accessibility_abuse 보강 -->
+        <service
+            android:name="com.kakao.taik.PhishAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name="com.kakao.taik.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

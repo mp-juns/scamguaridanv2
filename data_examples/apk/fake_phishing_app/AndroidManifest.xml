@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ⚠️ 정적 분석 검증/데모용 합성 피셔 (STATIC dead-code). 무해.
+
+  ScamGuardian 정적 분석(Lv1 manifest/권한/서명 + Lv2 bytecode xref)이 신호를 잡는지
+  검증한다. 행동을 실행하지 않고 의심 API 호출/문자열만 dead-code 로 박는다.
+
+  무해함:
+  - 패키지명 com.kakao.talk.secure 는 정상 com.kakao.talk 사칭(typo-squat). 실제 카카오 아님.
+  - 모든 의심 코드는 호출되지 않는 dead method (설치/실행해도 동작 0)
+  - C2 URL 은 RFC5737 문서화 IP / 가짜 .tk 도메인 → 라우팅 안 됨
+  절대 실제 단말에 배포 금지. 분석기 테스트 전용.
+
+  기대 정적 신호 (9):
+    Lv1 — apk_suspicious_package_name, apk_dangerous_permissions_combo, apk_self_signed
+    Lv2 — apk_sms_auto_send_code, apk_call_state_listener, apk_accessibility_abuse,
+          apk_impersonation_keywords, apk_hardcoded_c2_url, apk_device_admin_lock
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.kakao.talk.secure">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:label="카카오톡 보안 업데이트"
+        android:hasCode="true">
+
+        <activity
+            android:name="com.kakao.talk.secure.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name="com.kakao.talk.secure.PhishAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name="com.kakao.talk.secure.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

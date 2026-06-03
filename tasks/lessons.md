@@ -5,6 +5,19 @@
 
 ---
 
+## 2026-06-03 — 리뷰 범위는 작업트리뿐 아니라 브랜치/최신 커밋 diff 로 확인
+
+**상황**: 사용자가 "많이 바뀌었다"고 했는데 assistant 가 `git status` 의 미커밋 변경만 보고
+`api_server_pkg/app.py` 와 TUI 스크립트만 리뷰했다. 실제 핵심 변경은 최신 커밋
+`feat(apk-dynamic)` 안의 APK 동적 분석 서버와 fixture 였다.
+
+**처방**:
+- 리뷰 요청을 받으면 먼저 `git status` 와 함께 `git log --oneline -5`,
+  `git show --stat HEAD`, `git diff --stat <upstream>...HEAD` 를 확인한다.
+- 브랜치가 upstream 보다 ahead 면 미커밋 변경뿐 아니라 ahead 커밋 전체를 리뷰 범위에 포함한다.
+- 사용자가 특정 영역을 암시하거나 정정하면 즉시 범위를 재설정하고, 놓친 패턴을 lessons 에 남긴다.
+
+**적용 시점**: "검토해봐", "많이 바뀌었다", "그 전이랑 달라졌다" 같은 코드 리뷰 요청 전부.
 ## 2026-06-01 — WSL CUDA 판정은 샌드박스/디바이스 노출을 분리해서 확인
 
 **관찰**: `torch.cuda.is_available() == False` 만 보고 "CUDA 없음" 으로 결론내렸지만,

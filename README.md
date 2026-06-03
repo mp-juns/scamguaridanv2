@@ -135,7 +135,7 @@ scripts/             배치 인제스트·운영 스크립트
 
 자세한 내용은 [`.scamguardian/README.md`](./.scamguardian/README.md) 참고.
 
-## APK 검출 (4-tier — 정적 3 + 동적 1 인터페이스)
+## APK 검출 (4-tier — 정적 3 + 동적 1)
 
 한국 보이스피싱은 사이드로딩을 통한 악성 APK 설치가 attack chain 의 핵심입니다.
 ScamGuardian 은 의심 APK 를 다음 4 단계로 검출합니다:
@@ -143,10 +143,48 @@ ScamGuardian 은 의심 APK 를 다음 4 단계로 검출합니다:
 1. **VirusTotal 시그니처 매칭** — 70+ 백신 엔진 합의 (알려진 멀웨어). zero-day 는 못 잡음
 2. **정적 분석 Lv 1** — `androguard` manifest·권한 조합·서명 검사 (zero-day 의 권한 패턴 검출)
 3. **심화 정적 분석 Lv 2** — dex bytecode 패턴 매칭 (SecretCalls·KrBanker·MoqHao 등 한국 보이스피싱 패밀리의 기술 시그니처)
-4. **동적 분석 Lv 3** *(인터페이스만 — 격리 VM 필요)* — 별도 Android 에뮬레이터 VM 안에서 실제 실행 후 behavior 모니터링. 기본 비활성 (`APK_DYNAMIC_ENABLED=0`), 로컬 실행은 어떤 경우에도 차단 (호스트 위험).
+4. **동적 분석 Lv 3** *(격리 VM 필요)* — 별도 Android 에뮬레이터 VM 안에서 실제 실행 후 behavior 모니터링. 기본 비활성 (`APK_DYNAMIC_ENABLED=0`), 로컬 실행은 어떤 경우에도 차단 (호스트 위험).
 
-Lv 3 는 인터페이스 + flag 카탈로그까지 박혔고, 실제 remote VM 측 서버는 v3.5 sandbox_server/
-패턴과 동일하게 별도 호스트에 배포해야 동작합니다 (future work).
+Lv 3 는 WSL 메인 서버에서 `scripts/apk_dynamic_vm_ctl.sh` 로 Multipass VM/redroid/Frida/FastAPI 를
+제어하고, WSL-local bridge(`http://127.0.0.1:18002`) 를 통해 메인 ScamGuardian 파이프라인과
+연결할 수 있습니다. 실제 APK 실행은 VM 안에서만 수행합니다.
+
+### APK 동적 분석 수동 활성화
+
+평소 `start_stack.sh` 는 백엔드/프론트엔드만 올리고, APK 동적 분석 VM 은 **필요할 때만 수동 활성화**하는
+것을 기본 정책으로 둡니다. 이유는 redroid/Frida VM 이 무겁고, 실제 APK 실행 영역이라 일반 개발 루프에
+항상 붙여두기보다 분석 필요 시점에 켜는 편이 안전하고 빠르기 때문입니다.
+
+```bash
+# 상태 확인
+./scripts/apk_dynamic_vm_ctl.sh status
+
+# VM/redroid/frida/API/WSL bridge 전체 기동
+./scripts/apk_dynamic_vm_ctl.sh start
+
+# 메인 ScamGuardian .env 에 APK_DYNAMIC_* 연결값 반영
+./scripts/apk_dynamic_vm_ctl.sh apply-env
+
+# 연결 확인
+./scripts/apk_dynamic_vm_ctl.sh health
+
+# active fixture 로 5개 런타임 flag 검출 확인
+python scripts/check_apk_dynamic_remote.py --apk tests/fixtures/dynamic_active.apk --timeout 30
+```
+
+현재 개발 환경의 연결 형태:
+
+```text
+ScamGuardian backend (WSL)
+  -> http://127.0.0.1:18002
+  -> WSL bridge
+  -> Multipass VM sg-sandbox
+  -> apk_dynamic_server:8002
+  -> redroid + frida-server
+```
+
+`start_stack.sh` 에 VM 자동 기동을 기본으로 넣지는 않습니다. 데모처럼 매번 APK 동적 분석이 필요한
+상황에서는 별도 옵션(`ENABLE_APK_DYNAMIC_VM=true`)으로 붙이는 방식을 권장합니다.
 
 학술 기준 정적 분석 검출률은 **60-80%** 이고, **100% 차단을 약속하지 않습니다**.
 검출된 신호와 학술/법적 근거를 transparent 하게 제공하고, 판정·차단은 통합 기업이

@@ -152,6 +152,16 @@ def init_db() -> None:
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_request_log_created_at ON request_log(created_at DESC)",
+        # ── admin 사용자 승인 (master + approval) ──
+        """
+        CREATE TABLE IF NOT EXISTS admin_users (
+            email TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'pending',
+            requested_at TEXT NOT NULL,
+            decided_at TEXT,
+            decided_by TEXT
+        )
+        """,
     ]
 
     with _connect() as conn:
@@ -181,6 +191,13 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE human_annotations ADD COLUMN {col} {col_type}")
             except sqlite3.OperationalError:
                 pass
+        # admin_users seed: 마스터(env) 외에 본인 계정 1개를 approved 로 부트스트랩 (락아웃 방지)
+        _seed_now = _now_iso()
+        conn.execute(
+            "INSERT OR IGNORE INTO admin_users (email, status, requested_at, decided_at, decided_by) "
+            "VALUES (?, 'approved', ?, ?, 'seed')",
+            ("kimjunsung5@jnu.ac.kr", _seed_now, _seed_now),
+        )
         conn.commit()
 
 
@@ -1000,6 +1017,58 @@ def revoke_api_key(key_id: str) -> bool:
             (key_id,),
         )
         return cur.rowcount > 0
+
+
+# ── admin_users (master + approval 시스템) ──
+
+def upsert_access_request(email: str) -> dict[str, Any]:
+    """모르는 email → pending 요청 생성. 이미 있으면 기존 레코드 반환."""
+    init_db()
+    email = (email or "").strip().lower()
+    now = _now_iso()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO admin_users (email, status, requested_at) VALUES (?, 'pending', ?)",
+            (email, now),
+        )
+        row = conn.execute("SELECT * FROM admin_users WHERE email = ?", (email,)).fetchone()
+    return {k: row[k] for k in row.keys()}
+
+
+def get_admin_user(email: str) -> dict[str, Any] | None:
+    init_db()
+    email = (email or "").strip().lower()
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM admin_users WHERE email = ?", (email,)).fetchone()
+    return {k: row[k] for k in row.keys()} if row else None
+
+
+def list_admin_users() -> list[dict[str, Any]]:
+    init_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM admin_users ORDER BY "
+            "CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, requested_at DESC"
+        ).fetchall()
+    return [{k: r[k] for k in r.keys()} for r in rows]
+
+
+def set_admin_user_status(email: str, status: str, decided_by: str | None = None) -> dict[str, Any] | None:
+    """승인/거부. 레코드 없으면 생성 후 상태 지정 (마스터가 직접 추가 가능)."""
+    init_db()
+    email = (email or "").strip().lower()
+    now = _now_iso()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO admin_users (email, status, requested_at) VALUES (?, 'pending', ?)",
+            (email, now),
+        )
+        conn.execute(
+            "UPDATE admin_users SET status = ?, decided_at = ?, decided_by = ? WHERE email = ?",
+            (status, now, decided_by, email),
+        )
+        row = conn.execute("SELECT * FROM admin_users WHERE email = ?", (email,)).fetchone()
+    return {k: row[k] for k in row.keys()} if row else None
 
 
 def touch_api_key_usage(key_id: str) -> dict[str, Any] | None:

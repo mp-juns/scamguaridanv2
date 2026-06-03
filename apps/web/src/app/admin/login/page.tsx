@@ -2,11 +2,6 @@ import { redirect } from "next/navigation";
 
 import { auth, signIn } from "../../../auth";
 
-const allowlist = (process.env.ADMIN_EMAILS ?? "")
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
-
 type SearchParams = Promise<{ next?: string; error?: string }>;
 
 export default async function AdminLoginPage(props: { searchParams: SearchParams }) {
@@ -14,24 +9,28 @@ export default async function AdminLoginPage(props: { searchParams: SearchParams
   const session = await auth();
   const email = session?.user?.email?.toLowerCase();
   const dest = next && next.startsWith("/admin") ? next : "/admin";
-  if (email && allowlist.includes(email)) {
+  // 세션 존재 = signIn 게이트(백엔드 master+DB) 통과 = 승인됨.
+  if (email) {
     redirect(dest);
   }
+
+  // signIn 콜백이 거부하면 NextAuth 가 ?error=AccessDenied 로 보냄 (미승인/대기/거부)
+  const denied = error === "AccessDenied";
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md items-center justify-center px-6">
       <div className="w-full rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
         <h1 className="text-xl font-semibold text-slate-900">어드민 로그인</h1>
         <p className="mt-1 text-sm text-slate-500">
-          허용된 Google 계정만 접근 가능합니다.
+          승인된 Google 계정만 접근 가능합니다.
         </p>
-        {email && !allowlist.includes(email) ? (
-          <p className="mt-4 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700">
-            <code>{email}</code> 는 어드민 권한이 없습니다.
-          </p>
-        ) : null}
-        {error ? (
+        {denied ? (
           <p className="mt-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
+            승인되지 않은 계정입니다. 로그인 시도로 <strong>승인 요청이 접수</strong>되었습니다 —
+            마스터 승인 후 다시 로그인해주세요.
+          </p>
+        ) : error ? (
+          <p className="mt-4 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700">
             로그인 실패: {error}
           </p>
         ) : null}

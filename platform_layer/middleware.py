@@ -51,6 +51,7 @@ _REQUIRE_ADMIN_PATTERNS = [
 # admin 패턴 중 인증 면제 (login/health)
 _ADMIN_PUBLIC_PATTERNS = [
     re.compile(r"^/api/admin/login$"),
+    re.compile(r"^/api/admin/access/check$"),  # 로그인 전 signIn 콜백이 호출 — unauth
 ]
 # 인증 스킵
 _SKIP_PATTERNS = [

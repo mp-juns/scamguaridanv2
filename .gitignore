@@ -134,6 +134,9 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# APK 빌드 산출물 (apksigner v4 서명 사이드카) — APK 본체만 커밋
+*.apk.idsig
+
 # Environments
 .env
 .envrc
