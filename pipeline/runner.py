@@ -368,7 +368,9 @@ class ScamGuardianPipeline:
         apk_static_result: apk_analyzer.APKStaticReport | None = None
         apk_bytecode_result: apk_analyzer.APKBytecodeReport | None = None
         apk_dynamic_result: apk_analyzer.APKDynamicReport | None = None
+        apk_input = False
         if precomputed_transcript is None and apk_analyzer.is_apk_file(source):
+            apk_input = True
             phase06_start = time.time()
             print("[Phase 0.6] APK 정적 분석 (Lv 1 — manifest·권한·서명)...")
             try:
@@ -445,6 +447,22 @@ class ScamGuardianPipeline:
                 "STT",
                 pipeline_start,  # 0 ms 로 기록되도 무방
                 {"source_type": transcript.source_type, "text_length": len(transcript.text), "precomputed": True},
+            )
+        elif apk_input:
+            # APK 는 전사할 음성이 없음 — STT 스킵. 빈 텍스트는 분류기(zero-shot)를 깨뜨리므로
+            # 정적 분석 요약(패키지명 + 검출 신호)을 분석 텍스트로 합성. APK 신호는 Phase 0.6 에서 옴.
+            pkg = apk_static_result.package_name if apk_static_result else ""
+            apk_flags = list((apk_static_result.detected_flags if apk_static_result else []) or [])
+            apk_flags += list((apk_bytecode_result.detected_flags if apk_bytecode_result else []) or [])
+            synth = f"안드로이드 APK 분석 대상. 패키지명 {pkg or '알 수 없음'}."
+            if apk_flags:
+                synth += " 정적 분석 검출 신호: " + ", ".join(apk_flags) + "."
+            print("[Phase 1] STT 스킵 (APK 입력 — 정적 분석 요약을 분석 텍스트로 사용)")
+            transcript = stt.TranscriptResult(text=synth, source_type="apk")
+            self.last_transcript_result = transcript
+            self._log_step(
+                "STT", pipeline_start,
+                {"source_type": "apk", "text_length": len(synth), "apk": True},
             )
         else:
             print("[Phase 1] STT 처리 중...")

@@ -1,3 +1,63 @@
+# Admin 사용자 관리 — 마스터 + 승인요청 시스템 (2026-06-04)
+
+목적: admin 허용을 정적 `ADMIN_EMAILS` env(4곳 체크)에서 → **마스터 + DB 승인요청** 모델로.
+모르는 Google 계정 로그인 시 pending 적재 → 마스터가 `/admin/users`에서 승인. 계획서: `~/.claude/plans/glittery-growing-flute.md`.
+
+- [x] DB: `admin_users` 테이블 + `upsert_access_request`/`get_admin_user`/`list_admin_users`/`set_admin_user_status` + facade + kimjunsung5 approved seed
+- [x] 백엔드 `api_server_pkg/admin_users.py` — `/access/check`(unauth) + `/users` + approve/deny/revoke(master-only via X-Admin-Email) + app mount + 미들웨어 public 패턴
+- [x] 프론트 게이트 전환: `auth.ts` signIn → 백엔드 `/access/check` 위임(단일 게이트), `proxy.ts`/`backend.ts` 세션 존재만 신뢰 + `X-Admin-Email` forward
+- [x] 마스터 UI `/admin/users` + 프록시 4라우트 + admin 탭 + login 페이지 pending 안내
+- [x] root `.env` `SCAMGUARDIAN_MASTER_EMAILS=minecrsft64@gmail.com`
+
+## Review
+- **모델**: master=env(항상 허용, 락아웃 방지), 그 외=`admin_users` DB(pending/approved/denied). signIn 콜백이 백엔드 `/access/check`를 호출해 단일 게이트 — 비승인자는 세션 자체가 안 생기므로 proxy/backend는 세션만 신뢰.
+- **검증**: pytest 336 passed (admin_users 7 신규), tsc/eslint 클린. 재시작 후 E2E — minecrsft64→master, kimjunsung5→admin(seed), 모르는 계정→pending, `/api/admin/users` 무세션 401, `/admin/users` 307→login, 메인/APK 다운로드 200(공개 유지).
+- **잔여**: revoke는 기존 JWT(30d) 만료 전까지 유효(v1 한계). Funnel 로그인하려면 Google OAuth 콜백 `https://scamguardian.tail7e5dfc.ts.net/api/auth/callback/google` 등록 필요.
+
+---
+
+# APK Lv3 동적 분석 — API 기반 VM 제어 + 웹 콘솔 (2026-06-03)
+
+목적: APK Lv3 동적 분석이 "VM 이 이미 떠 있다" 가정에 의존하던 것을, **VM 라이프사이클(기동/상태/정지)
++ APK 분석을 API 로 통제하고 전용 admin 웹 콘솔에 노출**. 분석 자체는 그대로 실제 격리 VM(redroid+Frida)
+에서 수행. 계획서: `~/.claude/plans/glittery-growing-flute.md`.
+
+- [x] `scripts/apk_dynamic_vm_ctl.sh` — `stop`(VM 정지 + bridge kill), `status-json`(머신리더블, VM 안 켬) 추가
+- [x] `pipeline/apk_analyzer.configure_remote()` — 런타임 모듈 상수 주입 (서버 재시작 없이 remote 활성)
+- [x] `api_server_pkg/apk_dynamic_control.py` — vm_ctl.sh 래핑, op 백그라운드+로그, status 캐시, 분석 잡 레지스트리
+- [x] `api_server_pkg/apk_dynamic.py` — `/api/admin/apk-dynamic/` 6 엔드포인트 + `app.py` 마운트
+- [x] 프론트: 프록시 6 라우트 + `/admin/apk-dynamic` 콘솔(VM 배지·기동/정지·APK 업로드·폴링·tier 결과) + admin 탭
+- [x] `result/[token]` detection_source 태그에 static_lv1/lv2/dynamic_lv3 보완 (page.tsx 는 이미 완비)
+- [x] `tests/test_apk_dynamic_control.py` (7) + 전체 329 통과 / tsc·eslint 클린 / bash -n
+
+## Review
+
+**백엔드**:
+- `apk_dynamic_control.py` — `vm_ctl.sh` subprocess 래핑. VM op(start/stop)은 전역 `_op_lock`(동시 1개)
+  + 백그라운드 스레드 + `.scamguardian/apk_dynamic/ops/{id}.log`. status 는 `status-json` 파싱 + 8s 캐시
+  (VM 을 켜지 않음). start 성공 시 `apk_analyzer.configure_remote(enabled=True)`, stop 시 enabled=False.
+  분석 잡은 in-memory 레지스트리; `force_dynamic`이면 `analyze_apk_dynamic` 직접, 아니면 전체 파이프라인.
+- 모듈 상수 주입 방식 채택 이유: `analyze_apk_dynamic` 이 모듈 레벨 상수를 읽고 테스트도 `monkeypatch.setattr`
+  로 그 상수를 패치 → os.getenv 리팩토링은 70개 테스트 회귀. `configure_remote` 가 동일 메커니즘.
+- 라우터 `/api/admin/apk-dynamic/` 6개 → `^/api/admin/` 패턴으로 admin 토큰 강제(기존 미들웨어). 검증:
+  ADMIN_AUTH_DISABLED=false 에서 no-token 401 / with-token 200.
+
+**프론트**:
+- `proxyGet`/`proxyJsonRequest`/`proxyRaw`(multipart) 기존 헬퍼 재사용. Next 16 route 는 `params: Promise<>`.
+- 콘솔: VM 배지(emerald/회색) + 기동/정지 + op 로그 tail + APK 업로드(.apk) + 동적 강제 토글 + 5s 폴링.
+  결과는 Lv1/Lv2/Lv3 tier 카드 + observations JSON + (전체 모드) detected_signals 한국어 라벨.
+- VM 꺼짐 + 동적 강제 시 "먼저 기동" 배너 (수동 기동 정책).
+
+**보안**: 로컬 실행 HARD BLOCK 유지 — 컨트롤러는 host 에서 APK 실행 안 함, 항상 격리 VM 위임.
+
+**검증**: pytest 329 passed (322+7), `bash -n`/py_compile OK, `tsc --noEmit`/eslint 클린,
+TestClient 로 라우팅+admin 게이팅 확인.
+
+**남은 것 (실제 VM 필요 — 자동화 불가)**: `/admin/apk-dynamic` 에서 "VM 기동" → 배지 green →
+`tests/fixtures/dynamic_active.apk` 업로드 + 동적 강제 → 5개 런타임 flag E2E (Multipass sg-sandbox 가용 시).
+
+---
+
 # APK Dynamic Main-Server Integration (2026-06-03)
 
 목적: WSL 메인 ScamGuardian 서버에서 별도 VM/redroid/Frida APK 동적 분석 서버를 안정적으로 호출하도록

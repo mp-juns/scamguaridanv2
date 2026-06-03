@@ -472,6 +472,29 @@ def _resolved_dynamic_backend() -> str:
     return "local"
 
 
+def configure_remote(
+    url: str,
+    token: str,
+    *,
+    enabled: bool = True,
+    timeout: int | None = None,
+) -> None:
+    """런타임에 remote 동적 분석 설정을 주입한다 (VM 기동 후 컨트롤러가 호출).
+
+    `analyze_apk_dynamic` / `_analyze_apk_dynamic_remote` 는 모듈 레벨 상수를 읽으므로,
+    서버 재시작 없이 VM 을 켠 직후 이 함수로 상수를 갱신하면 즉시 remote 분석이 가능하다.
+    (테스트의 monkeypatch.setattr 와 동일한 메커니즘 — env 가 아니라 모듈 상수.)
+    """
+    global APK_DYNAMIC_ENABLED, APK_DYNAMIC_BACKEND
+    global APK_DYNAMIC_REMOTE_URL, APK_DYNAMIC_REMOTE_TOKEN, APK_DYNAMIC_TIMEOUT
+    APK_DYNAMIC_ENABLED = enabled
+    APK_DYNAMIC_BACKEND = "remote"
+    APK_DYNAMIC_REMOTE_URL = (url or "").strip().rstrip("/")
+    APK_DYNAMIC_REMOTE_TOKEN = (token or "").strip()
+    if timeout is not None:
+        APK_DYNAMIC_TIMEOUT = int(timeout)
+
+
 def analyze_apk_dynamic(apk_path: str | Path) -> APKDynamicReport:
     """Lv 3 동적 분석 진입점. 기본 비활성.
 

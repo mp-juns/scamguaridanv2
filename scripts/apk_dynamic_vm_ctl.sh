@@ -25,7 +25,9 @@ Usage: $0 <command>
 
 Commands:
   start          Start VM, sync server code, start redroid, frida-server, and API server
+  stop           Stop the VM and kill the WSL bridge (does not delete the VM)
   status         Show VM/redroid/frida/API status
+  status-json    Emit one-line machine-readable JSON status (no VM start)
   sync           Copy apk_dynamic_server/ and APK fixtures into the VM
   bootstrap      Install VM prerequisites (apt packages, Docker, python packages)
   redroid        Ensure redroid container is running and booted
@@ -351,6 +353,43 @@ logs() {
   vm_exec "tail -n 120 -f '$VM_WORKDIR/apk_dynamic_server/server.log'"
 }
 
+stop_all() {
+  # WSL bridge 먼저 정리 (포트 + 프로세스), 그 다음 VM 정지. VM 생성은 안 함.
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k "${BRIDGE_PORT}/tcp" >/dev/null 2>&1 || true
+  fi
+  pkill -f '[a]pk_dynamic_wsl_bridge.py' >/dev/null 2>&1 || true
+  if mp info "$VM_NAME" >/dev/null 2>&1; then
+    echo "[apk-vm] stopping VM: $VM_NAME"
+    mp stop "$VM_NAME" >/dev/null 2>&1 || true
+    echo "[apk-vm] VM '$VM_NAME' stopped, WSL bridge killed."
+  else
+    echo "[apk-vm] VM '$VM_NAME' not found (bridge killed, nothing else to stop)."
+  fi
+}
+
+status_json() {
+  # 머신리더블 한 줄 JSON. status() 와 달리 ensure_vm(=VM 시작) 을 호출하지 않는다.
+  # 프로브가 실패해도 항상 valid JSON 을 방출한다 (필드는 false 로 채움).
+  local vm_running=false redroid_booted=false frida_running=false server_up=false url probe
+  url="$(remote_url)"
+  if mp info "$VM_NAME" 2>/dev/null | grep -qiE 'State:[[:space:]]*Running'; then
+    vm_running=true
+    probe="$(vm_exec "
+      set +e
+      adb connect localhost:5555 >/dev/null 2>&1
+      echo BOOTED=\$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r ')
+      echo FRIDA=\$(adb -s localhost:5555 shell pidof frida-server 2>/dev/null | tr -d '\r ')
+      echo SERVER=\$(pgrep -f '[p]ython3 app.py' 2>/dev/null | head -n1)
+    " 2>/dev/null || true)"
+    grep -q 'BOOTED=1' <<<"$probe" && redroid_booted=true
+    grep -Eq 'FRIDA=[0-9]+' <<<"$probe" && frida_running=true
+    grep -Eq 'SERVER=[0-9]+' <<<"$probe" && server_up=true
+  fi
+  printf '{"vm_running":%s,"redroid_booted":%s,"frida_running":%s,"server_up":%s,"remote_url":"%s"}\n' \
+    "$vm_running" "$redroid_booted" "$frida_running" "$server_up" "$url"
+}
+
 start_all() {
   ensure_vm
   sync_code
@@ -371,7 +410,9 @@ start_all() {
 cmd="${1:-}"
 case "$cmd" in
   start) start_all ;;
+  stop) stop_all ;;
   status) status ;;
+  status-json) status_json ;;
   sync) sync_code ;;
   bootstrap) bootstrap_vm ;;
   redroid) ensure_redroid ;;

@@ -153,6 +153,31 @@ def init_db() -> None:
     _ensure_schema()
 
 
+def _require_sqlite_for_admin_users() -> None:
+    if get_db_backend() != "sqlite":
+        raise NotImplementedError("admin_users(마스터 승인)는 현재 SQLite 백엔드만 지원합니다.")
+
+
+def upsert_access_request(email: str) -> dict[str, Any]:
+    _require_sqlite_for_admin_users()
+    return sqlite_repository.upsert_access_request(email)
+
+
+def get_admin_user(email: str) -> dict[str, Any] | None:
+    _require_sqlite_for_admin_users()
+    return sqlite_repository.get_admin_user(email)
+
+
+def list_admin_users() -> list[dict[str, Any]]:
+    _require_sqlite_for_admin_users()
+    return sqlite_repository.list_admin_users()
+
+
+def set_admin_user_status(email: str, status: str, decided_by: str | None = None) -> dict[str, Any] | None:
+    _require_sqlite_for_admin_users()
+    return sqlite_repository.set_admin_user_status(email, status, decided_by)
+
+
 def list_custom_scam_types() -> list[dict[str, Any]]:
     if get_db_backend() == "sqlite":
         return sqlite_repository.list_custom_scam_types()

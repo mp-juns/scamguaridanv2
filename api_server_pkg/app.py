@@ -16,7 +16,9 @@ from . import (
     admin_platform,
     admin_runs,
     admin_training,
+    admin_users,
     analyze,
+    apk_dynamic,
     docs_ui,
     health,
     kakao,
@@ -48,6 +50,14 @@ OPENAPI_TAGS = [
     {
         "name": "Admin — Training",
         "description": "fine-tune 세션 — mDeBERTa 분류기 / GLiNER 추출기 도메인 특화 학습.",
+    },
+    {
+        "name": "Admin — APK Dynamic",
+        "description": "APK Lv3 동적 분석 — 격리 VM(redroid+Frida) 라이프사이클 제어 + 분석 잡.",
+    },
+    {
+        "name": "Admin — Users",
+        "description": "어드민 사용자 관리 — 마스터 + 승인요청(pending/approved/denied).",
     },
     {
         "name": "v4 (draft)",
@@ -113,6 +123,8 @@ def create_app() -> FastAPI:
     app.include_router(admin_runs.router)
     app.include_router(admin_platform.router)
     app.include_router(admin_training.router)
+    app.include_router(admin_users.router)
+    app.include_router(apk_dynamic.router)
     app.include_router(v4_stream.router)
 
     # 커스텀 /docs (Swagger UI) + /redoc — Pretendard 폰트 + 가독성 폴리시.

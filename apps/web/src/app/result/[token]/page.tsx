@@ -15,7 +15,7 @@ type DetectedSignalDict = {
   label_ko?: string;
   rationale?: string;
   source?: string;             // 출처 기관·논문
-  detection_source?: string;   // rule | llm | safety | sandbox
+  detection_source?: string;   // rule | llm | safety | sandbox | static_lv1 | static_lv2 | dynamic_lv3
   evidence?: string[];
   description?: string;
 };
@@ -411,6 +411,9 @@ export default async function ResultPage({ params }: PageProps) {
                   detSrc === "llm" ? "🤖 LLM 보조"
                   : detSrc === "safety" ? "🛡 VirusTotal"
                   : detSrc === "sandbox" ? "📦 샌드박스"
+                  : detSrc === "static_lv1" ? "🔍 정적 Lv1"
+                  : detSrc === "static_lv2" ? "🔬 정적 Lv2"
+                  : detSrc === "dynamic_lv3" ? "🧪 동적 Lv3"
                   : "📋 규칙";
                 const evidenceList: string[] = Array.isArray(s.evidence)
                   ? s.evidence

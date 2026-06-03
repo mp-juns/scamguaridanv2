@@ -7,11 +7,6 @@ export const runtime = "nodejs";
 const API_BASE_URL =
   process.env.SCAMGUARDIAN_API_URL ?? "http://127.0.0.1:8000";
 
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS ?? "")
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
-
 const ADMIN_AUTH_DISABLED = ["1", "true", "yes", "on"].includes(
   (process.env.ADMIN_AUTH_DISABLED ?? "").toLowerCase(),
 );
@@ -75,9 +70,10 @@ export async function adminAuthHeader(): Promise<
     // 개발 모드 — 백엔드도 ADMIN_AUTH_DISABLED 켜야 통과 (둘이 짝).
     return { ok: true, headers: {} };
   }
+  // 세션 존재 = signIn 게이트(백엔드 master+DB) 통과 = 승인됨. allowlist 재확인 불필요.
   const session = await auth();
   const email = session?.user?.email?.toLowerCase();
-  if (!email || !ADMIN_EMAILS.includes(email)) {
+  if (!email) {
     return {
       ok: false,
       response: NextResponse.json(
@@ -100,7 +96,8 @@ export async function adminAuthHeader(): Promise<
       ),
     };
   }
-  return { ok: true, headers: { "X-Admin-Token": adminToken } };
+  // X-Admin-Email 로 백엔드가 master 여부 판정 (승인/거부 권한)
+  return { ok: true, headers: { "X-Admin-Token": adminToken, "X-Admin-Email": email } };
 }
 
 export async function proxyJsonRequest(request: Request, path: string) {
