@@ -470,3 +470,215 @@ fallback 경로로 end-to-end 스모크 — 게이트 fallback→분류→추출
 - 메모리 증설은 임시 버퍼, 근본 fix 아님
 - Next 16 + Tailwind 4 + Turbopack 조합 위험 (현재 시점)
 - ESM 컨텍스트에서 `__dirname` 함정
+
+---
+
+# APK 분석 웹 플랫폼 + 외부 다운로드 경고 UI (2026-06-03)
+
+## 배경 / 현황
+
+- 백엔드 `pipeline/apk_analyzer.py` 의 **Lv1 정적(권한조합·자체서명 인증서·패키지명 위장) + Lv2 바이트코드(SMS자동발송·접근성악용·C2 URL·난독화 등) 는 이미 실제 구현 완료.** Lv3 동적은 인터페이스만.
+- 응답 스키마도 완성: `DetectionReport.to_dict()` 가 `apk_static_check`(package_name·permissions·is_self_signed) / `apk_bytecode_check` / `apk_dynamic_check` + `detected_signals[]`(detection_source=static_lv1/lv2/dynamic_lv3, 근거·출처 포함) 노출.
+- runner 가 `is_apk_file(source)` 로 자동 라우팅 + Phase 0 VirusTotal 파일 스캔.
+- **막힌 곳 3가지**: ① `/api/analyze-upload` 가 APK 를 ffmpeg 로 보내 실패 ② APK 다운로드 URL 받는 경로 없음 ③ 프론트 UI 전무.
+
+## 결정 (사용자 확인 · 2026-06-03 수정)
+- APK 입력: **다운로드 URL 만** — 핵심 시나리오가 "받기/설치 *전* 검사" 라 사용자가 APK 파일을 올리는 건 모순(이미 받았다는 뜻). 서버가 URL 대신 받아서(실행 X, 정적 분석만) 검사. → analyze-upload 손댈 필요 없음.
+- UI 위치: **별도 전용 페이지 `/apk`**
+- 차단 UI: **둘 다** — 위험 감지 시 경고 인터스티셜 + 상시 안내 가이드
+
+## 작업 항목
+
+### 백엔드 배선 (최소)
+- [x] 2. 신규 엔드포인트 `POST /api/analyze-apk-url` (api_server_pkg/analyze.py): SSRF 가드(`_assert_safe_download_url`) + 64MB 캡 + ZIP 매직 확인 후 temp `.apk` 저장 → 기존 pipeline. middleware `_REQUIRE_KEY_PATTERNS` 에 추가. 원본 `uploads/{run_id}/source.apk` 보존.
+- [x] 3. Next 프록시: `apps/web/src/app/api/analyze-apk-url/route.ts` + backend.ts `isAnalyzePath` 에 경로 추가(내부 API key 첨부).
+- [x] **추가**: runner APK fast-path — APK 는 STT/분류/LLM skip, 정적 결과로 직접 보고 (빈 transcript classifier crash 회피). ⚠️ 이건 계획에 없던 latent bug 발견·수정.
+
+### 프론트엔드 `/apk`
+- [x] 4. `apps/web/src/app/apk/page.tsx` 신설 (client, URL only).
+- [x] 5. 결과 렌더: 메타 카드(패키지명/인증서 배지/권한 수) + 권한 목록(위험권한 빨강) + 탐지 신호(근거/출처) + VirusTotal. 점수·등급 노출 X.
+
+### 외부 다운로드 경고 UI (둘 다)
+- [x] 6a. 상시 안내 가이드: `/apk` 상단 사이드로딩 체인 ①~⑥ 배너.
+- [x] 6b. 감지 시 경고 인터스티셜: `components/install-danger-banner.tsx` (재사용 컴포넌트) — 위험 flag 검출 시 "이 앱은 설치하지 마세요" 빨강 배너.
+
+### 테스트 + 검증
+- [x] 7. `tests/test_apk_url_download.py` (11개): SSRF(non-http·loopback·사설/링크로컬 IP) + 크기 캡 + Content-Length + 빈 파일 + 정상 다운로드.
+- [x] 8. 합성 APK end-to-end (`apk_static_check` 노출 확인) + `tsc --noEmit` + `eslint` 통과 + `pytest 333 passed`. (`npm run build` 는 Turbopack freeze 위험으로 미실행 — tsc+eslint 로 대체, P1 참고)
+
+### 동적 분석 escalation (2026-06-03 추가 — 사용자 요청)
+- [x] 9. runner: 정적(Lv1+Lv2) 신호 0건일 때만 `analyze_apk_dynamic` escalation (이미 잡았으면 skip). 격리 VM 있으면 실제 실행, 없으면 status=disabled/not_configured.
+- [x] 10. `/apk` `DynamicEscalationCard`: 정적 깨끗 시 동적 상태 표시 — completed(행동 없음=초록/행동 있음=빨강) / 미구성=amber "동적 분석 권장" / error.
+- [x] 11. `tests/test_apk_dynamic_escalation.py` (4개): 정적 깨끗→호출 / 정적 신호→skip / Lv1+Lv2 합산 게이트.
+- **실제 에뮬레이터 VM 은 미구현** — escalation 배선 + UI 상태만. 로컬 실행 HARD BLOCK 유지.
+
+### 무해한 테스트 APK 픽스처 (2026-06-03 추가 — 사용자 요청, EICAR 식)
+- [x] 12. `tests/fixtures/fake_phishing_app/` — 실제 해 0 인 더미 앱 소스 (위험 코드는 전부 미호출 메서드, C2 IP 는 RFC5737 문서화 대역). manifest(위험권한 5종+접근성+device admin) + MalBehavior(SmsManager·Telephony·DevicePolicy + C2/사칭 문자열) + AccessibilityService 상속 + 200개 짧은 클래스(난독화).
+- [x] 13. `build.sh` — aapt2→javac→d8→zipalign→apksigner. SDK(`~/Android/Sdk`) + portable JDK(`~/jdk21`) 자동 탐색. (이 환경엔 JRE만 있어 Temurin 21 JDK 별도 설치함.)
+- [x] 14. 빌드+검증: `tests/fixtures/fake_phishing.apk` (16KB) → 탐지기가 **10개 신호 전부 발동** (Lv1 3 + Lv2 7). 전체 파이프라인 fast-path + escalation skip + 각 신호 근거/출처 확인.
+- [x] 15. `tests/test_apk_fixture_signals.py` (4개): 픽스처 Lv1/Lv2/전체 파이프라인 회귀 (픽스처 없으면 skipif).
+
+### 실제 엔드포인트 구동 데모 (2026-06-03)
+- [x] 16. SSRF 가드에 dev 전용 `APK_URL_ALLOW_LOCAL=1` (기본 0) 추가 — 로컬 픽스처 테스트용. production OFF.
+- [x] 17. uvicorn(VT 비활성) + `python -m http.server` 로 fake_phishing.apk 서빙 → 실제 `POST /api/analyze-apk-url` 호출 → **HTTP 200, detected_signals 10개, apk_static_check 전부 채워짐, escalation skip** 확인. (= /apk 페이지가 받는 JSON)
+- [x] 18. 데모 후 서버·임시파일·데모 DB 정리 (temp 다운로드는 endpoint finally 가 자동 정리 확인).
+- **발견**: VT 키가 `.env` 에 있으면 Phase 0 가 fake APK 를 업로드→악성 판정→fast-path 로 정적분석 preempt. (실제로 VT 엔진들이 우리 EICAR식 APK 를 flag 함 — 의도된 동작이지만 정적층 데모하려면 VT 끔.) ⚠️ fake APK 가 VT 에 업로드됨.
+
+## 범위 밖 (이번 X)
+- **Lv3 실제 동적분석 VM** (Android 에뮬레이터+Frida+MobSF, 별도 인프라 5~7주) — escalation 배선만 완료, 실행 stack 은 future work
+- 메인 `page.tsx` 일반 분석 결과에 다운로드 경고 배너 삽입 — 컴포넌트는 재사용 가능하게 만들되 메인 통합은 후속
+
+## Review (2026-06-03)
+
+완료. 백엔드 분석 엔진(Lv1/Lv2 + 응답 스키마)은 이미 있었고, 막힌 건 웹 진입·UI 였음.
+
+**변경 파일**:
+- `api_server_pkg/analyze.py` — `_assert_safe_download_url`/`_download_apk` 헬퍼 + `POST /api/analyze-apk-url`
+- `api_server_pkg/models.py` — `AnalyzeApkUrlRequest`
+- `platform_layer/middleware.py` — require-key 패턴에 신규 경로
+- `pipeline/runner.py` — APK fast-path (STT/분류/LLM skip)
+- `apps/web/src/app/apk/page.tsx` (신규), `components/install-danger-banner.tsx` (신규), `api/analyze-apk-url/route.ts` (신규), `api/_lib/backend.ts` (isAnalyzePath)
+- `tests/test_apk_url_download.py` (신규 11개), CLAUDE.md, lessons.md
+
+**검증**: pytest 333 passed / tsc 0 / eslint 0 / 합성 APK end-to-end OK.
+
+**미검증·후속**:
+- 진짜 악성 APK 로 실측 (현재는 합성 ZIP 만). 실제 보이스피싱 APK 샘플로 권한·인증서·바이트코드 신호 정확도 확인 필요.
+- `npm run build` 실제 통과 (Turbopack freeze 위험으로 미실행).
+- 다운로드 후 androguard 파싱 자체 안전성 — 정적 분석은 실행 X 지만, androguard 가 악성 zip 에 대해 안전한지(zip bomb 등) 추가 점검 여지.
+
+---
+
+# V3 동적 분석 VM 구축 계획 — redroid + Frida + mitmproxy (2026-06-03)
+
+## 결정 (사용자 확인)
+- 에뮬레이터: **redroid** (Android-in-Docker)
+- 범위: 런타임 flag **5종 전부**
+- 네트워크: **mitmproxy 경유** (트래픽 기록 + 위험 목적지 선택 차단)
+- 호스트: **Multipass Ubuntu VM** (아래 실측 근거)
+
+## WSL2 Docker 가능성 — 실측 (2026-06-03)
+- `/dev/binder` 없음 · `CONFIG_ANDROID_BINDER_IPC is not set` · binder_linux 모듈 없음 · docker 미설치
+- redroid = 컨테이너 Android (KVM 불필요) 지만 **host 커널 binder/ashmem 필수** → WSL2 기본 커널은 binder OFF → **불가**
+- 함정 2개: (1) 커널 — 켜려면 커스텀 WSL2 커널 빌드+.wslconfig (P1 freeze 환경, 비권장) (2) 격리 — dev WSL2에서 실제 악성코드 = repo·.env·/mnt/c 노출 (HARD BLOCK 위반)
+- → **Multipass Ubuntu VM**: 자체 커널(binder 모듈 apt 제공) + /mnt/c 없음 → dev·real 둘 다 안전
+
+## 2-tier 안전 정책
+- **DEV (지금)**: docker 스택을 VM에 올려 **안전 샘플만**(fake_phishing.apk + DroidBench)으로 5 flag 로직 검증. 악성 0 → 위험 0.
+- **REAL (나중)**: 같은 compose에 CICMalDroid/CICAndMal2017(PCAP) 실제 샘플. 같은 격리 VM(dev 데이터 없음) + firewall + 스냅샷 복원.
+
+## 아키텍처 (sandbox_server/ 패턴 미러 — 이미 배선됨)
+- production: `analyze_apk_dynamic` → `_analyze_apk_dynamic_remote` → `POST {APK_DYNAMIC_REMOTE_URL}/dynamic-analyze` (files=apk, Bearer) → `{detected_flags[], observations{}}`. 서버가 flag를 DETECTED_FLAGS로 검증. (호출부 완성, 서버만 만들면 됨)
+- 신규 `apk_dynamic_server/`:
+  - `app.py` — FastAPI: `POST /dynamic-analyze`(APK→redroid 설치→시나리오→Frida+mitmproxy 수집→5 flag 매핑→JSON) + `GET /health`. Bearer. stateless(분석 후 APK 삭제 + 스냅샷 복원).
+  - `docker-compose.yml` — redroid + analyzer + mitmproxy
+  - `README.md` — Multipass VM 구축(binder 모듈 포함) + 배포
+
+## Docker 스택 (compose 3 컨테이너)
+1. **redroid** (`redroid/redroid:13.0.0-latest`, x86_64) — ADB 노출. VM에서 `modprobe binder_linux ashmem_linux`.
+2. **analyzer** — Python: adb-client + frida-tools + 시나리오 드라이버 + FastAPI(app.py). frida-server를 redroid에 push.
+3. **mitmproxy** — redroid 트래픽 경유 + CA를 /system store 설치(redroid는 rw /system). flow 로그 → C2 탐지.
+
+## 5개 flag 구현 매핑
+| flag | 탐지 방법 | 자극(stimulation) |
+|---|---|---|
+| apk_runtime_c2_network_call | mitmproxy flow → IP직접/무료TLD/비표준포트/known-bad + Frida(OkHttp/Socket/URLConnection) | 앱 실행 후 대기 |
+| apk_runtime_sms_intercepted | Frida: SmsManager.sendTextMessage + SMS_RECEIVED receiver abort/forward | `adb emu sms send` |
+| apk_runtime_overlay_attack | Frida: WindowManager.addView TYPE_APPLICATION_OVERLAY | 다른 앱 포그라운드 시뮬 |
+| apk_runtime_credential_exfiltration | Frida taint: getDeviceId/AccountManager/clipboard → network sink (mitmproxy 상관) | 가짜 자격증명 입력 |
+| apk_runtime_persistence_install | Frida: BOOT_COMPLETED 등록 + DevicePolicyManager.setActiveAdmin | `adb reboot` 시뮬 |
+
+## 시나리오 드라이버
+install → grant/deny perms → launch → (SMS 주입 / call state / 가짜 자격증명 입력 / reboot 시뮬) → 수집 대기 → uninstall → 스냅샷 복원
+
+## 격리·안전 컨트롤
+- VM: /mnt/c 마운트 X · production DB/키 X · inbound는 production IP만(firewall) · 분석 후 APK 삭제 · redroid 스냅샷 매 분석 복원
+- mitmproxy egress: 기록 + 위험 목적지 선택 차단 (REAL 단계는 통제 egress 필수)
+- production은 `APK_DYNAMIC_BACKEND=remote` + REMOTE_URL/TOKEN 있을 때만 호출 (로컬 HARD BLOCK 유지)
+
+## 단계별 빌드
+- [x] Phase 0 (2026-06-03 완료): Multipass VM `sg-sandbox`(22.04, 4cpu/6G/30G) + `linux-modules-extra-5.15.0-179-generic` → binderfs(`/dev/binderfs/{binder,hwbinder,vndbinder}`) + ashmem 로드, fstab/modules-load 영속화 + Docker(get.docker.com). `redroid/redroid:13.0.0-latest` 단독 부팅 → `adb connect localhost:5555` → `sys.boot_completed=1`, abi `x86_64`, `adb shell` 진입 확인. 컨테이너명 `redroid`, 720×1280.
+- [x] Phase 1 (2026-06-03): frida-tools 17.10.1 설치 + 버전 일치 frida-server x86_64 push → `adb root` → frida-server 기동 → `frida-ps -U` 가 redroid 안 앱 목록 검출 = 런타임 후킹 검증 완료.
+- [x] Phase 2~4 코드 작성 (2026-06-03, VM 검증 대기): `apk_dynamic_server/` 신설 —
+      `app.py`(FastAPI: Bearer + multipart `/dynamic-analyze` + `/health`, stateless),
+      `analyzer.py`(adb install -g → frida spawn+hooks → 관찰 → uninstall, 패키지 diff/pyaxmlparser fallback),
+      `frida_hooks.js`(5 flag 후킹: SMS·overlay·persistence·식별자 taint·Socket/URL 네트워크 sink),
+      `requirements.txt`, `README.md`(VM 부트스트랩+배포+검증). production 계약 그대로
+      `{detected_flags[], observations}` 반환, VALID_FLAGS(5종)로 검증.
+      **설계 변경**: 기존 `fake_phishing.apk` 는 dead-code(정적 전용) → 동적은 0 flag. 그래서
+      행동을 실제 실행하는 **active fixture** 신설 — `tests/fixtures/dynamic_active_app/`
+      (MainActivity 가 launch 시 RFC5737 비라우팅 IP로 C2 소켓·식별자→유출·SMS·오버레이·persistence 5행동 실행).
+      `dynamic_active_app/build.sh` 로 `dynamic_active.apk` 빌드 (fake_phishing 툴체인 동일).
+      mitmproxy egress 캡처는 REAL 단계로 이관(README) — DEV 는 frida 소켓 후킹으로 C2 검출.
+- [x] Phase 2~4 **VM 검증 완료 (2026-06-03)**: VM에 `apk_dynamic_server/` 배포 → `python3 app.py` →
+      active fixture `/dynamic-analyze` → **detected_flags 5종 전부 검출** (c2_network_call·
+      credential_exfiltration·overlay_attack·persistence_install·sms_intercepted), HTTP 200.
+      fake_phishing.apk(dead-code) → `[]` 음성 대조 확인. frida_mode=attach, event_count 정상.
+      **디버깅 4건** (lessons.md 패턴 9~12 + 아래 Review):
+      ① frida 17 은 내장 `Java` 브리지 제거 → 16.x 핀 (CLI 는 자동주입돼 함정).
+      ② `device.spawn(pkg)` 문자열로 (리스트는 네이티브 argv).
+      ③ redroid spawn 게이팅 타임아웃 → `am start`+attach fallback + 루프 fixture.
+      ④ frida hook 에서 서브클래스 필드는 `Java.cast` 필요 (`addView` 의 ViewGroup.LayoutParams→WindowManager.LayoutParams).
+- [ ] Phase 5: production `_analyze_apk_dynamic_remote` 확정 + tests + escalation E2E(정적 깨끗→동적→UI 표시).
+- [ ] Phase 6: 격리 하드닝 + REAL 샘플(CICMalDroid 신청) 검증.
+
+## 리스크/미정
+- Ubuntu 커널 binder 모듈: `linux-modules-extra-$(uname -r)` 설치 필요할 수 있음.
+- redroid x86 이미지 ↔ ARM-only 네이티브 lib 악성코드 호환(houdini ARM translation 필요할 수 있음 — REAL 단계).
+- Frida-server 버전 ↔ redroid Android 버전 매칭.
+- mitmproxy system CA 설치 (Android 7+ user CA 무시 → /system 필요, redroid OK).
+- REAL egress 정책 — 실제 C2 통신 통제 필수.
+
+## 범위/규모
+- DEV(Phase 0~5): 안전 샘플로 5 flag 로직 — 2~3주 추정.
+- REAL(Phase 6): 데이터셋 신청+격리 하드닝 별도. 전체 5~7주(CLAUDE.md future work 추정과 일치).
+
+## Review — Phase 0~4 (2026-06-03, DEV stack 동작 검증 완료)
+
+**무엇**: WSL2 binder 부재 → Multipass VM(`sg-sandbox`, Ubuntu 22.04) → redroid 13 →
+frida 16.x → `apk_dynamic_server/`(FastAPI+analyzer+frida_hooks) 로 5개 런타임 flag 를
+실제 후킹으로 검출하는 동적 분석 stack 을 처음부터 끝까지 동작시킴.
+
+**검증** (VM `sg-sandbox`):
+- active fixture(`dynamic_active.apk`, RFC5737 비라우팅 행동 5종 실행) → `/dynamic-analyze`
+  → `detected_flags` 5종 전부, HTTP 200, frida_mode=attach.
+- fake_phishing.apk(정적 dead-code) → `detected_flags: []` (음성 대조 — 행동 없으면 깨끗).
+
+**디버깅 여정** (각 단계 자가진단 마커를 응답에 실어 원인 특정):
+1. spawn 리스트 인자 → 엉뚱한 프로세스 spawn, Java 안 올라옴 → 문자열로 수정.
+2. frida 17 `Java` 미정의(ReferenceError) → 17 이 코어 브리지 제거 → 16.x 핀(server+python).
+3. redroid spawn 게이팅 TimedOutError → `am start`+attach fallback + 루프 fixture(늦은 attach 대비).
+4. overlay 만 누락 → hook 은 설치됐으나 `addView(View, ViewGroup.LayoutParams)` 의 params 에
+   `.type` 직접 접근 실패 → `Java.cast(params, WindowManager$LayoutParams)` 로 해결.
+
+**남은 것 (Phase 5~6)**:
+- [ ] Phase 5: production `_analyze_apk_dynamic_remote` 확정(현재 stub) + `.env`에 REMOTE_URL/TOKEN
+      → runner escalation(정적 0건→동적) E2E + UI(`DynamicEscalationCard`) 표시 + tests.
+- [ ] Phase 5(속도): spawn-first 가 redroid 에서 항상 ~20s 타임아웃 후 attach fallback → 매 분석
+      20s 낭비. attach-first 로 뒤집거나 spawn 타임아웃 단축 검토.
+- [ ] Phase 6: mitmproxy egress 통합(REAL C2 캡처/차단) + 스냅샷 복원 + 격리 하드닝 + CICMalDroid 실샘플.
+
+## 환경 정리 계획 (Phase 5 전 — 2026-06-03)
+
+지금은 손으로 쌓은 임시 상태(포그라운드 프로세스 + 수동 명령 + dev 토큰). 재부팅 생존 +
+production 호출 가능한 재현 가능 배포로 전환. 5 버킷:
+
+1. **VM 서비스화 (재부팅 생존)**
+   - [ ] redroid `--restart unless-stopped` 로 재생성 (binderfs/모듈은 fstab/modules-load 로 이미 영속)
+   - [ ] `apk-frida.service` — redroid 부팅 후 frida-server push+실행 (setsid 대체)
+   - [ ] `apk-dynamic.service` — `python3 app.py`, `Restart=always`, 토큰은 `EnvironmentFile`
+   - [ ] 산출물: `apk_dynamic_server/deploy/` (systemd 유닛 2개 + 설치 스크립트)
+2. **네트워크 (production WSL → VM) — 가장 까다로움**
+   - WSL2 는 Multipass 내부망에 직접 못 닿음 → Windows 호스트를 다리로 netsh portproxy
+     `netsh interface portproxy add v4tov4 listenport=8002 connectaddress=<VM-IP> connectport=8002`
+   - [ ] production 은 `http://<Windows호스트IP>:8002` 로 도달 (WSL `ip route` 게이트웨이)
+   - ⚠️ portproxy 는 WSL 재시작·VM IP 변동마다 깨질 수 있음 — Phase 5 의 주 변수
+3. **시크릿** — `dev-secret-123` 폐기. `secrets.token_urlsafe(32)` → VM `EnvironmentFile` +
+   production `.env` 같은 값. git X, `.env.example` 엔 placeholder
+4. **production .env (repo)** — `APK_DYNAMIC_ENABLED=1`/`BACKEND=remote`/`REMOTE_URL`/`REMOTE_TOKEN`
+   4줄 + `.env.example`/CLAUDE.md 환경변수표 갱신
+5. **cruft 정리 + 재현성** — VM frida-server `.xz` 중복 삭제, 스테이징 폴더 정리,
+   `apk_dynamic_server/bootstrap.sh`(README 수동단계 자동화) + `deploy.sh`(코드만 transfer)
+
+**권고**: 1·3·4·5 는 일회성 깔끔. 2(네트워크)가 변수 → Phase 5 를 풀로(production→VM 실호출)
+갈지, 일단 1+5(서비스화+재현)만 하고 네트워크 안정 시 연결할지 선택.

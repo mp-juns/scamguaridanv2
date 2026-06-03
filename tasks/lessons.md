@@ -203,3 +203,48 @@ bytecode 분석은 disassemble 한다고 해서 동적 분석이 아니다 — �
 **적용 시점**: 다음번에도 정체성 변경·필드 폐기·token name rename 같은 큰 일이 있을 때 *반드시* 회귀 가드 테스트 동반.
 
 ---
+
+---
+
+## 2026-06-03 — APK 분석 웹 진입점: 빈 transcript classifier crash + 입력 방식 가정
+
+### 패턴 1: 새 입력 타입을 파이프라인에 꽂을 때 *전 단계* 가 그 타입을 어떻게 흘리는지 추적
+- **실수 가능성**: APK 정적 분석(Lv1/Lv2)은 이미 구현돼 있었고 runner 가 `is_apk_file` 로 라우팅했지만, APK 가 그 후 **Phase 1 STT 로 그대로 흘러** `_do_stt(apk_path)` (Whisper 로 바이너리 전송) → 실패. 더 나아가 빈 transcript 를 zero-shot classifier 에 넣으면 `ValueError: You must include at least one label and at least one sequence`.
+- **왜 안 잡혔나**: 기존 테스트(`test_apk_analyzer.py`)는 `analyze_apk_static` + `signal_detector.detect` 만 직접 테스트, **runner.analyze() end-to-end 는 한 번도 안 탔음**. 단위 테스트 green 인데 실제 full path 는 깨져 있던 latent bug.
+- **처방**: 새 입력 타입/엔드포인트는 *반드시* 진짜 파이프라인 end-to-end 로 한 번 돌려본다 (합성 입력 + 네트워크 키 unset). 단위 테스트만으로 "동작한다" 결론 금지. → malicious-file fast-path(빈 transcript 로 classify skip) 패턴을 그대로 차용해 APK fast-path 추가.
+- **적용 시점**: 다음에 새 source 종류(예: 이메일·QR·앱링크) 추가 시 STT/classifier/LLM 가 빈/비텍스트 입력을 어떻게 처리하는지 먼저 확인.
+
+### 패턴 2: 기능의 *use case* 를 먼저 못박으면 불필요한 작업이 빠진다
+- **상황**: 처음에 "APK 파일 업로드 + URL 둘 다" 로 계획. 사용자가 지적 — 핵심 시나리오는 "피싱 URL 을 **받기/설치 전** 검사" 라서 사용자가 파일을 올리는 건 모순(이미 받았다는 뜻). → URL-only 로 단순화, analyze-upload 손댈 필요 없어짐.
+- **처방**: UI/입력 방식 결정 전에 "이 기능을 *언제* 쓰는가" 를 한 문장으로 못박기. 시나리오가 입력 방식을 결정한다 (Simplicity First).
+
+---
+
+## 2026-06-03 — APK 동적 분석 (redroid+Frida) VM stack 디버깅 4종
+
+V3 동적 분석(`apk_dynamic_server/`)을 Multipass VM 에서 처음 동작시키며 만난 Frida/Android 함정.
+공통 처방: **불확실하면 추측 말고 자가진단 마커를 응답에 실어 원인을 특정한다** (script_loaded/
+java_available/script_errors/hook_ok 마커를 박으니 라운드마다 어디서 끊기는지 정확히 보였다).
+
+### 패턴 9: Frida 17 은 내장 `Java`/`ObjC` 브리지를 코어에서 제거 → 16.x 핀
+- **증상**: `session.create_script(raw_js)` 안에서 `Java.perform` → `ReferenceError: 'Java' is not defined`, 후킹 0 이벤트.
+- **함정**: frida **CLI(frida-tools)는 브리지를 자동 주입**하므로 `frida -U -f pkg -l x.js` 로는 잘 됨 → "CLI 는 되는데 서버는 안 되는" 미궁. CLI 동작 ≠ 라이브러리 동작.
+- **처방**: raw JS 후킹은 **frida<17** 로 핀 (python `frida` + 기기 `frida-server` **같은 16.x 버전**). 17 을 쓰려면 `frida-compile` 로 `frida-java-bridge` 번들 필요.
+
+### 패턴 10: Android 패키지 spawn 은 *문자열* — 리스트는 네이티브 argv
+- **증상**: `device.spawn([package])` → 에러 없이 Java 가 영영 안 올라옴(0 이벤트).
+- **원인**: 리스트는 native argv 로 해석. Android 패키지 spawn 라우팅은 `device.spawn("com.pkg")` 문자열일 때만. (frida CLI `-f` 와 동일)
+
+### 패턴 11: redroid spawn 게이팅 타임아웃 → launch+attach fallback + 루프 fixture
+- **증상**: `device.spawn(pkg)` → `frida.TimedOutError: unexpectedly timed out while waiting for app to launch` (~20s).
+- **처방**: spawn 실패 시 `adb shell monkey -p pkg ... LAUNCHER 1` 로 띄우고 pid 폴링 후 `attach`. attach 는 onCreate 이후 늦게 붙으므로, **검증 fixture 는 행동을 루프로 반복** 실행해야 늦은 attach 도 포착.
+- **부작용**: spawn-first 는 redroid 에서 항상 타임아웃 후 fallback → 매 분석 ~20s 낭비 (attach-first 검토 대상).
+
+### 패턴 12: Frida hook 에서 서브클래스 필드는 `Java.cast` 필수
+- **증상**: `WindowManagerImpl.addView` hook 은 설치됐는데(`hook_ok` 확인) overlay 검출만 누락.
+- **원인**: 시그니처가 `addView(View, ViewGroup.LayoutParams)` → Frida 가 params 를 **베이스 타입**으로 래핑 → 서브클래스 필드 `.type`(WindowManager.LayoutParams) 직접 접근이 throw → `catch` 에 먹혀 조용히 누락. 런타임 객체는 맞아도 **선언 타입 기준**으로 필드가 보인다.
+- **처방**: `Java.cast(params, Java.use('android.view.WindowManager$LayoutParams')).type.value`. 후킹 시 인자의 *선언 타입 ≠ 런타임 타입* 이면 항상 cast.
+- **교훈**: hook 이 "설치됐다(hook_ok)"와 "발사돼서 의미있는 값을 뽑았다"는 별개 — 둘 다 마커로 분리 검증.
+
+### 패턴 13: 정적 dead-code fixture 는 동적 검증에 쓸 수 없다
+- `fake_phishing.apk` 는 `MalBehavior` 메서드가 *미호출* (정적 시그니처만) → 동적 분석은 0 flag. 동적 검증엔 행동을 *실제 실행*하는 별도 active fixture(`dynamic_active_app/`, RFC5737 비라우팅 IP 로 무해) 필요. 단, 이 dead-code 샘플은 그대로 **음성 대조**(행동 없음→`[]`)로 유용.

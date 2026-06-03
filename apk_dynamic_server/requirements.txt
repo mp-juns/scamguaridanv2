@@ -1,0 +1,11 @@
+# ScamGuardian APK 동적 분석 서버 (격리 VM 안에서만 실행)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9        # UploadFile (multipart) 처리
+# ⚠️ frida 16.x 로 핀. frida 17 은 내장 `Java`/`ObjC` 브리지를 코어에서 제거 →
+# raw create_script() 에서 `Java` 가 undefined ("ReferenceError: 'Java' is not defined").
+# 16.x 는 Java 브리지 내장이라 frida_hooks.js 가 번들러 없이 동작.
+# frida-server(redroid 의 /data/local/tmp/frida-server)도 *같은 16.x 버전* 이어야 함.
+frida<17                       # 16.x (Java 브리지 내장). 예: 16.7.19
+frida-tools<13                 # frida 16.x 와 짝 (frida-ps 등 CLI, 디버깅용)
+pyaxmlparser>=0.3.30          # 패키지명 fallback 추출 (install diff 비었을 때)
