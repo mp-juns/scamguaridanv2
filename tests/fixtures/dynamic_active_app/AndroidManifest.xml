@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ⚠️ 동적 분석 검증용 ACTIVE 테스트 픽스처.
+
+  fake_phishing_app(정적 dead-code) 과 달리, 이 앱은 launch 시 5개 행동을 *실제로 실행*해서
+  ScamGuardian 동적 분석기(Frida 후킹)의 5개 런타임 flag 가 발사되는지 검증한다.
+
+  모든 행동은 무해하다:
+  - 네트워크 목적지는 RFC 5737 문서화 전용 비라우팅 대역(203.0.113.x / 198.51.100.x) → 인터넷에 안 나감
+  - SMS 는 더미 번호 + SIM 없는 redroid 라 실제 발송 0 (API 호출만 후킹됨)
+  - 오버레이/DeviceAdmin/persistence 도 격리 VM 안에서만, 데이터 영향 0
+
+  절대 실제 기기/사용자 단말에 설치하지 말 것.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.scamguardian.dyntest">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:label="동적 검증 (테스트)"
+        android:hasCode="true">
+
+        <activity
+            android:name="com.scamguardian.dyntest.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name="com.scamguardian.dyntest.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
