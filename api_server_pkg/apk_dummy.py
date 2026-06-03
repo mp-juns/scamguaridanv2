@@ -12,10 +12,12 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -33,6 +35,34 @@ _ADMIN_RESPONSES: dict[int | str, dict] = {
 }
 
 DATA_DIR = Path("data_examples") / "apk"
+
+_DUMMY_PATH_RE = re.compile(r"/api/apk-dummy/([A-Za-z0-9_-]+)/?$")
+
+
+def resolve_dummy_url_to_path(url: str) -> str | None:
+    """더미 APK 다운로드 URL 이 *이 서버* 가 발급한 것이면 네트워크 없이 로컬 파일 경로로 해석한다.
+
+    cloudflare/ngrok 등 공개 호스트로 발급된 자기 자신 링크는 백엔드에서 그 공개 URL 을
+    되받아 fetch 하면 루프백 DNS 가 깨질 수 있다. 따라서 host 는 무시하고 path 의 토큰만 보고
+    `state.apk_dummy_tokens` 에서 직접 로컬 파일을 찾는다. 외부 호스트의 임의 APK URL 은 None
+    (→ 호출측이 일반 HTTP 다운로드로 처리).
+    """
+    if not url:
+        return None
+    try:
+        path = urlparse(url.strip()).path
+    except Exception:  # noqa: BLE001
+        return None
+    m = _DUMMY_PATH_RE.search(path or "")
+    if not m:
+        return None
+    rec = state.apk_dummy_tokens.get(m.group(1))
+    if rec is None or rec.get("expires_at", 0) < time.time():
+        return None
+    p = Path(str(rec.get("file_path", ""))).resolve()
+    if DATA_DIR.resolve() not in p.parents or not p.is_file():
+        return None
+    return str(p)
 
 # 알려진 더미별 메타 (없는 파일은 generic fallback). expected_signals 는 data_examples/apk/README + build_families.sh 기준.
 _META: dict[str, dict[str, Any]] = {

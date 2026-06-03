@@ -70,3 +70,47 @@ def test_non_url_is_false(monkeypatch):
 def test_network_failure_is_false(monkeypatch):
     _patch_head(monkeypatch, {}, fail=True)
     assert common.probe_executable_url("https://unreachable.example/api/apk-dummy/t") is False
+
+
+# ──────────────── 자기 서버 더미 링크 — 루프백 fetch 없이 토큰으로 로컬 해석 ────────────────
+def _seed_dummy_token(monkeypatch, tmp_path, token="tok_abc-1"):
+    """data_examples/apk 하위에 실제 .apk 가 있어야 DATA_DIR 검증 통과."""
+    from api_server_pkg import apk_dummy, state
+    apks = list(apk_dummy.DATA_DIR.glob("*.apk")) if apk_dummy.DATA_DIR.exists() else []
+    if not apks:
+        pytest.skip("data_examples/apk 에 .apk 없음 (빌드 필요)")
+    import time
+    monkeypatch.setitem(
+        state.apk_dummy_tokens, token,
+        {"variant_id": "fake_phishing", "file_path": str(apks[0]),
+         "filename": apks[0].name, "expires_at": time.time() + 3600, "created_at": time.time()},
+    )
+    return token, apks[0]
+
+
+def test_self_dummy_link_probed_without_network(monkeypatch, tmp_path):
+    token, _ = _seed_dummy_token(monkeypatch, tmp_path)
+    # 네트워크가 호출되면 실패하도록 막아둠 — 그래도 True 여야(로컬 해석)
+    _patch_head(monkeypatch, {}, fail=True)
+    cf_url = f"https://sao-foo.trycloudflare.com/api/apk-dummy/{token}"
+    assert common.probe_executable_url(cf_url) is True
+
+
+def test_self_dummy_link_materializes_local_copy(monkeypatch, tmp_path):
+    token, apk = _seed_dummy_token(monkeypatch, tmp_path)
+    cf_url = f"https://sao-foo.trycloudflare.com/api/apk-dummy/{token}"
+    path = common.materialize_executable_url(cf_url)
+    try:
+        with open(path, "rb") as fp:
+            assert fp.read(4) == b"PK\x03\x04"  # APK(ZIP) magic
+    finally:
+        import os
+        os.unlink(path)
+
+
+def test_expired_dummy_token_not_resolved(monkeypatch):
+    from api_server_pkg import apk_dummy, state
+    import time
+    monkeypatch.setitem(state.apk_dummy_tokens, "expired",
+                        {"file_path": "/nonexistent.apk", "expires_at": time.time() - 1})
+    assert apk_dummy.resolve_dummy_url_to_path("https://x/api/apk-dummy/expired") is None

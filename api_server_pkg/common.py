@@ -179,6 +179,13 @@ def probe_executable_url(source: str, *, timeout: float = 8.0) -> bool:
         return False
     if is_executable_url(s):
         return True
+    # 자기 서버가 발급한 더미 APK 링크 — 루프백 fetch 없이 토큰으로 로컬 판단.
+    try:
+        from .apk_dummy import resolve_dummy_url_to_path
+        if resolve_dummy_url_to_path(s):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
     import requests
 
     headers: dict[str, str] = {}
@@ -207,6 +214,8 @@ def materialize_executable_url(url: str) -> str:
     호출측이 분석 후 파일 삭제 책임을 진다. APK 면 그대로 Phase 0.6 정적/동적 분석으로 흐른다.
     로컬 *실행* 은 절대 없음 — APK 실행은 항상 격리 VM(apk_analyzer HARD BLOCK).
     """
+    import shutil
+
     import requests
 
     clean = url.split("?", 1)[0]
@@ -216,6 +225,20 @@ def materialize_executable_url(url: str) -> str:
     target_dir = Path(".scamguardian") / "uploads" / "web_apk"
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{uuid.uuid4().hex}{suffix}"
+
+    # 자기 서버 더미 APK 링크 — 루프백 fetch 대신 토큰으로 로컬 파일 직접 복사 (DNS 깨짐 회피).
+    try:
+        from .apk_dummy import resolve_dummy_url_to_path
+        local_src = resolve_dummy_url_to_path(url)
+    except Exception:  # noqa: BLE001
+        local_src = None
+    if local_src:
+        target = target_dir / f"{uuid.uuid4().hex}.apk"
+        shutil.copyfile(local_src, target)
+        logging.getLogger("web_apk_dl").info(
+            "더미 APK 로컬 해석(네트워크 skip): %s → %s", url[:80], target.name
+        )
+        return str(target)
 
     try:
         with requests.get(url, stream=True, timeout=60) as resp:
