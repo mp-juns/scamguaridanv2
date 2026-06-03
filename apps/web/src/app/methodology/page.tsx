@@ -1,5 +1,9 @@
 import Link from "next/link";
 
+// 빌드 시 prerender 하지 않음 — 백엔드 /api/methodology 응답 형태(Identity Boundary 로 가변)에
+// 빌드가 의존하면 Vercel 배포가 깨진다. 요청 시점 렌더(백엔드 live)로 분리.
+export const dynamic = "force-dynamic";
+
 const API_BASE_URL =
   process.env.SCAMGUARDIAN_API_URL ?? "http://127.0.0.1:8000";
 
