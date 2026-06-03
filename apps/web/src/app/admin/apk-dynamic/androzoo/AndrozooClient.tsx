@@ -16,6 +16,8 @@ type SampleResult = {
   error?: string | null;
 };
 
+type FlagInfo = { label_ko: string; rationale: string; source: string };
+
 type Summary = {
   analyzed: number;
   detected: number;
@@ -23,6 +25,7 @@ type Summary = {
   detection_rate: number;
   strong_detection_rate: number;
   flag_frequency: Record<string, number>;
+  flag_info: Record<string, FlagInfo>;
 };
 
 type Benchmark = {
@@ -181,7 +184,11 @@ export default function AndrozooClient() {
           {Object.keys(s.flag_frequency).length ? (
             <div className="mt-4 flex flex-wrap gap-2">
               {Object.entries(s.flag_frequency).map(([f, c]) => (
-                <span key={f} className={`rounded-full border px-3 py-1 text-xs ${WEAK.has(f) ? "border-white/10 text-slate-400" : "border-amber-400/40 text-amber-200"}`}>
+                <span
+                  key={f}
+                  title={s.flag_info?.[f]?.label_ko}
+                  className={`rounded-full border px-3 py-1 text-xs ${WEAK.has(f) ? "border-white/10 text-slate-400" : "border-amber-400/40 text-amber-200"}`}
+                >
                   {f} · {c}
                 </span>
               ))}
@@ -191,6 +198,29 @@ export default function AndrozooClient() {
             ScamGuardian 은 검출만 보고합니다 — vt_detection 은 VirusTotal 70개 백신 합의이고, 우리 신호는 한국 보이스피싱
             패밀리 패턴에 튜닝돼 있어 일반 멀웨어는 self-signed 만 뜰 수 있습니다 (판정은 통합 기업).
           </p>
+        </section>
+      ) : null}
+
+      {/* 검출 신호 설명 — 각 flag 가 뭘 의미하는지 */}
+      {s && s.flag_info && Object.keys(s.flag_info).length ? (
+        <section className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur">
+          <h2 className="text-lg font-semibold text-white">검출 신호 설명</h2>
+          <p className="mt-1 text-sm text-slate-400">각 신호가 무엇을 뜻하는지 + 학술/법적 근거.</p>
+          <ul className="mt-4 space-y-3">
+            {Object.entries(s.flag_info).map(([f, fi]) => (
+              <li key={f} className={`rounded-2xl border p-4 ${WEAK.has(f) ? "border-white/10 bg-black/20" : "border-amber-400/20 bg-amber-500/5"}`}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded-full border px-2 py-0.5 font-mono text-[11px] ${WEAK.has(f) ? "border-white/10 text-slate-400" : "border-amber-400/40 text-amber-200"}`}>
+                    {f}
+                  </span>
+                  <span className="text-sm font-semibold text-white">{fi.label_ko}</span>
+                  {WEAK.has(f) ? <span className="text-[11px] text-slate-500">(약한 신호 — 단독 판정 X)</span> : null}
+                </div>
+                {fi.rationale ? <p className="mt-2 text-sm leading-relaxed text-slate-300">{fi.rationale}</p> : null}
+                {fi.source ? <p className="mt-1 text-xs text-slate-500">출처: {fi.source}</p> : null}
+              </li>
+            ))}
+          </ul>
         </section>
       ) : null}
 
@@ -221,8 +251,12 @@ export default function AndrozooClient() {
                     ) : r.all_flags?.length ? (
                       <div className="flex flex-wrap gap-1.5">
                         {r.all_flags.map((f) => (
-                          <span key={f} className={`rounded-full border px-2 py-0.5 text-xs ${WEAK.has(f) ? "border-white/10 text-slate-400" : "border-amber-400/40 text-amber-200"}`}>
-                            {f}
+                          <span
+                            key={f}
+                            title={s?.flag_info?.[f] ? `${s.flag_info[f].label_ko} — ${s.flag_info[f].rationale}` : f}
+                            className={`cursor-help rounded-full border px-2 py-0.5 text-xs ${WEAK.has(f) ? "border-white/10 text-slate-400" : "border-amber-400/40 text-amber-200"}`}
+                          >
+                            {s?.flag_info?.[f]?.label_ko ?? f}
                           </span>
                         ))}
                       </div>

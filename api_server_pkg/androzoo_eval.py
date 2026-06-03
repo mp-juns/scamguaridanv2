@@ -91,6 +91,20 @@ def _analyze_one(sha256: str, meta: dict) -> dict[str, Any]:
     return rec
 
 
+def _flag_info(flags) -> dict[str, dict[str, str]]:
+    """각 flag 의 한글 라벨 + 학술/법적 근거 + 출처 (config 에서)."""
+    from pipeline.config import FLAG_LABELS_KO, FLAG_RATIONALE
+    info: dict[str, dict[str, str]] = {}
+    for f in flags:
+        rat = FLAG_RATIONALE.get(f) or {}
+        info[f] = {
+            "label_ko": FLAG_LABELS_KO.get(f, f),
+            "rationale": rat.get("rationale", ""),
+            "source": rat.get("source", ""),
+        }
+    return info
+
+
 def _summarize(results: list[dict]) -> dict[str, Any]:
     done = [r for r in results if not r.get("error")]
     detected = [r for r in done if r.get("detected")]
@@ -107,6 +121,7 @@ def _summarize(results: list[dict]) -> dict[str, Any]:
         "detection_rate": round(len(detected) / n, 3),
         "strong_detection_rate": round(len(strong) / n, 3),
         "flag_frequency": dict(sorted(freq.items(), key=lambda kv: -kv[1])),
+        "flag_info": _flag_info(freq.keys()),
     }
 
 
