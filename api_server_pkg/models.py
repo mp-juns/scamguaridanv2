@@ -73,6 +73,8 @@ class CreateApiKeyRequest(BaseModel):
 
 class StartTrainingRequest(BaseModel):
     model: str
+    # 여러 모델을 보내면(예: ["classifier", "gliner"]) 순차 학습. 없으면 단일 `model`.
+    models: list[str] | None = None
     epochs: int = 3
     batch_size: int = 8
     lora: bool = False
@@ -82,3 +84,28 @@ class StartTrainingRequest(BaseModel):
     base_model: str | None = None
     early_stopping_patience: int = 2
     early_stopping_threshold: float = 0.0
+
+
+class AugmentStartRequest(BaseModel):
+    """데이터 증강 세션 시작 — 씨앗 파일을 Claude 로 병렬 패러프레이즈."""
+    seed_file: str | None = None        # 없으면 admin_seeds.jsonl 기본값
+    variants: int = 5
+    rounds: int = 1
+    model: str = "claude-sonnet-4-6"
+    concurrency: int = 8
+    limit: int = 0
+    scam_type: str | None = None        # 특정 유형 씨앗만 (None = 전체)
+
+
+class SeedCreateRequest(BaseModel):
+    """관리자가 직접 작성하는 씨앗 1개 (굶은 유형 보강용)."""
+    text: str
+    scam_type: str
+    content_label: str = GATE_SCAM_ATTEMPT
+
+
+class DummyLinkRequest(BaseModel):
+    """더미 피싱앱 다운로드 링크 발급 — APK 검출 e2e 테스트용."""
+    variant_id: str
+    ttl_seconds: int = 3600
+    filename: str | None = None        # 다운로드 시 보일 파일명 (피싱 배포처 모사)

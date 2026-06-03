@@ -16,12 +16,26 @@ export default function TrainingPage() {
               라벨 데이터로 분류기·NER 모델을 도메인 특화 학습합니다. 학습은 백그라운드 프로세스로 실행되며 메트릭은 실시간 폴링됩니다.
             </p>
           </div>
-          <Link
-            href="/admin/training/about"
-            className="rounded-2xl border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/20"
-          >
-            📖 어떻게 동작하나? →
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href="/admin/training/models"
+              className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20"
+            >
+              모델 관리 →
+            </Link>
+            <Link
+              href="/admin/training/compare"
+              className="rounded-2xl border border-violet-400/30 bg-violet-500/10 px-4 py-2 text-sm font-semibold text-violet-200 transition hover:bg-violet-500/20"
+            >
+              모델 비교 →
+            </Link>
+            <Link
+              href="/admin/training/about"
+              className="rounded-2xl border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/20"
+            >
+              📖 어떻게 동작하나? →
+            </Link>
+          </div>
         </header>
         <TrainingClient />
       </div>

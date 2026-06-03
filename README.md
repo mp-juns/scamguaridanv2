@@ -129,11 +129,21 @@ scripts/             배치 인제스트·운영 스크립트
 
 - **카카오톡 챗봇**: `POST /webhook/kakao` (오픈빌더 연동)
 - **웹 분석**: `https://<host>/` (프론트엔드)
-- **어드민**: `https://<host>/admin/*` (라벨링 / 플랫폼 / 학습)
-- **REST API**: `POST /api/analyze` (외부 클라이언트, API key 필요)
+- **라이브 보이스 (실시간 통화 탐지)**: `/live` — 브라우저 마이크로 통화 음성을 실시간 전사하며 보이스피싱 신호 검출 (아래 참고)
+- **어드민**: `https://<host>/admin/*` (라벨링 / 플랫폼 / 학습 — 학습은 모델 비교·순차학습 포함)
+- **REST API**: `POST /api/analyze` (외부 클라이언트, API key 필요), `POST /api/live-analyze` (실시간 청크 스트리밍)
 - **결과 공개 페이지**: `/result/[token]` (1시간 TTL)
 
 자세한 내용은 [`.scamguardian/README.md`](./.scamguardian/README.md) 참고.
+
+## 라이브 보이스 — 실시간 통화 중 사기 탐지 (`/live`)
+
+통화 *후* 분석이 아니라 통화 *중* 개입을 목표로 하는 v4 기능입니다.
+
+- 브라우저 `MediaRecorder` 로 음성을 청크 단위로 `POST /api/live-analyze` 에 스트리밍 → STT(`pipeline/stt.py`) + 화자분리(`pipeline/diarize.py`, Claude 텍스트 기반) + 전사 교정(`pipeline/stt_correct.py`)
+- 누적 슬라이딩 윈도우로 위험 신호를 평가하고, 임계 초과 시 풀스크린 `danger-flash` 경보로 "전화 끊으세요" 트리거
+- 백엔드: `api_server_pkg/{live_stream,stream_analyze,transcribe}.py` / 프론트: `apps/web/src/app/live/`
+- STT 백엔드는 OpenAI Whisper 또는 Naver CLOVA Speech (`CLOVA_SPEECH_PER_MIN_USD` 비용추적) 선택 가능. 새 무거운 의존성 없음.
 
 ## APK 검출 (4-tier — 정적 3 + 동적 1)
 
@@ -284,7 +294,10 @@ python -m training.train_classifier --output-dir checkpoints/classifier-v1 \
   활성화 버튼. "가짜 실패(false failure)" 상태 보정 포함.
 - **LoRA/PEFT 어댑터** 체크포인트 자동 로딩, `--early-stopping`, `--fp16/--bf16` 지원.
 - **자동 swap**: `.scamguardian/active_models.json` 등록 시 60초 내 파이프라인 반영, 무효 경로는 base fallback.
-- **원본↔Fine-tuned 비교**: zero-shot vs 체크포인트 예측을 나란히 대조 + 합성 데이터 지식그래프 시각화.
+- **순차 학습** (`/admin/training`): classifier(mDeBERTa) → gliner 를 기본 순서로 연달아 학습 (한쪽만 선택 시 단일 학습). `POST /api/admin/training/sessions` 에 `models: ["classifier","gliner"]`.
+- **모델 비교** (`/admin/training/compare`): 같은 입력에서 *active 모델 vs Claude(raw) vs fine-tuned* 3관점 예측을 나란히 대조 + agreement 표시 (`POST /api/admin/training/compare-analysis`).
+- **모델 관리** (`/admin/training/models`): 학습된 체크포인트 활성화/swap.
+- **데이터 증강** (`/admin/augment`): 굶은 스캠 유형을 씨앗 + Claude 병렬 패러프레이즈로 보강.
 
 > `data/generated/` 합성 코퍼스·RAG 인덱스는 `.gitignore` 대상입니다 (스크립트로 재생성).
 

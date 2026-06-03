@@ -33,6 +33,16 @@ def whisper_cost(audio_seconds: float) -> float:
     return (audio_seconds / 60.0) * OPENAI_WHISPER_PER_MIN
 
 
+# Naver CLOVA Speech (per minute) — NCP 표 기준 대략 ₩4/분 ≈ $0.003.
+# 정확한 단가는 NCP 콘솔에서 확인. CLOVA_SPEECH_PER_MIN_USD env 로 override.
+import os as _os_pricing
+CLOVA_SPEECH_PER_MIN_USD = float(_os_pricing.getenv("CLOVA_SPEECH_PER_MIN_USD", "0.003"))
+
+
+def clova_speech_cost(audio_seconds: float) -> float:
+    return (audio_seconds / 60.0) * CLOVA_SPEECH_PER_MIN_USD
+
+
 # Serper (per query) — 무료 티어 후 $0.001 가정. 정확한 단가는 플랜에 따라 다름.
 SERPER_PER_QUERY = 0.001
 

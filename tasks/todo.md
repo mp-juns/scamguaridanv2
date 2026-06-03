@@ -1,3 +1,150 @@
+# 어드민 확장 2건 (augment + apk-dummy) — 2026-06-04 완료
+
+## 1) 데이터 증강 어드민 `/admin/augment`
+씨앗 작성 + Claude 병렬 증강 + 모니터링. training 세션 패턴 미러링.
+- 신규: `training/augment_sessions.py`, `scripts/run_augment_session.py`, `api_server_pkg/admin_augment.py`, `tests/test_augment_session.py`(3), 프론트 `admin/augment/{page,AugmentClient}` + `about/`, 프록시 7개
+- 설명 위키: `/admin/augment/about`
+- 검증: pytest 그린, 내 프론트 lint+build OK(증강 작업 시점)
+
+## 2) 더미 피싱앱 다운로드 링크 `/admin/apk-dynamic/dummy`
+prebuilt 무해 더미(data_examples/apk 5종)를 만료 공개 토큰 URL 로 발급 → kakao/analyze e2e 테스트.
+- 신규: `api_server_pkg/apk_dummy.py`, `tests/test_apk_dummy.py`(6), 프론트 `admin/apk-dynamic/dummy/{page,DummyClient}`, 프록시 3개
+- 수정: `state.py`, `models.py`, `middleware.py`(/api/apk-dummy/ skip), `app.py`
+- 검증: pytest **345 passed**, 내 프론트 4파일 eslint exit 0 + tsc 0
+- ⚠️ `npm run build` 는 머지로 들어온 `live/LiveVoiceUpload.tsx` 의 unescaped-quote 6건에서 실패(내 코드 아님). kyy todo(아래)는 빌드 통과로 기록 — 머지 트리 불일치. 사용자 확인 후 따옴표 escape 로 해소 가능.
+
+---
+
+# 실시간 마이크 스트리밍 보이스피싱 탐지 포팅 (kyy uncommitted) — 2026-06-04
+
+## 배경
+- kyy 워크스페이스에 **커밋 안 된** 실시간 버전 존재 — 3812846(업로드 /live) 위에 얹힘.
+- POST `/api/live-analyze` 청크 스트리밍(MediaRecorder 주기 POST), WebSocket 아님.
+- 신규: `live_stream.py`, `stt_correct.py`, `live-analyze/route.ts`, 테스트4(clova_roles/stream_alert_tier/stream_window/stt_correct)
+- 교체(main==3812846): `stream_analyze.py`(+384), `transcribe.py`(+25), `stt.py`(+198), `LiveVoiceUpload.tsx`(+514)
+- surgical: app.py(live_stream 라우터), middleware.py(/api/live-analyze 패턴), globals.css(danger-flash +20)
+- 새 의존성 없음(전부 stdlib). 제외: start_kyy.sh, todo-kyy.md.
+
+## 결과
+- [x] kyy 작업트리 → main 복사(교체4 + 신규3 + 테스트4)
+- [x] surgical 3 (app.py / middleware.py / globals.css)
+- [x] 백엔드: create_app OK, /api/live-analyze 등록, pytest **384 passed** (새 테스트 4개 포함)
+- [x] 프론트 빌드 exit 0 — `/api/live-analyze`, `/live`(실시간 버전) 컴파일
+- [x] Review
+
+## Review
+- 실시간 마이크 스트리밍 보이스피싱 탐지가 main 워크스페이스에 들어옴. `/live` 가 업로드→실시간 버전으로 업그레이드.
+- 흐름: 브라우저 MediaRecorder → 청크 주기적 POST `/api/live-analyze` → STT(diarize/stt_correct) → 누적 윈도우 위험신호 → danger-flash 풀스크린 경보.
+- 새 의존성 없음. CLOVA Speech 옵션 백엔드 + stt_correct(Claude 텍스트 교정) 전부 stdlib.
+- 검증: pytest 384 passed(새 테스트 clova_roles/stream_alert_tier/stream_window/stt_correct 포함), npm build exit 0.
+- 미커밋. 학습포팅 + 라이브보이스(업로드) + 실시간 3건이 작업트리에 누적 — 파일셋 대체로 disjoint(공유: app.py/middleware.py/page.tsx/globals.css는 additive). 경로별 커밋 분리 가능.
+- 미반영(제외): kyy의 start_kyy.sh, todo-kyy.md, sg-tui 스크립트, db 백업.
+
+---
+
+# 라이브 보이스(Live Call Guard) 코드단위 포팅 — 2026-06-04
+
+## 배경
+- 라이브 보이스가 `origin/main-kyy`(HEAD `3812846`)에만 있고 main 미머지. main엔 stub `v4_stream.py`만.
+- 사용자 결정: 파일 통째가 아니라 **코드 체리픽** — 파이프라인은 합치고, 프론트는 `/live` 관련 코드만. 무관(train_classifier 충돌, README, todo, 스크립트) 제외.
+- 학습 포팅과 파일셋 disjoint → 같은 작업트리에서 경로별 커밋 분리 가능.
+
+## Plan / 결과
+- [x] 신규 파일 wholesale: `pipeline/diarize.py`, `api_server_pkg/{stream_analyze,transcribe}.py`, `apps/web/src/app/live/*`, `api/{analyze-stream,transcribe-upload}/route.ts`
+- [x] `pipeline/stt.py` wholesale (main 미변경 → 안전, 화자분리/스트리밍 지원)
+- [x] surgical 6: `app.py`(라우터2), `analyze.py`(ffmpeg VAD), `page.tsx`(LIVE 링크), `pricing.py`(clova), `cost.py`(record_clova), `middleware.py`(키패턴2)
+- [x] 백엔드: create_app OK, 라우트 등록(/api/transcribe-upload, /api/analyze-stream), import OK, pytest 339 passed
+- [x] 프론트 빌드 exit 0 — `/live`, `/api/analyze-stream`, `/api/transcribe-upload` 컴파일
+- [x] 제외 확정: train_classifier.py, README, kyy.md, tasks/*, start_*.sh, live_stream.py(미등록)
+
+## Review
+- 코드단위 포팅 완료. 라이브 보이스 본체(STT 정확도+화자분리+스트리밍+/live UI)가 main 워크스페이스에 들어옴.
+- diarize는 pyannote 등 무거운 오디오모델 아님 → Claude 텍스트 기반 화자분리, **새 pip 의존성 없음**. requirements.txt 미변경.
+- CLOVA Speech 비용추적 추가(optional, `CLOVA_SPEECH_PER_MIN_USD` env override). stt.py가 CLOVA 백엔드 옵션 사용 가능.
+- 미커밋. 학습포팅(feat/training-compare-sequential)과 파일셋 disjoint — 경로별 커밋 분리 가능.
+- 미검증: 실제 런타임(WebRTC 마이크 스트리밍 /live 동작)은 브라우저 필요 — 빌드/라우트/import 까지만 정적 검증.
+
+---
+
+# 더미 피싱앱 다운로드 링크 생성 (/admin/apk-dynamic/dummy) — 2026-06-04
+
+## 배경
+APK 검출 e2e 테스트엔 "외부 배포처처럼 받아지는 APK URL"이 필요. prebuilt 무해 더미(data_examples/apk/ 5종)를
+만료 공개 토큰 URL 로 발급 → kakao/analyze 에 먹여 탐지 tier 검증. plan: ~/.claude/plans/cuddly-frolicking-lecun.md
+
+## Plan
+- [ ] 1. `state.py` — apk_dummy_tokens 저장소 + TTL
+- [ ] 2. `models.py` — DummyLinkRequest
+- [ ] 3. `apk_dummy.py` — catalog/link/links(admin) + 공개 다운로드(/api/apk-dummy/{token}) + 보안(경로 가드)
+- [ ] 4. `middleware.py` — /api/apk-dummy/ 공개 패턴 명시
+- [ ] 5. `app.py` — 라우터 include + 태그
+- [ ] 6. `tests/test_apk_dummy.py` + pytest 그린
+- [ ] 7. Next 프록시 3개 `api/admin/apk-dynamic/dummy/**`
+- [ ] 8. 프론트 `admin/apk-dynamic/dummy/{page,DummyClient}` + apk-dynamic nav 링크
+- [ ] 9. lint + build
+
+---
+
+# 데이터 증강 어드민 (/admin/augment) 구축 — 2026-06-04
+
+## 배경
+씨앗 유형 커버리지 갭(67개가 9유형 편중, 건강식품·부동산·납치 0개)이 macro_f1 0.177 의 근본 원인.
+공개 데이터셋은 라벨 체계 불일치로 부적합 → 관리자가 굶은 유형에 씨앗 직접 작성 + Claude 병렬 증강을
+웹 어드민으로 빼낸다. training 세션 인프라 미러링. plan: ~/.claude/plans/cuddly-frolicking-lecun.md
+
+## Plan
+- [x] 1. `training/augment_sessions.py` — 세션 매니저(start/list/get/cancel/read_metrics/read_log_tail/emit/promote)
+- [x] 2. `scripts/run_augment_session.py` — 병렬 러너(ThreadPoolExecutor) + FAKE dry-run hook
+- [x] 3. `api_server_pkg/models.py` — AugmentStartRequest, SeedCreateRequest
+- [x] 4. `api_server_pkg/admin_augment.py` — seed-stats/seeds/sessions/promote 라우터(7개)
+- [x] 5. `api_server_pkg/app.py` — 라우터 include + OPENAPI 태그
+- [x] 6. `tests/test_augment_session.py`(3) + pytest 339 passed
+- [x] 7. Next.js 프록시 7개 `apps/web/src/app/api/admin/augment/**`
+- [x] 8. 프론트 `admin/augment/{page.tsx,AugmentClient.tsx}` + `/admin` 네비 링크
+- [x] 9. lint clean + build 성공 + runner/TestClient 스모크 통과
+
+## Review
+- **백엔드**: training 세션 패턴 미러링. 증강 세션은 체크포인트 대신 `output.jsonl` 산출, `activate` 대신 `promote_output`(data/generated 병합·중복제거). 병렬은 러너의 ThreadPoolExecutor(동시성 ≤16, write_lock). `SCAMGUARDIAN_AUGMENT_FAKE=1` 로 API 비용 0 테스트.
+- **인증**: `/api/admin/*` 미들웨어가 자동 게이팅 → 추가 코드 0.
+- **검증**: pytest 339 passed(신규 3 — FAKE 러너/subprocess 라이프사이클/promote/missing-seed). lint clean, next build 성공(7 API + /admin/augment 페이지). TestClient 로 seed-stats/CRUD/validation(400) 확인. FAKE 러너 라이브 스모크 3행 생성.
+- **알려진 제약**: 이 base 워크스페이스엔 실물 씨앗 0 → seed-stats 가 12유형 전부 "굶음" 표시(정상·정직). 실제 67 씨앗은 phh 워크스페이스에 있음. UI 에서 씨앗 작성하거나 phh 파일 복사 시 실수치 반영.
+- **미적용(의도)**: 실제 Claude 증강 E2E(API 키+서버 필요)는 수동 검증 영역으로 남김 — 플럼빙은 FAKE 로 전부 검증됨.
+
+---
+
+# 순차학습 + 모델 비교 페이지 복원 (feat 브랜치 포팅) — 2026-06-04
+
+## 배경
+- 요청: (1) raw Claude vs 파인튜닝 비교 페이지, (2) classifier→gliner 순차학습 기본 + 개별 설정.
+- 기능은 `feat/training-compare-synthetic`(tip 04f1c25)에 완성. PR #2 는 분기점(d3ae9da)까지만 머지 → 순차학습/compare 프론트 미반영.
+- compare-analysis **백엔드는 이미 main 에 존재**(admin_training.py:742). main 은 분기 이후 해당 파일 미변경 → feat superset, 충돌 없이 포팅 가능. v4 스트리밍 링크 없음 확인.
+
+## Plan
+- [x] 1. PR용 브랜치 `feat/training-compare-sequential`
+- [x] 2. 프론트 신규 dir 포팅: `compare/`, `models/`
+- [x] 3. `training/page.tsx` (nav 링크)
+- [x] 4. `TrainingClient.tsx` (순차 체크박스, 둘 선택 시 "순차 학습 시작")
+- [x] 5. 백엔드: `sessions.py`(start_sequential_sessions), `models.py`(models:list), `admin_training.py`(sequential dispatch)
+  - ⚠️ feat tip 불일치 버그 발견: `admin_training.py`가 `payload.models`/`early_stopping_*` 참조하는데 feat `models.py`엔 없음 → `StartTrainingRequest`에 `models: list[str]|None`, `early_stopping_patience:int=2`, `early_stopping_threshold:float=0.0` 보강 (SessionParams 기본값과 일치).
+- [x] 6a. pytest 336 passed
+- [x] 6b. 라우트 패리티 확인 (프론트 fetch ↔ FastAPI route ↔ Next proxy 핸들러 전부 존재)
+- [x] 6c. `npm run build` exit 0 — `/admin/training/compare`, `/admin/training/models` 컴파일 성공
+- [x] 7. dispatch 런타임 시뮬 + Review
+
+## Review
+- 브랜치 `feat/training-compare-sequential` 에 포팅 완료. 변경:
+  - 신규 프론트: `compare/{page,CompareClient}.tsx` (Claude raw vs 파인튜닝 vs active 3관점 + agreement), `models/{page,ModelsClient}.tsx` (체크포인트 활성화).
+  - `training/page.tsx` — 모델관리/모델비교 nav 링크.
+  - `TrainingClient.tsx` — 모델 체크박스(기본 둘 다 체크 → "순차 학습 시작", 하나만 → "학습 시작").
+  - 백엔드: `sessions.py start_sequential_sessions` (cooldown 사이 순차 spawn), `admin_training.py` dispatch.
+- **수정 1 (feat tip 버그)**: `admin_training.py`가 `payload.models`/`early_stopping_*` 참조하나 feat `models.py`에 필드 부재 → `StartTrainingRequest`에 `models/early_stopping_patience/early_stopping_threshold` 추가 (SessionParams 기본값 일치). feat tip 자체는 학습 시작 시 AttributeError 났을 것.
+- **수정 2 (사용자 spec)**: feat 순서가 `gliner→classifier`였으나 요청은 classifier 먼저 → `ordered_models = ["classifier", "gliner"]` 로 변경.
+- 검증: pytest 336 + 40 passed / npm build exit 0 / 라우트 패리티(프론트 fetch ↔ FastAPI ↔ Next proxy) 전수 확인 / dispatch 런타임 시뮬(classifier→gliner, 단일=start_session) OK.
+- v4 스트리밍(`live_stream/stream_analyze/transcribe`)은 의도적으로 미포함.
+- 미커밋 상태 — 사용자 확인 후 commit/PR 예정. (무관 변경 `tests/fixtures/fake_phishing.apk`는 제외)
+
+---
+
 # Admin 사용자 관리 — 마스터 + 승인요청 시스템 (2026-06-04)
 
 목적: admin 허용을 정적 `ADMIN_EMAILS` env(4곳 체크)에서 → **마스터 + DB 승인요청** 모델로.

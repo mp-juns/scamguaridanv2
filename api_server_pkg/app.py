@@ -13,16 +13,21 @@ from pipeline.runner import ScamGuardianPipeline
 from platform_layer.middleware import PlatformMiddleware
 
 from . import (
+    admin_augment,
     admin_platform,
     admin_runs,
     admin_training,
     admin_users,
     analyze,
+    apk_dummy,
     apk_dynamic,
     docs_ui,
     health,
     kakao,
+    live_stream,
     result_token,
+    stream_analyze,
+    transcribe,
     v4_stream,
 )
 
@@ -52,8 +57,16 @@ OPENAPI_TAGS = [
         "description": "fine-tune 세션 — mDeBERTa 분류기 / GLiNER 추출기 도메인 특화 학습.",
     },
     {
+        "name": "Admin — Augment",
+        "description": "데이터 증강 세션 — 씨앗 작성 + Claude 병렬 패러프레이즈로 굶은 유형 보강.",
+    },
+    {
         "name": "Admin — APK Dynamic",
         "description": "APK Lv3 동적 분석 — 격리 VM(redroid+Frida) 라이프사이클 제어 + 분석 잡.",
+    },
+    {
+        "name": "Admin — APK Dummy",
+        "description": "무해 prebuilt 더미 APK 를 만료 공개 토큰 URL 로 발급 — 검출 e2e 테스트용.",
     },
     {
         "name": "Admin — Users",
@@ -120,11 +133,16 @@ def create_app() -> FastAPI:
     app.include_router(result_token.router)
     app.include_router(kakao.router)
     app.include_router(analyze.router)
+    app.include_router(transcribe.router)
+    app.include_router(stream_analyze.router)
+    app.include_router(live_stream.router)
     app.include_router(admin_runs.router)
     app.include_router(admin_platform.router)
     app.include_router(admin_training.router)
+    app.include_router(admin_augment.router)
     app.include_router(admin_users.router)
     app.include_router(apk_dynamic.router)
+    app.include_router(apk_dummy.router)
     app.include_router(v4_stream.router)
 
     # 커스텀 /docs (Swagger UI) + /redoc — Pretendard 폰트 + 가독성 폴리시.

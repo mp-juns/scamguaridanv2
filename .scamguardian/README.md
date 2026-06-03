@@ -370,8 +370,15 @@ Response:
 |---|---|---|---|
 | POST | `/api/analyze` | `{source, use_llm, use_rag, skip_verification, ...}` | `ScamReport.to_dict()` |
 | POST | `/api/analyze-upload` | multipart `file=` + `options=` | `ScamReport.to_dict()` |
+| POST | `/api/transcribe-upload` | multipart 음성/영상 | STT 전사 텍스트 (분석 전 단계) |
+| POST | `/api/analyze-stream` | 음성 청크 | 스트리밍 분석 결과 |
+| POST | `/api/live-analyze` | **(라이브 보이스)** 마이크 청크 | 실시간 STT + 누적 위험 신호 + 경보 tier |
 | POST | `/webhook/kakao` | 카카오 페이로드 | 카카오 응답 포맷 |
 | GET | `/api/result/{token}` | path param | `{result, user_context, chat_history, flag_rationale, expires_at}` |
+
+> **라이브 보이스 (`/live`, v4)**: 브라우저 `MediaRecorder` → 청크 `POST /api/live-analyze` → STT(`pipeline/stt.py`) +
+> 화자분리(`pipeline/diarize.py`) + 전사 교정(`pipeline/stt_correct.py`) → 누적 슬라이딩 윈도우 위험 신호 →
+> 임계 초과 시 풀스크린 `danger-flash` 경보. 백엔드 `api_server_pkg/{live_stream,stream_analyze,transcribe}.py`.
 
 ### 5.3 어드민 — 라벨링 / 평가
 
@@ -396,7 +403,8 @@ Response:
 | 메소드 | 경로 | 용도 |
 |---|---|---|
 | GET | `/api/admin/training/data-stats` | 라벨 분포·학습 가능 여부 |
-| POST | `/api/admin/training/sessions` | 세션 시작 (subprocess 백그라운드, early stopping 파라미터 포함) |
+| POST | `/api/admin/training/sessions` | 세션 시작. `models: ["classifier","gliner"]` 보내면 **순차 학습**(classifier→gliner), 단일 `model` 은 단일 세션. early stopping 파라미터 포함 |
+| GET/POST | `/api/admin/training/sessions/{id}/activate`, `/admin/training/models` | 학습 체크포인트 활성화/swap (모델 관리 페이지) |
 | GET | `/api/admin/training/sessions` | 세션 리스트 + active_models |
 | GET | `/api/admin/training/sessions/{id}` | 세션 상세 + metrics + log_tail |
 | POST | `/api/admin/training/sessions/{id}/cancel` | 세션 중단 |

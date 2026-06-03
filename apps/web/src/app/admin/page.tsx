@@ -206,6 +206,12 @@ export default function AdminDashboardPage() {
             </Link>
             <Link
               className="rounded-2xl border border-white/10 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/5"
+              href="/admin/augment"
+            >
+              🧬 데이터 증강
+            </Link>
+            <Link
+              className="rounded-2xl border border-white/10 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/5"
               href="/admin/apk-dynamic"
             >
               🧪 APK 동적

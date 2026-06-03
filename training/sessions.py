@@ -106,6 +106,22 @@ def _log_path(session_id: str) -> Path:
     return _session_dir(session_id) / "train.log"
 
 
+def _training_python_command() -> list[str]:
+    explicit = (os.getenv("SCAMGUARDIAN_TRAIN_PYTHON") or "").strip()
+    if explicit:
+        return [explicit]
+
+    conda_env = (os.getenv("SCAMGUARDIAN_TRAIN_CONDA_ENV") or os.getenv("CONDA_ENV") or "").strip()
+    if conda_env:
+        return ["conda", "run", "--no-capture-output", "-n", conda_env, "python"]
+
+    capstone_python = Path.home() / "anaconda3" / "envs" / "capstone" / "bin" / "python"
+    if capstone_python.exists():
+        return [str(capstone_python)]
+
+    return [sys.executable]
+
+
 def _read_status(session_id: str) -> dict[str, Any] | None:
     p = _status_path(session_id)
     if not p.exists():
@@ -155,6 +171,21 @@ def _refresh_status(session_id: str) -> dict[str, Any] | None:
     data = _read_status(session_id)
     if data is None:
         return None
+    if data.get("status") == "completed" and data.get("model") == "gliner":
+        output_dir = Path(str(data.get("output_dir") or ""))
+        if not _has_model_artifacts("gliner", output_dir):
+            data["status"] = "failed"
+            data["exit_code"] = data.get("exit_code") or 2
+            data["ended_at"] = data.get("ended_at") or time.time()
+            data["failure_reason"] = (
+                "GLiNER 모델 가중치가 없어 완료 세션으로 인정할 수 없습니다. "
+                "train.json/val.json/labels.json 은 학습 데이터 산출물일 뿐입니다."
+            )
+            rows = read_metrics(session_id, max_rows=1)
+            if rows:
+                data["last_metrics"] = rows[-1]
+            _write_status(session_id, data)
+            return data
     if data.get("status") == "failed":
         ended_at = float(data.get("ended_at") or 0)
         latest_activity = _latest_activity_time(session_id) or 0
@@ -191,15 +222,9 @@ def _refresh_status(session_id: str) -> dict[str, Any] | None:
     return data
 
 
-def _has_success_artifacts(session_id: str, data: dict[str, Any]) -> bool:
-    """Detect a completed run even if process watching missed the clean exit."""
-    rows = read_metrics(session_id, max_rows=5)
-    if not rows or rows[-1].get("kind") != "done":
-        return False
-    output_dir = Path(str(data.get("output_dir") or ""))
+def _has_model_artifacts(model: str | None, output_dir: Path) -> bool:
     if not output_dir.exists():
         return False
-    model = data.get("model")
     if model == "classifier":
         return (output_dir / "label2id.json").exists() and (
             (output_dir / "adapter_model.safetensors").exists()
@@ -207,8 +232,28 @@ def _has_success_artifacts(session_id: str, data: dict[str, Any]) -> bool:
             or (output_dir / "pytorch_model.bin").exists()
         )
     if model == "gliner":
-        return any(output_dir.iterdir())
+        weight_files = {
+            "model.safetensors",
+            "pytorch_model.bin",
+            "adapter_model.safetensors",
+        }
+        has_weights = any(path.name in weight_files for path in output_dir.rglob("*") if path.is_file())
+        has_config = any(
+            (output_dir / name).exists()
+            for name in ("config.json", "gliner_config.json", "tokenizer_config.json")
+        )
+        return has_weights and has_config
     return False
+
+
+def _has_success_artifacts(session_id: str, data: dict[str, Any]) -> bool:
+    """Detect a completed run even if process watching missed the clean exit."""
+    rows = read_metrics(session_id, max_rows=5)
+    if not rows or rows[-1].get("kind") != "done":
+        return False
+    output_dir = Path(str(data.get("output_dir") or ""))
+    model = data.get("model")
+    return _has_model_artifacts(model, output_dir)
 
 
 def read_metrics(session_id: str, max_rows: int = 500) -> list[dict[str, Any]]:
@@ -250,6 +295,23 @@ def read_log_tail(session_id: str, max_bytes: int = 8000) -> str:
         return ""
 
 
+def read_loss_spikes(session_id: str, max_rows: int = 80) -> list[dict[str, Any]]:
+    p = _session_dir(session_id) / "output" / "loss_spikes.jsonl"
+    if not p.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with p.open("r", encoding="utf-8") as fp:
+        for line in fp:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows[-max_rows:]
+
+
 def list_sessions(limit: int = 50) -> list[dict[str, Any]]:
     _ensure_root()
     entries: list[tuple[float, str]] = []
@@ -274,6 +336,91 @@ def get_session(session_id: str) -> dict[str, Any] | None:
     return _refresh_status(session_id)
 
 
+def _attach_queue_state(session_id: str, queue_state: dict[str, Any]) -> None:
+    data = _read_status(session_id)
+    if data is None:
+        return
+    data["queued_sequence"] = queue_state
+    _write_status(session_id, data)
+
+
+def start_sequential_sessions(
+    params_list: list[SessionParams],
+    *,
+    cooldown_seconds: int = 120,
+) -> dict[str, Any]:
+    """Start one training job now, then launch the rest after successful completion."""
+    if not params_list:
+        raise ValueError("학습할 모델을 하나 이상 선택해야 합니다.")
+
+    first = start_session(params_list[0])
+    queue_state: dict[str, Any] = {
+        "mode": "sequential",
+        "cooldown_seconds": cooldown_seconds,
+        "current_session_id": first["session_id"],
+        "items": [
+            {
+                "model": params.model,
+                "status": "running" if idx == 0 else "queued",
+                "session_id": first["session_id"] if idx == 0 else None,
+            }
+            for idx, params in enumerate(params_list)
+        ],
+    }
+    _attach_queue_state(first["session_id"], queue_state)
+
+    def _runner(anchor_session_id: str) -> None:
+        nonlocal queue_state
+        for idx in range(1, len(params_list)):
+            prev_session_id = str(queue_state["items"][idx - 1]["session_id"])
+            while True:
+                prev = get_session(prev_session_id)
+                status = (prev or {}).get("status")
+                if status in {"completed", "failed", "cancelled"}:
+                    break
+                time.sleep(5)
+
+            if status != "completed":
+                queue_state["items"][idx]["status"] = "skipped"
+                queue_state["items"][idx]["reason"] = f"previous_{status}"
+                _attach_queue_state(anchor_session_id, queue_state)
+                return
+
+            queue_state["items"][idx]["status"] = "cooldown"
+            queue_state["cooldown_started_at"] = time.time()
+            _attach_queue_state(anchor_session_id, queue_state)
+            time.sleep(max(0, cooldown_seconds))
+
+            started = start_session(params_list[idx])
+            queue_state["items"][idx]["status"] = "running"
+            queue_state["items"][idx]["session_id"] = started["session_id"]
+            queue_state["current_session_id"] = started["session_id"]
+            _attach_queue_state(anchor_session_id, queue_state)
+
+        final_session_id = str(queue_state["items"][-1]["session_id"])
+        while True:
+            final = get_session(final_session_id)
+            status = (final or {}).get("status")
+            if status in {"completed", "failed", "cancelled"}:
+                queue_state["items"][-1]["status"] = status
+                queue_state["status"] = "completed" if status == "completed" else status
+                _attach_queue_state(anchor_session_id, queue_state)
+                return
+            time.sleep(5)
+
+    if len(params_list) > 1:
+        threading.Thread(target=_runner, args=(first["session_id"],), daemon=True).start()
+
+    first["queued_sequence"] = queue_state
+    return {
+        "session_id": first["session_id"],
+        "status": "running",
+        "model": "multi" if len(params_list) > 1 else first["model"],
+        "sessions": [first],
+        "queued_sequence": queue_state,
+    }
+
+
 def start_session(params: SessionParams) -> dict[str, Any]:
     if params.model not in ALLOWED_MODELS:
         raise ValueError(f"model 은 {ALLOWED_MODELS} 중 하나여야 합니다.")
@@ -286,7 +433,7 @@ def start_session(params: SessionParams) -> dict[str, Any]:
 
     module = "training.train_classifier" if params.model == "classifier" else "training.train_gliner"
     cmd: list[str] = [
-        sys.executable, "-u", "-m", module,
+        *_training_python_command(), "-u", "-m", module,
         "--output-dir", str(output_dir),
         "--epochs", str(params.epochs),
         "--batch-size", str(params.batch_size),
@@ -302,15 +449,26 @@ def start_session(params: SessionParams) -> dict[str, Any]:
             "--early-stopping-threshold",
             str(params.early_stopping_threshold),
         ]
+    if params.model == "gliner":
+        cmd += ["--device", os.getenv("SCAMGUARDIAN_GLINER_DEVICE", "cuda")]
+        cmd += ["--max-steps", os.getenv("SCAMGUARDIAN_GLINER_MAX_STEPS", "3000")]
     if params.extra_jsonl:
         cmd += ["--extra-jsonl", params.extra_jsonl]
     if params.base_model:
         cmd += ["--base-model", params.base_model]
 
     env = os.environ.copy()
+    wsl_cuda_lib = "/usr/lib/wsl/lib"
+    if Path(wsl_cuda_lib).exists():
+        current_ld = env.get("LD_LIBRARY_PATH", "")
+        parts = [part for part in current_ld.split(":") if part]
+        if wsl_cuda_lib not in parts:
+            env["LD_LIBRARY_PATH"] = ":".join([wsl_cuda_lib, *parts])
     # 학습 콜백이 metrics.jsonl 에 emit 할 수 있게 경로 알림
     env["SCAMGUARDIAN_TRAINING_METRICS"] = str(_metrics_path(session_id))
     env["SCAMGUARDIAN_TRAINING_SESSION_ID"] = session_id
+    if params.model == "gliner":
+        env.setdefault("SCAMGUARDIAN_HF_LOCAL_ONLY", "1")
 
     log_file = _log_path(session_id)
     log_handle = log_file.open("ab", buffering=0)
@@ -363,7 +521,14 @@ def _watch_process(session_id: str, process: subprocess.Popen, log_handle) -> No
         data["exit_code"] = rc
         _write_status(session_id, data)
         return
-    data["status"] = "completed" if rc == 0 else "failed"
+    if rc == 0 and data.get("model") == "gliner" and not _has_model_artifacts(
+        "gliner",
+        Path(str(data.get("output_dir") or "")),
+    ):
+        data["status"] = "failed"
+        data["failure_reason"] = "GLiNER 학습이 모델 체크포인트를 만들지 못했습니다."
+    else:
+        data["status"] = "completed" if rc == 0 else "failed"
     data["ended_at"] = time.time()
     data["exit_code"] = rc
     # 마지막 metrics 행 한 번 더 읽어 last_metrics 갱신
@@ -442,9 +607,15 @@ def activate_session(session_id: str) -> dict[str, Any]:
     if data.get("status") != "completed":
         raise ValueError(f"완료된 세션만 활성화할 수 있습니다 (현재 status={data.get('status')}).")
     output_dir = data.get("output_dir") or ""
-    if not output_dir or not Path(output_dir).exists():
+    output_path = Path(output_dir)
+    if not output_dir or not output_path.exists():
         raise FileNotFoundError("체크포인트 디렉토리를 찾을 수 없습니다.")
     model = data.get("model")
+    if not _has_model_artifacts(model, output_path):
+        raise ValueError(
+            "실제 모델 체크포인트가 없는 세션입니다. "
+            "GLiNER 세션은 train.json/val.json/labels.json 만으로 활성화할 수 없습니다."
+        )
     with _active_lock:
         active = _read_active()
         active[model] = output_dir

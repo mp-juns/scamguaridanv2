@@ -38,6 +38,9 @@ log = logging.getLogger("middleware")
 _REQUIRE_KEY_PATTERNS = [
     re.compile(r"^/api/analyze$"),
     re.compile(r"^/api/analyze-upload$"),
+    re.compile(r"^/api/transcribe-upload$"),
+    re.compile(r"^/api/analyze-stream$"),
+    re.compile(r"^/api/live-analyze$"),
 ]
 # API key 선택 (있으면 기록만)
 _OPTIONAL_KEY_PATTERNS = [
@@ -60,6 +63,8 @@ _SKIP_PATTERNS = [
     re.compile(r"^/docs"),
     re.compile(r"^/openapi"),
     re.compile(r"^/redoc"),
+    # 더미 APK 다운로드 — 파이프라인/kakao 가 외부 URL 처럼 토큰으로 fetch (무해 prebuilt 더미)
+    re.compile(r"^/api/apk-dummy/"),
 ]
 
 

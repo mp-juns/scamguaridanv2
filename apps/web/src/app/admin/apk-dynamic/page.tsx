@@ -17,12 +17,20 @@ export default function ApkDynamicPage() {
               로컬 호스트에서는 APK 를 실행하지 않습니다 — 분석은 항상 격리 VM 으로 위임됩니다.
             </p>
           </div>
-          <Link
-            href="/admin"
-            className="rounded-2xl border border-white/10 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/5"
-          >
-            ← 어드민
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href="/admin/apk-dynamic/dummy"
+              className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20"
+            >
+              🔗 더미 링크 생성
+            </Link>
+            <Link
+              href="/admin"
+              className="rounded-2xl border border-white/10 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/5"
+            >
+              ← 어드민
+            </Link>
+          </div>
         </header>
         <ApkDynamicClient />
       </div>

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import {
   Bar,
@@ -17,7 +18,15 @@ import {
 
 type DataStats = {
   classifier: { total: number; labels: Record<string, number> };
-  gliner: { total: number; total_entities: number };
+  gliner: {
+    total: number;
+    base_total?: number;
+    total_entities: number;
+    base_total_entities?: number;
+    labels?: Record<string, number>;
+    label_count?: number;
+    extra_jsonl?: string;
+  };
 };
 
 type SessionInfo = {
@@ -37,6 +46,36 @@ type SessionDetail = {
   session: SessionInfo;
   metrics: Record<string, unknown>[];
   log_tail: string;
+  loss_spikes?: LossSpike[];
+};
+
+type LossSpikeExample = {
+  idx?: number;
+  label?: string;
+  source?: string;
+  content_label?: string;
+  sample_kind?: string;
+  run_id?: string | null;
+  source_ref?: string | null;
+  text_len?: number;
+  batch_text_len?: number | null;
+  preview?: string;
+  sample_loss?: number;
+  gold_label?: string;
+  pred_label?: string;
+  pred_confidence?: number;
+};
+
+type LossSpike = {
+  kind: "loss_spike";
+  step: number;
+  epoch?: number | null;
+  loss: number;
+  max_sample_loss?: number;
+  batch_size?: number;
+  learning_rate?: number;
+  examples?: LossSpikeExample[];
+  ts?: number;
 };
 
 type CompareScore = {
@@ -76,49 +115,6 @@ type ComparisonResult = {
   samples: CompareSample[];
 };
 
-type ModelCompareResult = {
-  session_id: string;
-  output_dir: string;
-  input: {
-    source: string;
-    transcript_text: string;
-    source_type: string;
-    metadata: Record<string, unknown>;
-  };
-  existing: {
-    label: string;
-    method: string;
-    scam_type: string;
-    confidence: number;
-    is_uncertain: boolean;
-    top_scores: CompareScore[];
-  };
-  claude: {
-    label: string;
-    method: string;
-    scam_type: string;
-    confidence: number | null;
-    summary: string;
-    reasoning: string[];
-    suggested_flags: { flag: string; reason: string; evidence: string; confidence: number }[];
-    suggested_entities: { text: string; label: string; reason: string; confidence: number }[];
-    error: string;
-  };
-  fine_tuned: {
-    label: string;
-    method: string;
-    scam_type: string;
-    confidence: number;
-    is_uncertain: boolean;
-    top_scores: CompareScore[];
-  };
-  agreement: {
-    existing_vs_fine_tuned: boolean;
-    existing_vs_claude: boolean;
-    claude_vs_fine_tuned: boolean;
-  };
-};
-
 type SyntheticAttempt = {
   session_id: string;
   output_dir: string;
@@ -135,7 +131,7 @@ type SyntheticAttempt = {
 type SyntheticGraphNode = {
   id: string;
   label: string;
-  kind: "corpus" | "scam_type" | "scenario" | "case" | "flag_group" | "flag" | "entity_label";
+  kind: "corpus" | "axis" | "scam_type" | "entity_label";
   group: string;
   weight: number;
 };
@@ -173,6 +169,14 @@ type SyntheticSummary = {
 type SessionsResponse = {
   sessions: SessionInfo[];
   active_models: Record<string, string>;
+};
+
+type StartTrainingResponse = SessionInfo | {
+  session_id: string;
+  status: "running";
+  model: "multi";
+  sessions: SessionInfo[];
+  queued_sequence?: unknown;
 };
 
 const STATUS_BADGE: Record<string, string> = {
@@ -230,23 +234,17 @@ export default function TrainingClient() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [comparison, setComparison] = useState<ComparisonResult | null>(null);
-  const [modelComparison, setModelComparison] = useState<ModelCompareResult | null>(null);
   const [comparing, setComparing] = useState(false);
-  const [modelComparing, setModelComparing] = useState(false);
   const [error, setError] = useState("");
   const logRef = useRef<HTMLPreElement | null>(null);
 
   const [form, setForm] = useState({
-    model: "classifier" as "classifier" | "gliner",
+    models: ["classifier", "gliner"] as Array<"classifier" | "gliner">,
     epochs: 3,
     batch_size: 8,
     lora: true,
     extra_jsonl: "",
     early_stopping_patience: 2,
-  });
-  const [compareForm, setCompareForm] = useState({
-    text: "서울중앙지검 수사관입니다. 본인 명의 계좌가 사건에 연루되어 안전계좌로 3000만원 검증 이체가 필요합니다.",
-    source: "",
   });
   const [submitting, setSubmitting] = useState(false);
 
@@ -325,22 +323,29 @@ export default function TrainingClient() {
     setSubmitting(true);
     setError("");
     try {
+      if (form.models.length === 0) {
+        throw new Error("학습할 모델을 하나 이상 선택해주세요.");
+      }
       const r = await fetch("/api/admin/training/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: form.model,
+          model: form.models[0],
+          models: form.models,
           epochs: form.epochs,
           batch_size: form.batch_size,
-          lora: form.lora,
+          lora: form.lora && form.models.includes("classifier"),
           extra_jsonl: form.extra_jsonl.trim() || null,
           early_stopping_patience: form.early_stopping_patience,
         }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail ?? "세션 시작 실패");
-      setSelectedId(data.session_id);
-      const startedDetail = await fetchSessionDetail(data.session_id);
+      const started = data as StartTrainingResponse;
+      const firstSessionId = "sessions" in started ? started.sessions[0]?.session_id : started.session_id;
+      if (!firstSessionId) throw new Error("시작된 세션 정보를 찾지 못했습니다.");
+      setSelectedId(firstSessionId);
+      const startedDetail = await fetchSessionDetail(firstSessionId);
       if (startedDetail) setDetail(startedDetail);
       await refreshList();
     } catch (err) {
@@ -391,43 +396,20 @@ export default function TrainingClient() {
     }
   }
 
-  async function runModelComparison() {
-    setModelComparing(true);
-    setError("");
-    try {
-      const completedClassifier =
-        detail?.session.model === "classifier" && detail.session.status === "completed"
-          ? detail.session.session_id
-          : undefined;
-      const r = await fetch("/api/admin/training/compare-analysis", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: compareForm.text.trim() || null,
-          source: compareForm.source.trim() || null,
-          session_id: completedClassifier,
-        }),
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.detail ?? "모델 비교 분석 실패");
-      setModelComparison(data as ModelCompareResult);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "모델 비교 분석 실패");
-    } finally {
-      setModelComparing(false);
-    }
-  }
-
   const chartData = useMemo(() => {
     if (!detail) return [];
     return detail.metrics
-      .filter((m) => typeof m.step === "number")
-      .map((m) => ({
-        step: m.step as number,
+      .filter((m) => typeof m.step === "number" || m.model === "gliner" || typeof m.gliner_progress === "number")
+      .map((m, index) => ({
+        step: typeof m.step === "number" ? m.step : index,
         loss: typeof m.loss === "number" ? m.loss : null,
         eval_loss: typeof m.eval_loss === "number" ? m.eval_loss : null,
         eval_macro_f1: typeof m.eval_macro_f1 === "number" ? m.eval_macro_f1 : null,
         eval_accuracy: typeof m.eval_accuracy === "number" ? m.eval_accuracy : null,
+        gliner_progress: typeof m.gliner_progress === "number" ? m.gliner_progress : null,
+        gliner_train_size: typeof m.train_size === "number" ? m.train_size : null,
+        gliner_val_size: typeof m.val_size === "number" ? m.val_size : null,
+        gliner_label_count: typeof m.label_count === "number" ? m.label_count : null,
       }));
   }, [detail]);
 
@@ -450,8 +432,31 @@ export default function TrainingClient() {
       }));
   }, [synthetic]);
 
+  const glinerLabelBars = useMemo(() => {
+    if (!stats?.gliner.labels) return [];
+    return Object.entries(stats.gliner.labels)
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 24);
+  }, [stats]);
+
   const selectedSession = detail?.session ?? sessions.find((session) => session.session_id === selectedId) ?? null;
   const lastMetric = detail?.metrics.at(-1) ?? selectedSession?.last_metrics ?? null;
+  const hasClassifierChart = chartData.some((row) =>
+    row.loss !== null || row.eval_loss !== null || row.eval_macro_f1 !== null || row.eval_accuracy !== null,
+  );
+  const hasGlinerChart = chartData.some((row) => row.gliner_progress !== null);
+  const lossSpikes = detail?.loss_spikes ?? [];
+  const trainsClassifier = form.models.includes("classifier");
+  const trainsGliner = form.models.includes("gliner");
+  const toggleTrainingModel = (model: "classifier" | "gliner", checked: boolean) => {
+    setForm((prev) => {
+      const next = checked
+        ? Array.from(new Set([...prev.models, model]))
+        : prev.models.filter((item) => item !== model);
+      return { ...prev, models: next };
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -610,8 +615,12 @@ export default function TrainingClient() {
             {stats?.gliner.total ?? "-"}
             <span className="ml-2 text-base font-normal text-slate-400">문서</span>
           </div>
-          <div className="mt-2 text-sm text-slate-400">
-            엔티티 합계 {stats?.gliner.total_entities ?? 0}개
+          <div className="mt-2 space-y-1 text-sm text-slate-400">
+            <div>엔티티 합계 {(stats?.gliner.total_entities ?? 0).toLocaleString("ko-KR")}개</div>
+            <div>라벨 {stats?.gliner.label_count ?? 0}종</div>
+            {stats?.gliner.extra_jsonl && (
+              <div className="truncate font-mono text-xs text-slate-500">{stats.gliner.extra_jsonl}</div>
+            )}
           </div>
         </div>
 
@@ -630,21 +639,69 @@ export default function TrainingClient() {
         </div>
       </section>
 
+      {glinerLabelBars.length > 0 && (
+        <section className="rounded-2xl border border-sky-400/20 bg-white/5 p-5">
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <div className="text-xs uppercase tracking-widest text-sky-200">GLiNER Entity Distribution</div>
+              <h2 className="mt-1 text-lg font-semibold text-white">추출기 라벨 분포</h2>
+              <p className="mt-1 text-sm text-slate-400">
+                추출기는 scam_type 균형보다 entity label 균형이 중요합니다. 상위 라벨 쏠림과 long-tail을 확인합니다.
+              </p>
+            </div>
+            <div className="text-right font-mono text-xs text-slate-500">
+              {stats?.gliner.label_count ?? 0} labels · {(stats?.gliner.total_entities ?? 0).toLocaleString("ko-KR")} entities
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={320}>
+            <BarChart data={glinerLabelBars} layout="vertical" margin={{ left: 94, right: 14 }}>
+              <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" horizontal={false} />
+              <XAxis type="number" stroke="#64748b" fontSize={11} />
+              <YAxis dataKey="label" type="category" width={132} stroke="#94a3b8" fontSize={11} />
+              <Tooltip
+                contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}
+                labelStyle={{ color: "#cbd5f5" }}
+              />
+              <Bar dataKey="count" radius={[0, 6, 6, 0]}>
+                {glinerLabelBars.map((entry, index) => (
+                  <Cell key={entry.label} fill={index < 6 ? "#38bdf8" : "#818cf8"} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </section>
+      )}
+
       {/* 세션 시작 폼 */}
       <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
         <h2 className="mb-4 text-lg font-semibold">새 학습 세션</h2>
         <div className="grid gap-4 md:grid-cols-6">
-          <label className="space-y-1 text-sm">
-            <span className="block text-slate-300">모델</span>
-            <select
-              value={form.model}
-              onChange={(e) => setForm({ ...form, model: e.target.value as "classifier" | "gliner" })}
-              className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-slate-100"
-            >
-              <option value="classifier">classifier (mDeBERTa)</option>
-              <option value="gliner">gliner</option>
-            </select>
-          </label>
+          <div className="space-y-1 text-sm md:col-span-2">
+            <span className="block text-slate-300">학습 대상</span>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={trainsClassifier}
+                  onChange={(e) => toggleTrainingModel("classifier", e.target.checked)}
+                  className="h-4 w-4 accent-cyan-300"
+                />
+                <span>classifier</span>
+              </label>
+              <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={trainsGliner}
+                  onChange={(e) => toggleTrainingModel("gliner", e.target.checked)}
+                  className="h-4 w-4 accent-cyan-300"
+                />
+                <span>GLiNER</span>
+              </label>
+            </div>
+            <p className="text-xs text-slate-500">
+              둘 다 선택하면 각각 별도 프로세스로 바로 시작해서 동시에 학습합니다.
+            </p>
+          </div>
           <label className="space-y-1 text-sm">
             <span className="block text-slate-300">epochs</span>
             <input
@@ -673,7 +730,7 @@ export default function TrainingClient() {
               checked={form.lora}
               onChange={(e) => setForm({ ...form, lora: e.target.checked })}
               className="h-4 w-4 accent-cyan-300"
-              disabled={form.model !== "classifier"}
+              disabled={!trainsClassifier}
             />
             <span>LoRA (classifier 만)</span>
           </label>
@@ -686,7 +743,7 @@ export default function TrainingClient() {
               value={form.early_stopping_patience}
               onChange={(e) => setForm({ ...form, early_stopping_patience: Number(e.target.value) })}
               className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2"
-              disabled={form.model !== "classifier"}
+              disabled={!trainsClassifier}
             />
           </label>
           <label className="space-y-1 text-sm md:col-span-1">
@@ -703,10 +760,10 @@ export default function TrainingClient() {
         <div className="mt-4 flex justify-end">
           <button
             onClick={() => void startSession()}
-            disabled={submitting}
+            disabled={submitting || form.models.length === 0}
             className="rounded-xl bg-cyan-300 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {submitting ? "시작 중..." : "학습 시작"}
+            {submitting ? "시작 중..." : form.models.length > 1 ? "순차 학습 시작" : "학습 시작"}
           </button>
         </div>
 
@@ -750,7 +807,7 @@ export default function TrainingClient() {
                 <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3">
                   <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">실행 설정</div>
                   <div className="space-y-1 break-all font-mono text-xs text-slate-300">
-                    <div>model: {selectedSession?.model ?? form.model}</div>
+                    <div>model: {selectedSession?.model ?? form.models.join(",")}</div>
                     <div>epochs: {String(selectedSession?.params?.epochs ?? form.epochs)}</div>
                     <div>batch_size: {String(selectedSession?.params?.batch_size ?? form.batch_size)}</div>
                     <div>lora: {String(selectedSession?.params?.lora ?? form.lora)}</div>
@@ -765,10 +822,21 @@ export default function TrainingClient() {
 
                 {lastMetric && (
                   <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    <MiniMetric label="loss" value={metricValue(lastMetric.loss)} />
-                    <MiniMetric label="eval loss" value={metricValue(lastMetric.eval_loss)} />
-                    <MiniMetric label="macro F1" value={pct(lastMetric.eval_macro_f1)} />
-                    <MiniMetric label="accuracy" value={pct(lastMetric.eval_accuracy)} />
+                    {selectedSession?.model === "gliner" ? (
+                      <>
+                        <MiniMetric label="progress" value={pct(lastMetric.gliner_progress)} />
+                        <MiniMetric label="train docs" value={metricValue(lastMetric.train_size)} />
+                        <MiniMetric label="val docs" value={metricValue(lastMetric.val_size)} />
+                        <MiniMetric label="labels" value={metricValue(lastMetric.label_count)} />
+                      </>
+                    ) : (
+                      <>
+                        <MiniMetric label="loss" value={metricValue(lastMetric.loss)} />
+                        <MiniMetric label="eval loss" value={metricValue(lastMetric.eval_loss)} />
+                        <MiniMetric label="macro F1" value={pct(lastMetric.eval_macro_f1)} />
+                        <MiniMetric label="accuracy" value={pct(lastMetric.eval_accuracy)} />
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -790,63 +858,20 @@ export default function TrainingClient() {
         )}
       </section>
 
-      <section className="overflow-hidden rounded-2xl border border-violet-300/20 bg-white/5">
-        <div className="border-b border-white/10 p-5">
-          <div className="text-xs uppercase tracking-widest text-violet-200">모델 비교 분석 세션</div>
-          <h2 className="mt-2 text-xl font-semibold text-white">같은 입력을 세 관점으로 비교</h2>
+      <section className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-violet-300/20 bg-white/5 p-5">
+        <div>
+          <div className="text-xs uppercase tracking-widest text-violet-200">모델 비교 분석</div>
+          <h2 className="mt-1 text-lg font-semibold text-white">별도 세션에서 비교하기</h2>
           <p className="mt-1 text-sm text-slate-400">
-            문구나 링크를 넣으면 기존 raw 분류기, Claude 보조 분석, fine-tuned classifier 결과를 나란히 보여줍니다.
+            입력 하나를 기존 분석, Claude 분석, fine-tuned 모델 관점으로 비교합니다.
           </p>
         </div>
-
-        <div className="grid gap-0 lg:grid-cols-[1fr_0.9fr]">
-          <div className="border-b border-white/10 p-5 lg:border-b-0 lg:border-r">
-            <label className="block text-sm">
-              <span className="text-slate-300">분석 문구</span>
-              <textarea
-                value={compareForm.text}
-                onChange={(event) => setCompareForm({ ...compareForm, text: event.target.value })}
-                rows={6}
-                className="mt-2 w-full resize-y rounded-xl border border-white/10 bg-slate-950/70 px-3 py-3 text-sm leading-relaxed text-slate-100"
-              />
-            </label>
-            <label className="mt-4 block text-sm">
-              <span className="text-slate-300">링크 또는 파일 경로</span>
-              <input
-                type="text"
-                value={compareForm.source}
-                onChange={(event) => setCompareForm({ ...compareForm, source: event.target.value })}
-                placeholder="텍스트 대신 URL/YouTube 링크/로컬 파일 경로"
-                className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 font-mono text-xs text-slate-100"
-              />
-            </label>
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="text-xs text-slate-500">
-                fine-tuned 기준:{" "}
-                {detail?.session.model === "classifier" && detail.session.status === "completed"
-                  ? detail.session.session_id
-                  : "최신 완료 classifier 자동 선택"}
-              </div>
-              <button
-                onClick={() => void runModelComparison()}
-                disabled={modelComparing}
-                className="rounded-xl bg-violet-300 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-violet-200 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {modelComparing ? "비교 중..." : "비교 분석 실행"}
-              </button>
-            </div>
-          </div>
-
-          <div className="p-5">
-            {modelComparison ? (
-              <ModelComparePanel result={modelComparison} />
-            ) : (
-              <div className="flex h-full min-h-64 items-center justify-center rounded-xl border border-dashed border-white/10 bg-slate-950/30 px-4 py-8 text-center text-sm text-slate-500">
-                비교 분석을 실행하면 세 모델의 예측과 Claude의 근거 후보가 여기에 표시됩니다.
-              </div>
-            )}
-          </div>
-        </div>
+        <Link
+          href="/admin/training/compare"
+          className="rounded-xl bg-violet-300 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-violet-200"
+        >
+          비교 페이지 열기
+        </Link>
       </section>
 
       {/* 세션 목록 + 상세 */}
@@ -938,13 +963,37 @@ export default function TrainingClient() {
                         labelStyle={{ color: "#cbd5f5" }}
                       />
                       <Legend />
-                      <Line type="monotone" dataKey="loss" stroke="#22d3ee" dot={false} connectNulls />
-                      <Line type="monotone" dataKey="eval_loss" stroke="#f97316" dot={false} connectNulls />
-                      <Line type="monotone" dataKey="eval_macro_f1" stroke="#22c55e" dot={false} connectNulls />
-                      <Line type="monotone" dataKey="eval_accuracy" stroke="#a78bfa" dot={false} connectNulls />
+                      {hasClassifierChart && (
+                        <>
+                          <Line type="monotone" dataKey="loss" stroke="#22d3ee" dot={false} connectNulls />
+                          <Line type="monotone" dataKey="eval_loss" stroke="#f97316" dot={false} connectNulls />
+                          <Line type="monotone" dataKey="eval_macro_f1" stroke="#22c55e" dot={false} connectNulls />
+                          <Line type="monotone" dataKey="eval_accuracy" stroke="#a78bfa" dot={false} connectNulls />
+                        </>
+                      )}
+                      {hasGlinerChart && (
+                        <Line
+                          type="monotone"
+                          dataKey="gliner_progress"
+                          name="gliner_progress"
+                          stroke="#38bdf8"
+                          strokeWidth={2}
+                          dot
+                          connectNulls
+                        />
+                      )}
                     </LineChart>
                   </ResponsiveContainer>
+                  {hasGlinerChart && (
+                    <div className="mt-2 text-xs text-slate-500">
+                      GLiNER 0.2.x 환경에서 trainer API 가 없으면 train/val JSON 준비 완료까지의 진행값을 표시합니다.
+                    </div>
+                  )}
                 </div>
+              )}
+
+              {lossSpikes.length > 0 && (
+                <LossSpikePanel spikes={lossSpikes} />
               )}
 
               {comparison && (
@@ -972,6 +1021,86 @@ export default function TrainingClient() {
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+function LossSpikePanel({ spikes }: { spikes: LossSpike[] }) {
+  const ordered = spikes
+    .slice()
+    .sort((a, b) => (b.loss ?? 0) - (a.loss ?? 0))
+    .slice(0, 12);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-amber-300/20 bg-amber-500/5">
+      <div className="border-b border-amber-300/10 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-xs uppercase tracking-widest text-amber-200">손실 튐 진단</div>
+            <h3 className="mt-1 text-lg font-semibold text-white">모델이 크게 헷갈린 학습 배치</h3>
+            <p className="mt-1 text-xs leading-relaxed text-slate-400">
+              batch loss 가 임계값을 넘은 순간의 샘플을 기록합니다. 라벨 충돌, 너무 긴 문장,
+              synthetic 패턴 편향을 찾기 위한 내부 학습 로그입니다.
+            </p>
+          </div>
+          <div className="font-mono text-xs text-amber-100/70">{spikes.length} spikes</div>
+        </div>
+      </div>
+
+      <div className="max-h-[520px] space-y-3 overflow-auto p-4">
+        {ordered.map((spike) => (
+          <details
+            key={`${spike.step}-${spike.loss}`}
+            className="rounded-xl border border-white/10 bg-slate-950/50 p-3"
+          >
+            <summary className="cursor-pointer list-none">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-sm text-amber-100">step {spike.step}</span>
+                  <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-0.5 text-xs text-amber-100">
+                    loss {metricValue(spike.loss)}
+                  </span>
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-xs text-slate-300">
+                    max sample {metricValue(spike.max_sample_loss)}
+                  </span>
+                </div>
+                <div className="font-mono text-xs text-slate-500">
+                  epoch {metricValue(spike.epoch)} · lr {metricValue(spike.learning_rate)}
+                </div>
+              </div>
+            </summary>
+            <div className="mt-3 space-y-2">
+              {(spike.examples ?? []).map((example, index) => (
+                <div key={`${spike.step}-${example.idx ?? index}`} className="rounded-lg border border-white/10 bg-black/20 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-mono text-slate-500">#{example.idx ?? index}</span>
+                      <span className="rounded-full bg-cyan-300/10 px-2 py-0.5 text-cyan-100">
+                        gold {example.gold_label ?? example.label ?? "-"}
+                      </span>
+                      <span className="rounded-full bg-rose-300/10 px-2 py-0.5 text-rose-100">
+                        pred {example.pred_label ?? "-"}
+                      </span>
+                    </div>
+                    <div className="font-mono text-xs text-slate-500">
+                      sample loss {metricValue(example.sample_loss)} · conf {pct(example.pred_confidence)}
+                    </div>
+                  </div>
+                  <div className="mt-2 text-xs text-slate-500">
+                    source {example.source ?? "-"} · kind {example.sample_kind ?? "-"} · len{" "}
+                    {example.text_len ?? example.batch_text_len ?? "-"}
+                  </div>
+                  {example.preview && (
+                    <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-slate-300">
+                      {example.preview}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </details>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1046,130 +1175,6 @@ function ClassifierComparisonPanel({ comparison }: { comparison: ComparisonResul
             ))}
           </tbody>
         </table>
-      </div>
-    </div>
-  );
-}
-
-function ModelComparePanel({ result }: { result: ModelCompareResult }) {
-  return (
-    <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-3">
-        <ModelVerdictCard
-          title="기존 분석"
-          subtitle={result.existing.method}
-          scamType={result.existing.scam_type}
-          confidence={result.existing.confidence}
-          tone="cyan"
-        />
-        <ModelVerdictCard
-          title="Claude 분석"
-          subtitle={result.claude.method}
-          scamType={result.claude.scam_type || "-"}
-          confidence={result.claude.confidence}
-          tone="violet"
-        />
-        <ModelVerdictCard
-          title="파인튜닝 모델"
-          subtitle={result.session_id}
-          scamType={result.fine_tuned.scam_type}
-          confidence={result.fine_tuned.confidence}
-          tone="emerald"
-        />
-      </div>
-
-      <div className="rounded-xl border border-white/10 bg-slate-950/50 p-3">
-        <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">일치 여부</div>
-        <div className="flex flex-wrap gap-2 text-xs">
-          <AgreementPill label="기존 = 파인튜닝" ok={result.agreement.existing_vs_fine_tuned} />
-          <AgreementPill label="기존 = Claude" ok={result.agreement.existing_vs_claude} />
-          <AgreementPill label="Claude = 파인튜닝" ok={result.agreement.claude_vs_fine_tuned} />
-        </div>
-      </div>
-
-      {result.claude.error ? (
-        <div className="rounded-xl border border-rose-400/25 bg-rose-500/10 p-3 text-sm text-rose-100">
-          Claude 분석 오류: {result.claude.error}
-        </div>
-      ) : (
-        <div className="rounded-xl border border-white/10 bg-slate-950/50 p-3">
-          <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">Claude 근거 후보</div>
-          <p className="text-sm leading-relaxed text-slate-300">
-            {result.claude.summary || "요약 없음"}
-          </p>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <CompareList title="신호 후보" items={result.claude.suggested_flags.map((flag) => `${flag.flag}: ${flag.evidence || flag.reason}`)} />
-            <CompareList title="엔티티 후보" items={result.claude.suggested_entities.map((entity) => `${entity.label}: ${entity.text}`)} />
-          </div>
-        </div>
-      )}
-
-      <details className="rounded-xl border border-white/10 bg-slate-950/40 p-3 text-sm">
-        <summary className="cursor-pointer text-slate-300">비교에 사용한 transcript</summary>
-        <p className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-slate-400">
-          {result.input.transcript_text}
-        </p>
-      </details>
-    </div>
-  );
-}
-
-function ModelVerdictCard({
-  title,
-  subtitle,
-  scamType,
-  confidence,
-  tone,
-}: {
-  title: string;
-  subtitle: string;
-  scamType: string;
-  confidence: number | null;
-  tone: "cyan" | "violet" | "emerald";
-}) {
-  const toneClass = {
-    cyan: "border-cyan-400/25 bg-cyan-500/10 text-cyan-100",
-    violet: "border-violet-400/25 bg-violet-500/10 text-violet-100",
-    emerald: "border-emerald-400/25 bg-emerald-500/10 text-emerald-100",
-  }[tone];
-  return (
-    <div className={`rounded-xl border p-3 ${toneClass}`}>
-      <div className="text-xs opacity-75">{title}</div>
-      <div className="mt-2 text-lg font-semibold text-white">{scamType}</div>
-      <div className="mt-1 truncate text-[11px] opacity-70">{subtitle}</div>
-      <div className="mt-2 font-mono text-xs opacity-80">confidence {confidence === null ? "-" : pct(confidence)}</div>
-    </div>
-  );
-}
-
-function AgreementPill({ label, ok }: { label: string; ok: boolean }) {
-  return (
-    <span
-      className={`rounded-full border px-2.5 py-1 ${
-        ok
-          ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200"
-          : "border-amber-400/30 bg-amber-500/10 text-amber-100"
-      }`}
-    >
-      {label}: {ok ? "일치" : "차이"}
-    </span>
-  );
-}
-
-function CompareList({ title, items }: { title: string; items: string[] }) {
-  return (
-    <div>
-      <div className="text-xs font-semibold text-slate-300">{title}</div>
-      <div className="mt-2 space-y-1">
-        {items.length === 0 ? (
-          <div className="text-xs text-slate-500">없음</div>
-        ) : (
-          items.slice(0, 4).map((item) => (
-            <div key={item} className="rounded-lg bg-white/5 px-2 py-1 text-xs text-slate-300">
-              {item}
-            </div>
-          ))
-        )}
       </div>
     </div>
   );
@@ -1351,15 +1356,15 @@ function KnowledgeGraphCanvasImpl({
         onPointerLeave={() => setHovered(null)}
       />
       <div className="pointer-events-none absolute left-4 top-4 flex flex-wrap gap-2 text-[11px] text-slate-300">
-        <GraphLegend color="bg-white" label="사례/유형" />
-        <GraphLegend color="bg-violet-400" label="신호/엔티티" />
+        <GraphLegend color="bg-cyan-300" label="분류기 축" />
+        <GraphLegend color="bg-violet-400" label="추출기 축" />
         <GraphLegend color="bg-sky-300" label="중심 데이터" />
       </div>
       {hovered && (
         <div className="pointer-events-none absolute bottom-4 left-4 max-w-[min(360px,calc(100%-2rem))] rounded-md border border-white/15 bg-slate-950/90 px-3 py-2 text-xs text-slate-200 shadow-xl">
           <div className="font-semibold text-white">{hovered.label}</div>
           <div className="mt-1 text-slate-400">
-            {kindLabel(hovered.kind)} · 연결 가중치 {hovered.weight.toLocaleString("ko-KR")}
+            {kindLabel(hovered.kind)} · 데이터 {hovered.weight.toLocaleString("ko-KR")}개
           </div>
         </div>
       )}
@@ -1377,67 +1382,55 @@ function GraphLegend({ color, label }: { color: string; label: string }) {
 }
 
 function buildGraphLayout(graph: { nodes: SyntheticGraphNode[]; links: SyntheticGraphLink[] }) {
-  const typeNodes = graph.nodes.filter((node) => node.kind === "scam_type");
-  const groupIndex = new Map(typeNodes.map((node, index) => [node.group, index]));
-  const groupTotal = Math.max(1, typeNodes.length);
   const positions = new Map<string, { x: number; y: number; phase: number }>();
-
-  for (const node of graph.nodes) {
-    const h = hashString(node.id);
-    const jitter = (h % 1000) / 1000 - 0.5;
-    const group = groupIndex.get(node.group) ?? (h % groupTotal);
-    const baseAngle = (Math.PI * 2 * group) / groupTotal - Math.PI / 2;
-    const spread = node.kind === "case" ? 0.68 : node.kind === "entity_label" ? 0.9 : 0.42;
-    const angle = baseAngle + jitter * spread;
-    const radius = nodeLayoutRadius(node.kind) + (((h >> 5) % 1000) / 1000 - 0.5) * 0.16;
-    positions.set(node.id, {
-      x: Math.cos(angle) * radius,
-      y: Math.sin(angle) * radius,
-      phase: (h % 628) / 100,
-    });
-  }
+  const classifierNodes = graph.nodes
+    .filter((node) => node.kind === "scam_type")
+    .sort((a, b) => b.weight - a.weight);
+  const extractorNodes = graph.nodes
+    .filter((node) => node.kind === "entity_label")
+    .sort((a, b) => b.weight - a.weight);
 
   positions.set("corpus", { x: 0, y: 0, phase: 0 });
+  positions.set("axis:classifier", { x: -0.28, y: 0, phase: 1.1 });
+  positions.set("axis:extractor", { x: 0.28, y: 0, phase: 2.2 });
+
+  const placeArc = (
+    nodes: SyntheticGraphNode[],
+    startAngle: number,
+    endAngle: number,
+    radius: number,
+  ) => {
+    const total = Math.max(1, nodes.length - 1);
+    nodes.forEach((node, index) => {
+      const h = hashString(node.id);
+      const t = nodes.length === 1 ? 0.5 : index / total;
+      const angle = startAngle + (endAngle - startAngle) * t;
+      const jitter = ((h % 1000) / 1000 - 0.5) * 0.08;
+      const rj = (((h >> 5) % 1000) / 1000 - 0.5) * 0.08;
+      positions.set(node.id, {
+        x: Math.cos(angle + jitter) * (radius + rj),
+        y: Math.sin(angle + jitter) * (radius + rj),
+        phase: (h % 628) / 100,
+      });
+    });
+  };
+
+  placeArc(classifierNodes, Math.PI * 0.72, Math.PI * 1.28, 0.78);
+  placeArc(extractorNodes, -Math.PI * 0.28, Math.PI * 0.28, 0.88);
+
   return { positions };
 }
 
-function nodeLayoutRadius(kind: SyntheticGraphNode["kind"]) {
-  switch (kind) {
-    case "corpus":
-      return 0;
-    case "scam_type":
-      return 0.23;
-    case "flag_group":
-      return 0.36;
-    case "scenario":
-      return 0.52;
-    case "flag":
-      return 0.66;
-    case "case":
-      return 0.82;
-    case "entity_label":
-      return 0.95;
-    default:
-      return 0.7;
-  }
-}
-
 function nodeRadius(node: SyntheticGraphNode) {
+  const scaled = Math.min(16, Math.max(3, 2.6 + Math.log1p(node.weight || 1) * 1.6));
   switch (node.kind) {
     case "corpus":
       return 10;
+    case "axis":
+      return 8;
     case "scam_type":
-      return 6.5;
-    case "scenario":
-      return 4.5;
-    case "flag_group":
-      return 4.2;
-    case "flag":
-      return 3.4;
     case "entity_label":
-      return 3.2;
-    case "case":
-      return 2.8;
+      return scaled;
     default:
       return 3;
   }
@@ -1445,19 +1438,18 @@ function nodeRadius(node: SyntheticGraphNode) {
 
 function nodeColor(node: SyntheticGraphNode) {
   if (node.kind === "corpus") return "#e0f2fe";
-  if (node.kind === "flag" || node.kind === "flag_group" || node.kind === "entity_label") return "#8b7ac7";
-  if (node.kind === "scam_type" || node.kind === "scenario") return "#ffffff";
+  if (node.kind === "axis" && node.group === "classifier") return "#67e8f9";
+  if (node.kind === "axis" && node.group === "extractor") return "#c4b5fd";
+  if (node.kind === "entity_label") return "#8b7ac7";
+  if (node.kind === "scam_type") return "#ffffff";
   return "#f8fafc";
 }
 
 function kindLabel(kind: SyntheticGraphNode["kind"]) {
   const labels: Record<SyntheticGraphNode["kind"], string> = {
     corpus: "전체 코퍼스",
+    axis: "학습 축",
     scam_type: "사기 유형",
-    scenario: "시나리오",
-    case: "합성 사례",
-    flag_group: "신호 묶음",
-    flag: "검출 신호",
     entity_label: "엔티티 라벨",
   };
   return labels[kind];

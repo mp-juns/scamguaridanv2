@@ -25,7 +25,10 @@ class CompareAnalysisRequest(BaseModel):
     source: str | None = None
     text: str | None = None
     session_id: str | None = None
+    classifier_session_id: str | None = None
+    gliner_session_id: str | None = None
     whisper_model: str = "medium"
+    compare_scope: str = "both"
 
 _CLASSIFIER_COMPARE_SMOKE_SET: list[dict[str, str]] = [
     {
@@ -168,15 +171,17 @@ def _latest_synthetic_corpus() -> Path:
     return max(candidates, key=lambda path: (corpus_size(path), path.stat().st_mtime))
 
 
-def _synthetic_graph(path: Path, *, cases_per_type: int = 34) -> dict[str, Any]:
+def _synthetic_graph(path: Path) -> dict[str, Any]:
     nodes: dict[str, dict[str, Any]] = {}
     links: dict[tuple[str, str, str], dict[str, Any]] = {}
-    seen_cases_by_type: dict[str, int] = {}
 
-    def add_node(node_id: str, label: str, kind: str, group: str, weight: int = 1) -> None:
+    def set_node(node_id: str, label: str, kind: str, group: str, weight: int = 0) -> None:
+        nodes[node_id] = {"id": node_id, "label": label, "kind": kind, "group": group, "weight": weight}
+
+    def add_weight(node_id: str, weight: int = 1) -> None:
         node = nodes.setdefault(
             node_id,
-            {"id": node_id, "label": label, "kind": kind, "group": group, "weight": 0},
+            {"id": node_id, "label": node_id, "kind": "unknown", "group": "unknown", "weight": 0},
         )
         node["weight"] = int(node.get("weight", 0)) + weight
 
@@ -188,7 +193,11 @@ def _synthetic_graph(path: Path, *, cases_per_type: int = 34) -> dict[str, Any]:
         )
         link["weight"] = int(link.get("weight", 0)) + weight
 
-    add_node("corpus", "합성 데이터", "corpus", "corpus")
+    set_node("corpus", "학습 데이터", "corpus", "corpus")
+    set_node("axis:classifier", "분류기", "axis", "classifier")
+    set_node("axis:extractor", "추출기", "axis", "extractor")
+    add_link("corpus", "axis:classifier", "feeds")
+    add_link("corpus", "axis:extractor", "feeds")
     if not path.exists():
         return {"nodes": list(nodes.values()), "links": []}
 
@@ -202,45 +211,23 @@ def _synthetic_graph(path: Path, *, cases_per_type: int = 34) -> dict[str, Any]:
 
         scam_type = str(row.get("scam_type") or "unknown")
         type_id = f"type:{scam_type}"
-        add_node(type_id, scam_type, "scam_type", scam_type)
-        add_link("corpus", type_id, "contains")
+        if type_id not in nodes:
+            set_node(type_id, scam_type, "scam_type", "classifier")
+        add_weight(type_id)
+        add_link("axis:classifier", type_id, "has_type")
 
-        template_id = str(row.get("scenario_id") or row.get("template_id") or "scenario")
-        scenario_id = f"scenario:{scam_type}:{template_id}"
-        add_node(scenario_id, template_id, "scenario", scam_type)
-        add_link(type_id, scenario_id, "has_scenario")
-
-        for group_id in row.get("flag_groups") or []:
-            flag_group_id = f"flag_group:{group_id}"
-            add_node(flag_group_id, str(group_id), "flag_group", scam_type)
-            add_link(type_id, flag_group_id, "uses_signal_group")
-
-        for flag in row.get("risk_flags") or []:
-            flag_id = f"flag:{flag}"
-            add_node(flag_id, str(flag), "flag", scam_type)
-            for group_id in row.get("flag_groups") or []:
-                add_link(f"flag_group:{group_id}", flag_id, "contains_signal")
-
-        for ent in (row.get("entities") or [])[:3]:
+        for ent in row.get("entities") or []:
             label = str(ent.get("label") or "").strip()
             if not label:
                 continue
             ent_id = f"entity_label:{label}"
-            add_node(ent_id, label, "entity_label", scam_type)
-            add_link(scenario_id, ent_id, "extracts_entity")
-
-        current = seen_cases_by_type.get(scam_type, 0)
-        if current >= cases_per_type:
-            continue
-        seen_cases_by_type[scam_type] = current + 1
-        case_id = f"case:{row.get('synthetic_id') or scam_type + ':' + str(current)}"
-        add_node(case_id, str(row.get("synthetic_id") or "case"), "case", scam_type)
-        add_link(scenario_id, case_id, "generated_case")
-        for flag in (row.get("risk_flags") or [])[:3]:
-            add_link(case_id, f"flag:{flag}", "has_signal")
+            if ent_id not in nodes:
+                set_node(ent_id, label, "entity_label", "extractor")
+            add_weight(ent_id)
+            add_link("axis:extractor", ent_id, "has_entity_label")
 
     return {
-        "nodes": sorted(nodes.values(), key=lambda node: (str(node["kind"]), str(node["id"]))),
+        "nodes": sorted(nodes.values(), key=lambda node: (str(node["group"]), str(node["kind"]), -int(node.get("weight", 0)), str(node["id"]))),
         "links": sorted(links.values(), key=lambda link: (str(link["source"]), str(link["target"]))),
     }
 
@@ -389,12 +376,12 @@ def _compare_classifier_session(session_id: str) -> dict[str, Any]:
     }
 
 
-def _resolve_compare_session_id(session_id: str | None) -> str:
+def _resolve_compare_session_id(session_id: str | None, *, model: str = "classifier") -> str:
     from training import sessions as tsess
 
     candidates = [
         item for item in tsess.list_sessions(100)
-        if item.get("model") == "classifier"
+        if item.get("model") == model
     ]
     if session_id:
         candidates = [item for item in candidates if item.get("session_id") == session_id]
@@ -403,13 +390,25 @@ def _resolve_compare_session_id(session_id: str | None) -> str:
         if not data or data.get("status") != "completed":
             continue
         output_dir = Path(str(data.get("output_dir") or ""))
-        if (output_dir / "label2id.json").exists() and (
-            (output_dir / "adapter_model.safetensors").exists()
-            or (output_dir / "model.safetensors").exists()
-            or (output_dir / "pytorch_model.bin").exists()
+        if model == "classifier" and not (
+            (output_dir / "label2id.json").exists() and (
+                (output_dir / "adapter_model.safetensors").exists()
+                or (output_dir / "model.safetensors").exists()
+                or (output_dir / "pytorch_model.bin").exists()
+            )
         ):
+            continue
+        if model == "gliner" and not (
+            (output_dir / "gliner_config.json").exists()
+            and (
+                (output_dir / "model.safetensors").exists()
+                or (output_dir / "pytorch_model.bin").exists()
+            )
+        ):
+            continue
+        if model in {"classifier", "gliner"}:
             return str(data["session_id"])
-    raise ValueError("비교 가능한 완료 classifier 세션을 찾지 못했습니다.")
+    raise ValueError(f"비교 가능한 완료 {model} 세션을 찾지 못했습니다.")
 
 
 def _transcribe_for_compare(source: str, whisper_model: str) -> dict[str, Any]:
@@ -423,20 +422,57 @@ def _transcribe_for_compare(source: str, whisper_model: str) -> dict[str, Any]:
     }
 
 
+def _extract_compare_evidence(
+    text: str,
+    scam_type: str,
+    *,
+    model_path: str | None = None,
+) -> dict[str, Any]:
+    from pipeline import extractor, verifier
+
+    entities = extractor.extract(text, scam_type, model_path=model_path)
+    rule_results = verifier.detect_rule_signals(entities)
+    triggered = [result for result in rule_results if result.triggered]
+    return {
+        "entities": [entity.to_dict() for entity in entities],
+        "signals": [result.to_dict() for result in triggered],
+        "signal_candidates": [result.to_dict() for result in rule_results],
+    }
+
+
 def _compare_analysis(payload: CompareAnalysisRequest) -> dict[str, Any]:
     source = (payload.text or payload.source or "").strip()
     if not source:
         raise ValueError("비교할 텍스트 또는 링크를 입력해주세요.")
+    compare_scope = (payload.compare_scope or "both").strip()
+    if compare_scope not in {"both", "classifier", "extractor"}:
+        raise ValueError("compare_scope 는 both, classifier, extractor 중 하나여야 합니다.")
 
-    session_id = _resolve_compare_session_id(payload.session_id)
+    classifier_session_id = _resolve_compare_session_id(
+        payload.classifier_session_id or payload.session_id,
+        model="classifier",
+    )
+    gliner_session_id: str | None = None
     from training import sessions as tsess
-    session = tsess.get_session(session_id)
-    output_dir = str(session.get("output_dir") if session else "")
+    classifier_session = tsess.get_session(classifier_session_id)
+    classifier_output_dir = str(classifier_session.get("output_dir") if classifier_session else "")
+    gliner_output_dir = ""
+    if compare_scope in {"both", "extractor"} and payload.gliner_session_id:
+        gliner_session_id = _resolve_compare_session_id(payload.gliner_session_id, model="gliner")
+        gliner_session = tsess.get_session(gliner_session_id)
+        gliner_output_dir = str(gliner_session.get("output_dir") if gliner_session else "")
 
     transcript = _transcribe_for_compare(source, payload.whisper_model)
     text = transcript["text"]
     raw = _classify_raw_for_compare(text)
-    tuned = _classify_checkpoint_for_compare(text, _load_checkpoint_for_compare(output_dir))
+    tuned = _classify_checkpoint_for_compare(text, _load_checkpoint_for_compare(classifier_output_dir))
+    from pipeline.config import MODELS
+    raw_evidence = _extract_compare_evidence(text, raw.scam_type, model_path=MODELS["gliner"])
+    tuned_evidence = _extract_compare_evidence(
+        text,
+        tuned.scam_type,
+        model_path=gliner_output_dir or None,
+    )
 
     from pipeline import llm_assessor
     try:
@@ -459,8 +495,13 @@ def _compare_analysis(payload: CompareAnalysisRequest) -> dict[str, Any]:
         llm_error = str(exc)
 
     return {
-        "session_id": session_id,
-        "output_dir": output_dir,
+        "session_id": classifier_session_id,
+        "classifier_session_id": classifier_session_id,
+        "gliner_session_id": gliner_session_id,
+        "output_dir": classifier_output_dir,
+        "classifier_output_dir": classifier_output_dir,
+        "gliner_output_dir": gliner_output_dir,
+        "compare_scope": compare_scope,
         "input": {
             "source": source,
             "transcript_text": text,
@@ -474,6 +515,7 @@ def _compare_analysis(payload: CompareAnalysisRequest) -> dict[str, Any]:
             "confidence": raw.confidence,
             "is_uncertain": raw.is_uncertain,
             "top_scores": _top_scores(raw.all_scores, 5),
+            **raw_evidence,
         },
         "claude": {
             "label": "Claude 분석",
@@ -485,14 +527,18 @@ def _compare_analysis(payload: CompareAnalysisRequest) -> dict[str, Any]:
             "suggested_flags": [flag.to_dict() for flag in llm_assessment.suggested_flags],
             "suggested_entities": [entity.to_dict() for entity in llm_assessment.suggested_entities],
             "error": llm_error,
+            "entities": [entity.to_dict() for entity in llm_assessment.suggested_entities],
+            "signals": [flag.to_dict() for flag in llm_assessment.suggested_flags],
         },
         "fine_tuned": {
             "label": "파인튜닝 모델",
-            "method": output_dir,
+            "method": classifier_output_dir,
+            "extractor_method": gliner_output_dir or "active/base GLiNER",
             "scam_type": tuned.scam_type,
             "confidence": tuned.confidence,
             "is_uncertain": tuned.is_uncertain,
             "top_scores": _top_scores(tuned.all_scores, 5),
+            **tuned_evidence,
         },
         "agreement": {
             "existing_vs_fine_tuned": raw.scam_type == tuned.scam_type,
@@ -514,7 +560,13 @@ async def admin_training_data_stats() -> dict[str, Any]:
     try:
         from training import data as tdata
         cls = await asyncio.to_thread(tdata.load_classifier_dataset)
-        gli = await asyncio.to_thread(tdata.load_gliner_dataset)
+        extra_path = _latest_synthetic_corpus()
+        gli_base = await asyncio.to_thread(tdata.load_gliner_dataset)
+        gli = await asyncio.to_thread(tdata.load_gliner_dataset, extra_jsonl=extra_path)
+        entity_labels: dict[str, int] = {}
+        for example in gli:
+            for _, _, label in example.ner:
+                entity_labels[label] = entity_labels.get(label, 0) + 1
         return {
             "classifier": {
                 "total": len(cls),
@@ -522,7 +574,12 @@ async def admin_training_data_stats() -> dict[str, Any]:
             },
             "gliner": {
                 "total": len(gli),
+                "base_total": len(gli_base),
                 "total_entities": sum(len(e.ner) for e in gli),
+                "base_total_entities": sum(len(e.ner) for e in gli_base),
+                "labels": dict(sorted(entity_labels.items(), key=lambda item: (-item[1], item[0]))),
+                "label_count": len(entity_labels),
+                "extra_jsonl": str(extra_path),
             },
         }
     except Exception as exc:
@@ -601,7 +658,8 @@ async def admin_training_synthetic_summary() -> dict[str, Any]:
         "subprocess 로 학습 세션 spawn — `.scamguardian/training_sessions/{id}/` 에 "
         "`status.json` / `metrics.jsonl` / `train.log` 출력.\n\n"
         "**Body** (`StartTrainingRequest`):\n"
-        "- `model` — `classifier` (mDeBERTa) 또는 `gliner`\n"
+        "- `model` — `classifier` (mDeBERTa) 또는 `gliner` (단일 세션, legacy)\n"
+        "- `models` — `['classifier', 'gliner']` 처럼 보내면 선택된 모델을 각각 학습\n"
         "- `epochs` (기본 3), `batch_size` (기본 8), `lora` (LoRA 사용)\n"
         "- `extra_jsonl` — 추가 데이터셋 경로\n"
         "- `val_ratio` (기본 0.1), `seed` (기본 17), `base_model`"
@@ -611,20 +669,44 @@ async def admin_training_synthetic_summary() -> dict[str, Any]:
 async def admin_training_start(payload: StartTrainingRequest) -> dict[str, Any]:
     try:
         from training import sessions as tsess
-        params = tsess.SessionParams(
-            model=payload.model,
-            epochs=payload.epochs,
-            batch_size=payload.batch_size,
-            lora=payload.lora,
-            extra_jsonl=payload.extra_jsonl,
-            val_ratio=payload.val_ratio,
-            seed=payload.seed,
-            base_model=payload.base_model,
-            early_stopping_patience=payload.early_stopping_patience,
-            early_stopping_threshold=payload.early_stopping_threshold,
+        requested_models = payload.models if payload.models is not None else [payload.model]
+        models = []
+        for model in requested_models:
+            model_name = str(model or "").strip()
+            if model_name and model_name not in models:
+                models.append(model_name)
+        if not models:
+            raise ValueError("학습할 모델을 하나 이상 선택해야 합니다.")
+
+        # 순차 학습 기본 순서: classifier 먼저, 그 다음 gliner.
+        ordered_models = (
+            ["classifier", "gliner"]
+            if set(models) == {"classifier", "gliner"}
+            else models
         )
-        info = await asyncio.to_thread(tsess.start_session, params)
-        return info
+        params_list: list[Any] = []
+        for model_name in ordered_models:
+            params_list.append(tsess.SessionParams(
+                model=model_name,
+                epochs=payload.epochs,
+                batch_size=payload.batch_size,
+                lora=payload.lora,
+                extra_jsonl=payload.extra_jsonl,
+                val_ratio=payload.val_ratio,
+                seed=payload.seed,
+                base_model=payload.base_model,
+                early_stopping_patience=payload.early_stopping_patience,
+                early_stopping_threshold=payload.early_stopping_threshold,
+            ))
+
+        if len(params_list) == 1:
+            return await asyncio.to_thread(tsess.start_session, params_list[0])
+        cooldown_seconds = int(__import__("os").getenv("SCAMGUARDIAN_TRAINING_COOLDOWN_SECONDS", "120"))
+        return await asyncio.to_thread(
+            tsess.start_sequential_sessions,
+            params_list,
+            cooldown_seconds=cooldown_seconds,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -662,7 +744,8 @@ async def admin_training_detail(session_id: str) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
         metrics = await asyncio.to_thread(tsess.read_metrics, session_id, 500)
         log_tail = await asyncio.to_thread(tsess.read_log_tail, session_id, 8000)
-        return {"session": info, "metrics": metrics, "log_tail": log_tail}
+        loss_spikes = await asyncio.to_thread(tsess.read_loss_spikes, session_id, 80)
+        return {"session": info, "metrics": metrics, "log_tail": log_tail, "loss_spikes": loss_spikes}
     except HTTPException:
         raise
     except Exception as exc:

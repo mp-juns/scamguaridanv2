@@ -20,6 +20,9 @@ KAKAO_JOB_TTL = 600
 # 결과 상세 페이지 토큰 TTL — 카카오 카드의 "자세히 보기" 링크
 RESULT_TOKEN_TTL = 3600
 
+# 더미 피싱앱 다운로드 링크 TTL — APK 검출 e2e 테스트용 (무해 prebuilt 더미)
+APK_DUMMY_TOKEN_TTL = 3600
+
 # user_id → job state dict (구조는 kakao.new_job_state 참조)
 pending_jobs: dict[str, dict[str, Any]] = {}
 # 다중 사용자 동시 접속 race 방지
@@ -30,6 +33,9 @@ bg_tasks: set[asyncio.Task] = set()
 
 # token → {result, user_context, input_type, expires_at, user_id, chat_history}
 result_tokens: dict[str, dict[str, Any]] = {}
+
+# token → {variant_id, file_path, filename, expires_at, created_at} — 더미 APK 다운로드 링크
+apk_dummy_tokens: dict[str, dict[str, Any]] = {}
 
 # 공개 URL 캐시 — get_public_base_url() 60초 캐시 + cloudflared 로그 mtime 무효화
 public_url_cache: dict[str, Any] = {"url": "", "expires": 0.0, "log_mtime": 0.0}

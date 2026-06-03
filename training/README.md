@@ -82,9 +82,29 @@ python -m training.train_gliner \
 - AI Hub `dataset 71768` 119 신고 → 협박/위급 발화 보강
 - Claude 합성 → 희귀 유형(코인·로맨스·납치협박) 채우기
 
+## 순차 학습 (classifier → gliner)
+
+`/admin/training` 에서 두 모델을 모두 선택하면 **classifier 학습 후 gliner 학습**을 한 번에
+순차 실행합니다 (기본 순서, 한쪽만 선택 시 단일 세션). API:
+
+```bash
+POST /api/admin/training/sessions
+{ "models": ["classifier", "gliner"], "epochs": 3, "lora": true, ... }
+```
+
+내부적으로 `training/sessions.py:start_sequential_sessions()` 가 세션 사이 cooldown
+(`SCAMGUARDIAN_TRAINING_COOLDOWN_SECONDS`, 기본 120s)을 두고 subprocess 를 차례로 spawn 합니다.
+
+## 모델 비교 (active vs Claude vs fine-tuned)
+
+`/admin/training/compare` 에서 같은 입력에 대해 **active 모델 / Claude(raw) / fine-tuned**
+세 관점의 예측(스캠 유형·엔티티·위험 신호 후보)을 나란히 대조하고 agreement 를 표시합니다.
+API: `POST /api/admin/training/compare-analysis`. fine-tuning 효과를 정성적으로 확인하는 용도.
+
 ## 학습된 모델 파이프라인 적용
 
-`/admin/training` 의 **"파이프라인 적용"** 버튼 → `.scamguardian/active_models.json` 갱신 →
+`/admin/training` 의 **"파이프라인 적용"** 버튼 (또는 `/admin/training/models` 의 활성화) →
+`.scamguardian/active_models.json` 갱신 →
 [`pipeline/active_models.py`](../pipeline/active_models.py) 가 60초 TTL 캐시로 읽어
 `classifier.py`·`extractor.py` 가 **자동 swap** 합니다. 경로 무효 시 base 모델로 안전 fallback.
 

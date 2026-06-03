@@ -24,3 +24,23 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
+
+/* Live Voice danger 경보 — 풀스크린 번쩍임 (정적 빨강보다 주변시야 감지 ↑) */
+@keyframes danger-flash {
+  0%,
+  100% {
+    background-color: rgba(127, 29, 29, 0.97); /* red-900 */
+  }
+  50% {
+    background-color: rgba(220, 38, 38, 0.97); /* red-600 */
+  }
+}
+.animate-danger-flash {
+  animation: danger-flash 0.9s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-danger-flash {
+    animation: none;
+    background-color: rgba(185, 28, 28, 0.97); /* red-700 정적 fallback */
+  }
+}
