@@ -88,6 +88,13 @@ def _analyze_one(sha256: str, meta: dict) -> dict[str, Any]:
     rec["all_flags"] = all_flags
     rec["detected"] = bool(all_flags)            # 신호 1개 이상
     rec["strong_detected"] = bool(strong)        # self_signed 외 신호
+
+    # VT 패밀리 라벨 (best-effort — 키 없으면 None). "무슨 멀웨어인지" 한 칸.
+    try:
+        from pipeline import safety
+        rec["vt_label"] = safety.family_label_by_sha256(sha256)
+    except Exception:  # noqa: BLE001
+        rec["vt_label"] = None
     return rec
 
 
@@ -113,6 +120,7 @@ def _summarize(results: list[dict]) -> dict[str, Any]:
     for r in done:
         for f in r.get("all_flags", []):
             freq[f] = freq.get(f, 0) + 1
+    import os
     n = len(done) or 1
     return {
         "analyzed": len(done),
@@ -122,6 +130,7 @@ def _summarize(results: list[dict]) -> dict[str, Any]:
         "strong_detection_rate": round(len(strong) / n, 3),
         "flag_frequency": dict(sorted(freq.items(), key=lambda kv: -kv[1])),
         "flag_info": _flag_info(freq.keys()),
+        "vt_enabled": bool(os.getenv("VIRUSTOTAL_API_KEY")),
     }
 
 

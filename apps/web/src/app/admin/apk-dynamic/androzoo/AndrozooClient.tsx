@@ -7,6 +7,7 @@ type SampleResult = {
   pkg_name: string;
   package_name?: string;
   vt_detection: number | string | null;
+  vt_label?: string | null;
   apk_size?: string;
   static_flags: string[];
   bytecode_flags: string[];
@@ -26,6 +27,7 @@ type Summary = {
   strong_detection_rate: number;
   flag_frequency: Record<string, number>;
   flag_info: Record<string, FlagInfo>;
+  vt_enabled?: boolean;
 };
 
 type Benchmark = {
@@ -227,11 +229,17 @@ export default function AndrozooClient() {
       {/* 결과 테이블 */}
       {bench?.results?.length ? (
         <section className="overflow-x-auto rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur">
+          {s && s.vt_enabled === false ? (
+            <p className="mb-3 rounded-2xl border border-purple-400/20 bg-purple-500/5 px-4 py-2 text-xs text-purple-200/80">
+              💡 <code>VT 패밀리</code> 칸은 <code>VIRUSTOTAL_API_KEY</code> 를 .env 에 넣으면 SHA256 조회로 멀웨어 패밀리(예: trojan.airpush)가 채워집니다. (무료 티어 분당 4건)
+            </p>
+          ) : null}
           <table className="w-full text-sm">
             <thead className="text-left text-xs uppercase tracking-widest text-slate-400">
               <tr>
                 <th className="pb-2">패키지 / SHA256</th>
                 <th className="pb-2">vt</th>
+                <th className="pb-2">VT 패밀리</th>
                 <th className="pb-2">우리 검출 신호</th>
               </tr>
             </thead>
@@ -244,6 +252,13 @@ export default function AndrozooClient() {
                   </td>
                   <td className="py-2 pr-4">
                     <span className="rounded-full bg-rose-500/15 px-2 py-0.5 text-rose-200">{String(r.vt_detection)}</span>
+                  </td>
+                  <td className="py-2 pr-4">
+                    {r.vt_label ? (
+                      <span className="rounded-full bg-purple-500/15 px-2 py-0.5 font-mono text-[11px] text-purple-200">{r.vt_label}</span>
+                    ) : (
+                      <span className="text-slate-600">-</span>
+                    )}
                   </td>
                   <td className="py-2">
                     {r.error ? (

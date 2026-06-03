@@ -160,6 +160,31 @@ def _vt_request(method: str, path: str, **kwargs) -> requests.Response:
     return resp
 
 
+def family_label_by_sha256(sha256: str) -> str | None:
+    """이미 VT 에 알려진 파일의 SHA256 으로 멀웨어 패밀리/위협 라벨을 조회한다 (업로드 없음).
+
+    `popular_threat_classification.suggested_threat_label` (예: "trojan.airpush/dowgin") 우선,
+    없으면 popular_threat_name 1순위. VT 키 없음/미상/오류 시 None — best-effort 보강용.
+    """
+    if not _api_key():
+        return None
+    try:
+        resp = _vt_request("GET", f"/files/{sha256.strip().lower()}")
+        if resp.status_code != 200:
+            return None
+        attrs = (resp.json().get("data") or {}).get("attributes") or {}
+        ptc = attrs.get("popular_threat_classification") or {}
+        label = ptc.get("suggested_threat_label")
+        if label:
+            return label
+        names = ptc.get("popular_threat_name") or []
+        if names and isinstance(names[0], dict):
+            return names[0].get("value")
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ──────────────────────────────────
 # URL 스캔
 # ──────────────────────────────────
