@@ -12,7 +12,6 @@ import {
   LineChart,
   Line,
   CartesianGrid,
-  Legend,
 } from "recharts";
 
 interface DashboardStats {
@@ -25,13 +24,6 @@ interface DashboardStats {
   daily_runs: { date: string; count: number }[];
   labeled_by_type: { name: string; count: number }[];
 }
-
-const RISK_COLORS: Record<string, string> = {
-  안전: "#22c55e",
-  주의: "#eab308",
-  위험: "#f97316",
-  "매우 위험": "#ef4444",
-};
 
 export default function StatsPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);

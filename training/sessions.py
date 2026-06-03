@@ -40,6 +40,8 @@ class SessionParams:
     val_ratio: float = 0.1
     seed: int = 17
     base_model: str | None = None       # 비우면 train script 의 기본값
+    early_stopping_patience: int = 2
+    early_stopping_threshold: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -51,6 +53,8 @@ class SessionParams:
             "val_ratio": self.val_ratio,
             "seed": self.seed,
             "base_model": self.base_model,
+            "early_stopping_patience": self.early_stopping_patience,
+            "early_stopping_threshold": self.early_stopping_threshold,
         }
 
 
@@ -130,19 +134,81 @@ def _check_pid_alive(pid: int) -> bool:
         return False
 
 
+def _latest_activity_time(session_id: str) -> float | None:
+    latest: float | None = None
+    for path in (_metrics_path(session_id), _log_path(session_id)):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        latest = mtime if latest is None else max(latest, mtime)
+    return latest
+
+
+def _has_recent_training_activity(session_id: str, *, seconds: int = 120) -> bool:
+    latest = _latest_activity_time(session_id)
+    return latest is not None and (time.time() - latest) <= seconds
+
+
 def _refresh_status(session_id: str) -> dict[str, Any] | None:
     """status.json 을 읽고, running 인데 pid 가 죽었으면 failed 로 보정."""
     data = _read_status(session_id)
     if data is None:
         return None
+    if data.get("status") == "failed":
+        ended_at = float(data.get("ended_at") or 0)
+        latest_activity = _latest_activity_time(session_id) or 0
+        if latest_activity > ended_at and _has_recent_training_activity(session_id):
+            data["status"] = "running"
+            data["ended_at"] = None
+            data["exit_code"] = None
+            rows = read_metrics(session_id, max_rows=1)
+            if rows:
+                data["last_metrics"] = rows[-1]
+            _write_status(session_id, data)
+    if data.get("status") in {"running", "failed"} and _has_success_artifacts(session_id, data):
+        rows = read_metrics(session_id, max_rows=1)
+        data["status"] = "completed"
+        data["ended_at"] = (rows[-1].get("ts") if rows else None) or data.get("ended_at") or time.time()
+        data["exit_code"] = 0
+        if rows:
+            data["last_metrics"] = rows[-1]
+        _write_status(session_id, data)
+        return data
     if data.get("status") == "running":
         pid = data.get("pid") or 0
         if pid and not _check_pid_alive(pid):
+            if _has_recent_training_activity(session_id):
+                rows = read_metrics(session_id, max_rows=1)
+                if rows:
+                    data["last_metrics"] = rows[-1]
+                    _write_status(session_id, data)
+                return data
             data["status"] = "failed"
             data["ended_at"] = time.time()
             data["exit_code"] = data.get("exit_code", -1)
             _write_status(session_id, data)
     return data
+
+
+def _has_success_artifacts(session_id: str, data: dict[str, Any]) -> bool:
+    """Detect a completed run even if process watching missed the clean exit."""
+    rows = read_metrics(session_id, max_rows=5)
+    if not rows or rows[-1].get("kind") != "done":
+        return False
+    output_dir = Path(str(data.get("output_dir") or ""))
+    if not output_dir.exists():
+        return False
+    model = data.get("model")
+    if model == "classifier":
+        return (output_dir / "label2id.json").exists() and (
+            (output_dir / "adapter_model.safetensors").exists()
+            or (output_dir / "model.safetensors").exists()
+            or (output_dir / "pytorch_model.bin").exists()
+        )
+    if model == "gliner":
+        return any(output_dir.iterdir())
+    return False
 
 
 def read_metrics(session_id: str, max_rows: int = 500) -> list[dict[str, Any]]:
@@ -229,6 +295,13 @@ def start_session(params: SessionParams) -> dict[str, Any]:
     ]
     if params.lora and params.model == "classifier":
         cmd.append("--lora")
+    if params.model == "classifier":
+        cmd += [
+            "--early-stopping-patience",
+            str(params.early_stopping_patience),
+            "--early-stopping-threshold",
+            str(params.early_stopping_threshold),
+        ]
     if params.extra_jsonl:
         cmd += ["--extra-jsonl", params.extra_jsonl]
     if params.base_model:

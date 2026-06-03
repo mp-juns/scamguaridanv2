@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import json
+
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -91,7 +93,7 @@ def _get_finetuned() -> dict | None:
 
     try:
         tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True)
-        model = AutoModelForSequenceClassification.from_pretrained(path, local_files_only=True)
+        model = _load_finetuned_model(path)
         pipe = hf_pipeline(
             "text-classification",
             model=model,
@@ -112,6 +114,48 @@ def _get_finetuned() -> dict | None:
     _finetuned = {"pipe": pipe, "path": path, "labels": labels}
     _finetuned_path = path
     return _finetuned
+
+
+def _label_maps_from_checkpoint(path: str) -> tuple[dict[str, int], dict[int, str]]:
+    label_path = Path(path) / "label2id.json"
+    if not label_path.exists():
+        return {}, {}
+    label2id = {
+        str(label): int(idx)
+        for label, idx in json.loads(label_path.read_text(encoding="utf-8")).items()
+    }
+    id2label = {idx: label for label, idx in label2id.items()}
+    return label2id, id2label
+
+
+def _load_finetuned_model(path: str):
+    """Load either a full HF sequence classifier or a PEFT/LoRA adapter checkpoint."""
+    label2id, id2label = _label_maps_from_checkpoint(path)
+    adapter_config = Path(path) / "adapter_config.json"
+    if not adapter_config.exists():
+        return AutoModelForSequenceClassification.from_pretrained(path, local_files_only=True)
+
+    from peft import PeftModel
+
+    adapter_meta = json.loads(adapter_config.read_text(encoding="utf-8"))
+    base_model = str(adapter_meta.get("base_model_name_or_path") or MODELS["classifier"])
+    num_labels = len(label2id) if label2id else None
+    kwargs = {
+        "local_files_only": True,
+        "ignore_mismatched_sizes": True,
+    }
+    if num_labels:
+        kwargs.update({
+            "num_labels": num_labels,
+            "id2label": id2label,
+            "label2id": label2id,
+        })
+    model = AutoModelForSequenceClassification.from_pretrained(base_model, **kwargs)
+    model = PeftModel.from_pretrained(model, path, local_files_only=True)
+    if label2id:
+        model.config.label2id = label2id
+        model.config.id2label = id2label
+    return model
 
 
 def _compute_keyword_boost(text: str) -> dict[str, float]:
