@@ -90,22 +90,59 @@ async def apk_dynamic_op(op_id: str) -> dict[str, Any]:
     tags=[_TAG],
     summary="APK 업로드 → 동적 분석 잡 시작",
     description=(
-        "APK 파일을 multipart 로 업로드받아 분석 잡을 백그라운드로 시작한다.\n\n"
+        "APK 를 multipart 파일 업로드 *또는* 다운로드 링크(`url`)로 받아 분석 잡을 백그라운드로 시작한다.\n\n"
+        "- `file` — APK 파일 업로드, *또는* `url` — APK 다운로드 링크(확장자 없어도 Content-Type 으로 판단).\n"
         "- `force_dynamic=false` (기본) — 전체 파이프라인(Lv1 정적 → Lv2 bytecode → Lv3 동적-if-needed).\n"
         "- `force_dynamic=true` — 정적 게이트 우회, VM 동적 분석 직접 실행 (검증/데모).\n\n"
         "VM 이 꺼져 있으면 동적 결과는 `disabled`/`error` 로 온다 — 먼저 `/vm/start` 로 기동."
     ),
-    responses={**_ADMIN_RESPONSES, 400: {"description": "APK 아님 / 빈 파일 / 크기 초과"}},
+    responses={**_ADMIN_RESPONSES, 400: {"description": "APK 아님 / 빈 파일 / 크기 초과 / 다운로드 실패"}},
 )
 async def apk_dynamic_analyze(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    url: str | None = Form(None),
     force_dynamic: bool = Form(False),
 ) -> dict[str, Any]:
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="업로드된 파일 이름이 비어 있습니다.")
-
     upload_dir = Path(".scamguardian") / "apk_dynamic" / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
+
+    # 경로 1 — 다운로드 링크. 확장자(빠름) 또는 Content-Type(확장자 없는 토큰/CDN 링크)로 *먼저 판단*.
+    if url and url.strip():
+        from .common import (
+            is_executable_url,
+            materialize_executable_url,
+            probe_executable_url,
+        )
+
+        u = url.strip()
+        if not (is_executable_url(u) or probe_executable_url(u)):
+            raise HTTPException(
+                status_code=400,
+                detail="APK 다운로드 링크로 보이지 않습니다 (확장자/Content-Type 확인).",
+            )
+        try:
+            tmp_path = Path(materialize_executable_url(u))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"APK 다운로드 실패: {exc}") from exc
+        try:
+            with tmp_path.open("rb") as fp:
+                first = fp.read(4)
+            if first != _APK_ZIP_MAGIC:
+                raise HTTPException(status_code=400, detail="APK(ZIP) 형식이 아닙니다.")
+        except HTTPException:
+            tmp_path.unlink(missing_ok=True)
+            raise
+        apk_name = (u.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1] or "downloaded") + (
+            "" if u.lower().split("?", 1)[0].endswith(".apk") else ".apk"
+        )
+        return ctl.start_analysis(
+            str(tmp_path), force_dynamic=force_dynamic, apk_name=apk_name
+        )
+
+    # 경로 2 — 파일 업로드 (기존)
+    if file is None or not file.filename:
+        raise HTTPException(status_code=400, detail="APK 파일 또는 다운로드 링크가 필요합니다.")
+
     suffix = Path(file.filename).suffix or ".apk"
     tmp = tempfile.NamedTemporaryFile(
         mode="wb", delete=False, dir=str(upload_dir), prefix="apk_", suffix=suffix

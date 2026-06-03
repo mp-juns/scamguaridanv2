@@ -93,6 +93,7 @@ export default function ApkDynamicClient() {
   const [op, setOp] = useState<OpInfo | null>(null);
   const [job, setJob] = useState<JobInfo | null>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [url, setUrl] = useState("");
   const [forceDynamic, setForceDynamic] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -159,13 +160,18 @@ export default function ApkDynamicClient() {
   }
 
   async function analyze() {
-    if (!file) return;
+    const trimmedUrl = url.trim();
+    if (!file && !trimmedUrl) return;
     setBusy(true);
     setNotice(null);
     setJob(null);
     try {
       const fd = new FormData();
-      fd.append("file", file);
+      if (file) {
+        fd.append("file", file);
+      } else {
+        fd.append("url", trimmedUrl);
+      }
       fd.append("force_dynamic", String(forceDynamic));
       const r = await fetch("/api/admin/apk-dynamic/analyze", { method: "POST", body: fd });
       const data = await r.json();
@@ -238,10 +244,27 @@ export default function ApkDynamicClient() {
       <section className="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur">
         <h2 className="text-lg font-semibold text-white">APK 동적 분석</h2>
         <p className="mt-1 text-sm text-slate-400">
-          APK 를 올리면 VM 안 redroid 에 실제 설치·실행하고 Frida 로 행동을 관찰해 런타임 신호를 검출합니다.
+          APK 를 <strong>올리거나 다운로드 링크</strong>를 넣으면 VM 안 redroid 에 실제 설치·실행하고 Frida 로 행동을 관찰해 런타임 신호를 검출합니다.
         </p>
 
-        <div className="mt-4 flex flex-wrap items-center gap-3">
+        {/* 입력 1 — 다운로드 링크 */}
+        <div className="mt-4">
+          <label className="text-xs uppercase tracking-widest text-slate-400">APK 다운로드 링크</label>
+          <input
+            type="url"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            disabled={!!file}
+            placeholder="https://… (확장자 없는 토큰/CDN 링크도 가능)"
+            className="mt-1 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-2 text-sm text-slate-100 placeholder:text-slate-500 disabled:opacity-40"
+          />
+          <p className="mt-1 text-xs text-slate-500">
+            파일을 선택하면 링크는 무시됩니다. Content-Type 으로 APK 여부를 먼저 판단 후 받아서 분석합니다.
+          </p>
+        </div>
+
+        {/* 입력 2 — 파일 + 옵션 + 실행 */}
+        <div className="mt-3 flex flex-wrap items-center gap-3">
           <input
             type="file"
             accept=".apk,application/vnd.android.package-archive"
@@ -258,7 +281,7 @@ export default function ApkDynamicClient() {
           </label>
           <button
             onClick={analyze}
-            disabled={busy || jobRunning || !file}
+            disabled={busy || jobRunning || (!file && !url.trim())}
             className="rounded-2xl bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 disabled:opacity-40"
           >
             분석 시작
