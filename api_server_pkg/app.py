@@ -19,6 +19,7 @@ from . import (
     admin_training,
     admin_users,
     analyze,
+    androzoo_eval,
     apk_dummy,
     apk_dynamic,
     docs_ui,
@@ -143,6 +144,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_users.router)
     app.include_router(apk_dynamic.router)
     app.include_router(apk_dummy.router)
+    app.include_router(androzoo_eval.router)
     app.include_router(v4_stream.router)
 
     # 커스텀 /docs (Swagger UI) + /redoc — Pretendard 폰트 + 가독성 폴리시.

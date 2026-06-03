@@ -25,6 +25,12 @@ export default function ApkDynamicPage() {
               🔗 더미 링크 생성
             </Link>
             <Link
+              href="/admin/apk-dynamic/androzoo"
+              className="rounded-2xl border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/20"
+            >
+              🧪 AndroZoo 비교
+            </Link>
+            <Link
               href="/admin"
               className="rounded-2xl border border-white/10 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/5"
             >
