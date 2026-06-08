@@ -281,6 +281,7 @@ def _transcribe_chunks_parallel(
 def _transcribe_with_openai_api(
     audio_path: str,
     logger: Callable[[str], None] | None = None,
+    diarize: bool = True,  # 미사용 — 호출부 시그니처 통일용 (Whisper 는 화자 분리 안 함)
 ) -> dict:
     """OpenAI Whisper API로 음성 파일을 텍스트로 변환한다. 길면 자동 병렬 chunking."""
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -321,6 +322,7 @@ def _transcribe_with_openai_api(
 def _transcribe_with_claude(
     audio_path: str,
     logger: Callable[[str], None] | None = None,
+    diarize: bool = True,  # 미사용 — 호출부 시그니처 통일용
 ) -> dict:
     """Claude API에 오디오를 직접 전송하여 전사한다."""
     import base64
@@ -437,12 +439,16 @@ def _duration_role_map(durations: dict[str, float]) -> dict[str, str]:
 _CLOVA_ROLE_SYSTEM_PROMPT = (
     "당신은 한국어 통화 녹취의 두 화자에게 역할을 배정합니다. 각 화자의 발화 모음을 보고 "
     "누가 '전화를 건 사람(상대방)' 이고 누가 '전화를 받은 사람(본인)' 인지 판정하세요.\n\n"
-    "- 상대방(전화 건 사람): 권위적·길게 정보 제공·명령조·기관(검찰/경찰/금감원/은행) 사칭·"
-    "반복 지시·먼저 용건을 꺼냄\n"
-    "- 본인(전화 받은 사람): 짧게 되묻기·의심·순응. 예: '네', '뭔데요?', '…말씀이신가요?', "
-    "'아 네 알겠습니다'\n\n"
-    "발화량(초)은 보조 단서입니다 — 보통 상대방이 더 길게 말하지만 본인이 더 많이 말하는 "
-    "경우도 있으니 **내용을 우선**하세요.\n\n"
+    "**판정 기준 (우선순위 순)**:\n"
+    "1. **통화 도입부를 가장 중시하세요.** 앞부분에서 먼저 용건을 꺼내고 기관"
+    "(검찰/경찰/금감원/은행)을 사칭하며 정보를 길게 제공하고 지시하는 쪽이 '상대방' 입니다. "
+    "이 역할은 통화 내내 고정입니다 — 이후 본인이 더 많이 말하거나 길게 답해도 역할은 "
+    "**절대 바뀌지 않습니다**.\n"
+    "2. 상대방(전화 건 사람): 권위적·명령조·기관 사칭·반복 지시·먼저 용건을 꺼냄.\n"
+    "3. 본인(전화 받은 사람): 짧게 되묻기·의심·순응. 예: '네', '뭔데요?', "
+    "'…말씀이신가요?', '아 네 알겠습니다'.\n\n"
+    "발화량(초)은 동점일 때만 쓰는 약한 보조 단서입니다 — **항상 내용(도입부·권위·지시)을 "
+    "우선**하세요. 발화량으로 역할을 뒤집지 마세요.\n\n"
     "반드시 JSON 객체 하나만 출력하세요. 키는 화자 번호만(예: \"1\", \"2\"), 값은 역할:\n"
     '{"1": "상대방", "2": "본인"}\n'
     "설명·코드블록 없이 JSON 만 출력."
@@ -521,6 +527,7 @@ def _assign_clova_roles(segments: list[dict]) -> dict[str, str]:
         message = client.messages.create(
             model=model,
             max_tokens=80,
+            temperature=0.0,  # 결정적 — 같은 발화가 누적 윈도우마다 상대방/본인 뒤집히는 flip 제거
             system=_CLOVA_ROLE_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -641,8 +648,12 @@ def _get_clova_logger() -> logging.Logger:
 def _transcribe_with_clova(
     audio_path: str,
     logger: Callable[[str], None] | None = None,
+    diarize: bool = True,
 ) -> dict:
     """Naver CLOVA Speech API 로 한국어 STT + audio-based 화자 분리.
+
+    diarize=False 면 상대방/본인 역할 배정(_clova_to_turns → Claude 호출)을 건너뛰고
+    전사 텍스트만 반환(turns=[]) — Live 즉시 검출 경로(화자 무관 시그널 스캔)용.
 
     한 번의 호출로 전사문 + segments + speaker_label 모두 받음 (LLM diarize 불필요).
     응답에 `segments` (각 segment 가 speaker_label 포함) + `turns` (상대방/본인 매핑됨) 포함.
@@ -757,7 +768,8 @@ def _transcribe_with_clova(
             "speaker_label": speaker_label,
         })
 
-    turns = _clova_to_turns(segments)
+    # diarize=False (Live 즉시 검출) 면 역할 배정(Claude 호출) 건너뜀 — 텍스트만 스캔.
+    turns = _clova_to_turns(segments) if diarize else []
 
     # 결과 상세 기록
     preview = full_text[:200] + "…" if len(full_text) > 200 else full_text
@@ -809,6 +821,7 @@ def transcribe(
     debug: bool = False,
     logger: Callable[[str], None] | None = None,
     stt_backend: str | None = None,
+    diarize: bool = True,
 ) -> TranscriptResult:
     """
     입력 소스를 텍스트로 변환한다.
@@ -817,6 +830,8 @@ def transcribe(
         source: YouTube URL, 로컬 파일 경로, 또는 텍스트
         model_size: (미사용, 호환성 유지)
         stt_backend: "whisper" 또는 "claude" (None이면 STT_BACKEND 환경변수 사용)
+        diarize: False 면 화자 분리(상대방/본인 역할 배정 = CLOVA 경로의 Claude 호출)를
+            건너뛰고 전사 텍스트만 반환(turns=[]). Live 즉시 검출 경로용. 기본 True.
 
     Returns:
         TranscriptResult 객체
@@ -861,7 +876,7 @@ def transcribe(
             if logger:
                 logger(f"[STT] 오디오 파일 준비 완료: {audio_path}")
             _ensure_audio_nonempty(audio_path)
-            result = _do_stt(audio_path, logger=logger)
+            result = _do_stt(audio_path, logger=logger, diarize=diarize)
         result = _maybe_correct(result, logger=logger)
         return TranscriptResult(
             text=result["text"],
@@ -873,7 +888,7 @@ def transcribe(
 
     # 로컬 파일
     _ensure_audio_nonempty(source)
-    result = _do_stt(source, logger=logger)
+    result = _do_stt(source, logger=logger, diarize=diarize)
     result = _maybe_correct(result, logger=logger)
     return TranscriptResult(
         text=result["text"],

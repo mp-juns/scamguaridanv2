@@ -47,6 +47,45 @@ SOFT_LEN_THRESHOLD = int(os.getenv("ABUSE_SOFT_THRESHOLD", "10"))
 _HANGUL_RE = re.compile(r"[가-힣]")
 _LATIN_DIGIT_RE = re.compile(r"[A-Za-z0-9]")
 
+# ──────────────────────────────────
+# 프롬프트 인젝션(우회) 탐지
+# ──────────────────────────────────
+# 분석 대상 텍스트가 *분석기 자신(LLM)* 을 조종하려는 메타-지시를 담고 있으면 차단.
+# ⚠️ 실제 사기 문자도 "이전 안내는 무시하세요" 류 표현을 쓰므로, 일반 "무시"가 아니라
+#    AI/시스템 프롬프트·역할을 겨냥한 패턴만 매칭 (오탐 최소화).
+_INJECTION_PATTERNS = [
+    # 한국어 — '프롬프트/지시/명령' 을 '무시/잊어/덮어써'
+    r"(?:기존|이전|위(?:의)?|모든|시스템)?\s*(?:프롬프트|지시(?:사항)?|명령(?:어)?|규칙)\s*(?:을|를|은|는|들)?\s*(?:전부|모두|싹)?\s*(?:무시|잊어|잊고|덮어|초기화|리셋)",
+    r"시스템\s*프롬프트",
+    r"(?:지금|이제)\s*부터\s*(?:너|네|당신|챗봇|ai|assistant)\s*(?:는|은|를)?",   # "지금부터 너는 ~"
+    r"(?:너|네|당신)\s*(?:는|은)\s*이제(?:부터)?",
+    r"(?:역할|규칙|제약|설정)\s*(?:을|를)?\s*(?:잊|무시|벗어)",
+    # English
+    r"ignore\s+(?:all\s+|the\s+)?(?:previous|prior|above|earlier|preceding)\s+(?:instructions?|prompts?|messages?|rules?|context)",
+    r"disregard\s+(?:all\s+|the\s+)?(?:previous|prior|above|system)",
+    r"forget\s+(?:everything|all|your|the\s+previous)\b.*?(?:instruction|prompt|rule)?",
+    r"(?:system\s*prompt|developer\s*mode|jailbreak|dan\s*mode)",
+    r"you\s+are\s+now\s+(?:a|an|the)\b",
+    r"(?:act|pretend|behave)\s+as\s+(?:if\s+)?(?:you|an|a)\b",
+    r"override\s+(?:the\s+)?(?:system|previous|safety)",
+]
+_INJECTION_RE = re.compile("|".join(_INJECTION_PATTERNS), re.IGNORECASE)
+
+
+def detect_prompt_injection(text: str | None) -> bool:
+    """텍스트에 프롬프트 우회/주입 시도가 있으면 True."""
+    if not text:
+        return False
+    return _INJECTION_RE.search(text) is not None
+
+
+def force_block(user_id: str, *, duration_sec: int = BLOCK_DURATION_SEC) -> None:
+    """user_id 를 즉시 차단(누적 무관). 프롬프트 인젝션 등 즉시 제한용."""
+    if not user_id:
+        return
+    with _violation_lock:
+        _blocks[user_id] = time.time() + duration_sec
+
 
 @dataclass
 class GuardReject:

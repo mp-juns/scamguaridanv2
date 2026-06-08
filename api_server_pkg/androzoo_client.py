@@ -24,6 +24,16 @@ DOWNLOAD_URL = f"{API_BASE}/api/download"
 LIST_URL = f"{API_BASE}/static/lists/latest.csv.gz"
 APK_ZIP_MAGIC = b"PK\x03\x04"
 
+# AndroZoo 는 앞단 WAF 가 기본 봇 User-Agent(`python-requests/...`)를 "Request Rejected"
+# HTML 로 차단한다 → gzip 디코드가 `Not a gzipped file (b'<h')` 로 터진다. 브라우저 UA 를
+# 명시하면 통과한다 (리스트는 공개, 다운로드는 apikey 로 인증).
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    )
+}
+
 
 class AndroZooError(RuntimeError):
     pass
@@ -48,7 +58,7 @@ def download_apk(sha256: str, out_dir: str | Path, *, timeout: int = 300) -> Pat
         return target
     params = {"apikey": api_key(), "sha256": sha256}
     try:
-        with requests.get(DOWNLOAD_URL, params=params, stream=True, timeout=timeout) as resp:
+        with requests.get(DOWNLOAD_URL, params=params, headers=_HEADERS, stream=True, timeout=timeout) as resp:
             if resp.status_code != 200:
                 raise AndroZooError(f"다운로드 실패 {resp.status_code}: {resp.text[:120]}")
             with target.open("wb") as fp:
@@ -73,8 +83,15 @@ def iter_list_rows(*, timeout: int = 120) -> Iterator[dict]:
 
     컬럼: sha256,sha1,md5,dex_date,apk_size,pkg_name,vercode,vt_detection,vt_scan_date,dex_size,markets
     """
-    with requests.get(LIST_URL, stream=True, timeout=timeout) as resp:
+    with requests.get(LIST_URL, headers=_HEADERS, stream=True, timeout=timeout) as resp:
         resp.raise_for_status()
+        ctype = resp.headers.get("Content-Type", "")
+        if "html" in ctype.lower():
+            # WAF 차단 등으로 gzip 대신 HTML 이 오면 명확히 알린다 (cryptic gzip 에러 방지).
+            raise AndroZooError(
+                f"AndroZoo 리스트가 gzip 이 아닌 HTML 응답 (Content-Type={ctype}) — "
+                "WAF 차단 가능성. User-Agent/네트워크 확인 필요."
+            )
         gz = gzip.GzipFile(fileobj=resp.raw)
         reader = csv.DictReader(io.TextIOWrapper(gz, encoding="utf-8", errors="replace"))
         for row in reader:

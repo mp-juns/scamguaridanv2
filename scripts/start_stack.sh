@@ -31,6 +31,15 @@ NGROK_BIN="${NGROK_BIN:-$HOME/bin/ngrok}"
 NGROK_DOMAIN="${NGROK_DOMAIN:-}"  # 예약 도메인 있으면 지정, 없으면 매번 랜덤
 NGROK_API="http://127.0.0.1:4040/api/tunnels"
 
+# APK 동적분석 WSL 브릿지 (127.0.0.1:18002 → VM 안 app.py). VM 안 서버는 systemd 로
+# 자동 기동되지만 host 쪽 브릿지는 별도 — 스택과 함께 올린다.
+#   auto (기본): VM(sg-sandbox)이 Running 일 때만 기동 — 6GB VM 강제 부팅 회피
+#   true: 항상 기동 / false: 스킵
+ENABLE_APK_BRIDGE="${ENABLE_APK_BRIDGE:-auto}"
+APK_DYNAMIC_VM_NAME="${APK_DYNAMIC_VM_NAME:-sg-sandbox}"
+APK_BRIDGE_PORT="${APK_DYNAMIC_BRIDGE_PORT:-18002}"
+MULTIPASS_EXE="${MULTIPASS_EXE:-/mnt/c/Program Files/Multipass/bin/multipass.exe}"
+
 echo "[start] root=$ROOT_DIR"
 echo "[start] logs=$LOG_DIR"
 
@@ -54,9 +63,11 @@ kill_matches "npm run dev"
 kill_matches "ollama serve"
 kill_matches "ngrok http"
 kill_matches "monitor_resources.sh"
+kill_matches "apk_dynamic_wsl_bridge"
 kill_port "$BACKEND_PORT"
 kill_port "$FRONTEND_PORT"
 kill_port "$OLLAMA_PORT"
+kill_port "$APK_BRIDGE_PORT"
 kill_port 4040
 
 # 이전 monitor PID 정리
@@ -176,10 +187,35 @@ elif [[ "$ENABLE_NGROK" == "true" ]]; then
   echo "[start] ENABLE_NGROK=true 지만 $NGROK_BIN 가 없음 — ngrok 스킵"
 fi
 
+# APK 동적분석 WSL 브릿지 — VM 안 app.py(systemd 관리)로 HTTP 포워딩.
+if [[ "$ENABLE_APK_BRIDGE" != "false" ]]; then
+  apk_vm_running=false
+  if [[ -x "$MULTIPASS_EXE" ]] && \
+     "$MULTIPASS_EXE" info "$APK_DYNAMIC_VM_NAME" 2>/dev/null | grep -qiE 'State:[[:space:]]*Running'; then
+    apk_vm_running=true
+  fi
+  if [[ "$ENABLE_APK_BRIDGE" == "true" || "$apk_vm_running" == "true" ]]; then
+    echo "[start] starting APK dynamic WSL bridge (127.0.0.1:$APK_BRIDGE_PORT → $APK_DYNAMIC_VM_NAME)..."
+    if bash "$ROOT_DIR/scripts/apk_dynamic_vm_ctl.sh" bridge >>"$LOG_DIR/start_stack.console.log" 2>&1; then
+      sleep 1
+      if curl -sS -m 3 "http://127.0.0.1:${APK_BRIDGE_PORT}/health" >/dev/null 2>&1; then
+        echo "[start] APK bridge ready (/health ok)"
+      else
+        echo "[start] APK bridge 기동했지만 /health 미응답 — VM app.py(systemd) 확인 필요"
+      fi
+    else
+      echo "[start] WARN: APK bridge 시작 실패 — start_stack.console.log 확인"
+    fi
+  else
+    echo "[start] skipping APK bridge (VM '$APK_DYNAMIC_VM_NAME' 미기동, ENABLE_APK_BRIDGE=auto). 켜려면 ENABLE_APK_BRIDGE=true 또는 'vm_ctl.sh start'"
+  fi
+fi
+
 echo "[start] done."
 echo "[start] tail logs:"
 echo "  tail -f \"$LOG_DIR/ollama.log\""
 echo "  tail -f \"$LOG_DIR/backend.log\""
 echo "  tail -f \"$LOG_DIR/frontend.log\""
 echo "  tail -f \"$LOG_DIR/ngrok.log\""
+echo "  tail -f \"$LOG_DIR/apk-dynamic-bridge.log\""
 

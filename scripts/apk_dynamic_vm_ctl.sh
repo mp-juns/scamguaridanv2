@@ -186,20 +186,45 @@ ensure_frida() {
 start_server() {
   ensure_vm
   sync_code
-  echo "[apk-vm] starting dynamic-analysis API server"
+  echo "[apk-vm] installing+starting dynamic-analysis API server (systemd: sg-apkdyn)"
+  # systemd unit 으로 기동한다 — nohup 과 달리 (1) 죽으면 Restart=always 로 부활하고
+  # (2) WantedBy=multi-user.target 로 VM 재부팅마다 자동 기동된다. 과거엔 맨 nohup
+  # 프로세스라 단발 SIGTERM·VM 재부팅 한 번에 영구 다운됐다 (카드 'API server' 회색).
   vm_exec "
     set -euo pipefail
     cd '$VM_WORKDIR/apk_dynamic_server'
     python3 -m pip install --user -r requirements.txt >/dev/null
-    py=python3
-    app_file=app.py
-    kill_pattern='[p]ython3 app.py'
-    pids=\$(pgrep -f \"\$kill_pattern\" 2>/dev/null || true)
-    if [ -n \"\$pids\" ]; then kill \$pids 2>/dev/null || true; fi
-    nohup env APK_DYNAMIC_SERVER_TOKEN='$SERVER_TOKEN' PORT='$SERVER_PORT' \
-      APK_DYNAMIC_ADB_SERIAL=localhost:5555 \
-      \"\$py\" \"\$app_file\" > server.log 2>&1 < /dev/null &
+    # 과거 nohup 인스턴스가 떠 있으면 정리 (systemd 로 일원화 — 중복 listen 방지).
+    # 패턴 kill('python3 app.py') 은 이 스크립트 자신을 오인 타격한다 — heredoc 의
+    # ExecStart 줄이 'python3 app.py' 문자열을 포함해 우리 bash argv 에 박히기 때문.
+    # 그래서 포트($SERVER_PORT)를 점유한 listener 만 정조준해서 죽인다.
+    sudo systemctl stop sg-apkdyn.service 2>/dev/null || true
+    stray=\$(sudo ss -lptnH 'sport = :$SERVER_PORT' 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)
+    if [ -n \"\$stray\" ]; then sudo kill \$stray 2>/dev/null || true; sleep 1; fi
+    sudo tee /etc/systemd/system/sg-apkdyn.service >/dev/null <<UNIT
+[Unit]
+Description=ScamGuardian APK Dynamic Analyzer
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=$VM_WORKDIR/apk_dynamic_server
+Environment=APK_DYNAMIC_SERVER_TOKEN=$SERVER_TOKEN
+Environment=PORT=$SERVER_PORT
+Environment=APK_DYNAMIC_ADB_SERIAL=localhost:5555
+ExecStart=/usr/bin/python3 app.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now sg-apkdyn.service
     sleep 1
+    systemctl is-active sg-apkdyn.service || true
     pgrep -af '[p]ython3 app.py' || true
   "
 }
@@ -341,7 +366,8 @@ status() {
     adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true
     echo '--- frida ---'
     adb -s localhost:5555 shell pidof frida-server 2>/dev/null | tr -d '\r' || true
-    echo '--- api server ---'
+    echo '--- api server (systemd: sg-apkdyn) ---'
+    systemctl is-active sg-apkdyn.service 2>/dev/null || echo 'inactive/not-installed'
     pgrep -af '[p]ython3 app.py' || true
   "
   echo "--- remote URL from WSL ---"
@@ -350,7 +376,15 @@ status() {
 
 logs() {
   ensure_vm
-  vm_exec "tail -n 120 -f '$VM_WORKDIR/apk_dynamic_server/server.log'"
+  # systemd 기동 후엔 stdout/stderr 가 journald 로 간다. 과거 nohup 의 server.log 가
+  # 남아 있으면 그쪽도 함께 보여준다.
+  vm_exec "
+    if systemctl list-unit-files 2>/dev/null | grep -q '^sg-apkdyn.service'; then
+      journalctl -u sg-apkdyn.service -n 120 -f
+    else
+      tail -n 120 -f '$VM_WORKDIR/apk_dynamic_server/server.log'
+    fi
+  "
 }
 
 stop_all() {

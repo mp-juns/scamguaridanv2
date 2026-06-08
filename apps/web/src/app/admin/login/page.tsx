@@ -1,6 +1,7 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { auth, signIn } from "../../../auth";
+import { auth, signIn, signOut } from "../../../auth";
 
 type SearchParams = Promise<{ next?: string; error?: string }>;
 
@@ -8,28 +9,60 @@ export default async function AdminLoginPage(props: { searchParams: SearchParams
   const { next, error } = await props.searchParams;
   const session = await auth();
   const email = session?.user?.email?.toLowerCase();
+  const role = session?.user?.role;
   const dest = next && next.startsWith("/admin") ? next : "/admin";
-  // 세션 존재 = signIn 게이트(백엔드 master+DB) 통과 = 승인됨.
-  if (email) {
+  // admin 역할만 어드민으로 진입. (일반 user 로그인 상태면 아래 "권한 없음" 안내)
+  if (role === "admin") {
     redirect(dest);
   }
 
-  // signIn 콜백이 거부하면 NextAuth 가 ?error=AccessDenied 로 보냄 (미승인/대기/거부)
-  const denied = error === "AccessDenied";
+  // 로그인은 됐지만 관리자 권한이 없는 계정 (일반 user) — 위에서 admin 은 redirect 됨
+  if (email) {
+    return (
+      <main className="mx-auto flex min-h-screen max-w-md items-center justify-center px-6">
+        <div className="w-full rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
+          <h1 className="text-xl font-semibold text-slate-900">관리자 권한 없음</h1>
+          <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
+            <strong>{email}</strong> 계정은 관리자 권한이 없습니다. 로그인 시도로 승인 요청이
+            접수되었으니, 마스터 승인 후 다시 로그인해주세요.
+          </p>
+          <div className="mt-6 flex gap-2">
+            <Link
+              href="/"
+              className="flex-1 rounded-lg border border-slate-300 bg-white px-4 py-2 text-center text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              홈으로
+            </Link>
+            <form
+              className="flex-1"
+              action={async () => {
+                "use server";
+                await signOut({ redirectTo: "/" });
+              }}
+            >
+              <button
+                type="submit"
+                className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                다른 계정으로 로그인
+              </button>
+            </form>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  const failed = error && error !== "AccessDenied";
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md items-center justify-center px-6">
       <div className="w-full rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
         <h1 className="text-xl font-semibold text-slate-900">어드민 로그인</h1>
         <p className="mt-1 text-sm text-slate-500">
-          승인된 Google 계정만 접근 가능합니다.
+          승인된 Google 계정만 어드민에 접근할 수 있습니다.
         </p>
-        {denied ? (
-          <p className="mt-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
-            승인되지 않은 계정입니다. 로그인 시도로 <strong>승인 요청이 접수</strong>되었습니다 —
-            마스터 승인 후 다시 로그인해주세요.
-          </p>
-        ) : error ? (
+        {failed ? (
           <p className="mt-4 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700">
             로그인 실패: {error}
           </p>

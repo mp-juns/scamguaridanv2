@@ -45,9 +45,13 @@ from fastapi.responses import StreamingResponse
 router = APIRouter()
 LOG = logging.getLogger("api_analyze_stream")
 
-# 화자별 신호 분류 — 같은 키워드라도 *누가 말했나*로 의미가 바뀐다.
-#  - by_victim:  본인(피해자) 발화일 때 (level, instant, action) — 민감정보 발설·송금 동의 = 결정적(instant)
-#  - by_scammer: 상대방(사기범) 발화일 때 — 사칭·요구·압박 = 누적 경고(보통 non-instant)
+# 위험 신호 분류 — 두 가지 읽기 방식을 모두 둔다.
+#  - by_victim / by_scammer: *화자별* (level, instant, action). 누가 말했나로 의미가 바뀜.
+#       파일 분석(/api/analyze-stream, /api/transcribe-upload)의 화자 경로(_scan_turns)용.
+#  - agnostic: *화자 무관* (level, instant, action). Live 즉시 검출(_scan_text)용 —
+#       화자 분리를 건너뛰므로 누가 말했는지 모른다. 행동 문구는 **화자 중립**
+#       ("방금 송금하셨어요" 같은 단정 X → "송금 정황이 감지됐습니다"). severity 는
+#       안전측(높게)으로 두되, 언제든 하향 튜닝 가능.
 #  None 이면 그 화자 발화에선 무시.
 #  level: 1 watch / 2 warn / 3 danger. instant=True 면 1개로 즉시 danger tier.
 #  action: 안전 행동 안내 (Identity Boundary — "사기다" 단정 X, 행동+근거만)
@@ -57,18 +61,21 @@ _SPEAKER_PATTERNS: list[dict] = [
         "regex": re.compile(r"주민(등록)?\s*번호"),
         "by_victim": (3, True, "주민등록번호를 불러주지 마세요. 지금 멈추세요."),
         "by_scammer": (2, False, "주민번호를 요구받고 있습니다 — 알려주지 마세요."),
+        "agnostic": (3, True, "주민등록번호가 통화에 등장했습니다 — 불러주거나 입력하지 마세요."),
     },
     {
         "flag": "otp", "label_ko": "OTP/인증번호/보안카드",
         "regex": re.compile(r"(OTP|일회용\s*비밀번호|보안카드|인증번호)"),
         "by_victim": (3, True, "OTP·인증번호·보안카드 번호를 불러주지 마세요."),
         "by_scammer": (2, False, "OTP·인증번호를 요구받고 있습니다 — 알려주지 마세요."),
+        "agnostic": (3, True, "OTP·인증번호·보안카드 번호가 통화에 등장 — 불러주거나 입력하지 마세요."),
     },
     {
         "flag": "password", "label_ko": "비밀번호",
         "regex": re.compile(r"비밀번호"),
         "by_victim": (3, True, "비밀번호를 불러주거나 입력하지 마세요."),
         "by_scammer": (2, False, "비밀번호를 요구받고 있습니다 — 알려주지 마세요."),
+        "agnostic": (3, True, "비밀번호가 통화에 등장 — 불러주거나 입력하지 마세요."),
     },
     {
         "flag": "transfer_done", "label_ko": "송금 동의·실행",
@@ -76,12 +83,14 @@ _SPEAKER_PATTERNS: list[dict] = [
         # 본인이 "보낼게요/이체했어요" → 결정적 (동의·실행). 사기범 발화면 무시.
         "by_victim": (3, True, "방금 송금에 동의·실행하셨어요. 즉시 은행 고객센터(또는 112)에 지급정지를 요청하세요."),
         "by_scammer": None,
+        "agnostic": (3, True, "송금 동의·실행 정황이 감지됐습니다 — 보냈다면 즉시 은행 고객센터(또는 112)에 지급정지를 요청하세요."),
     },
     {
         "flag": "urgent_transfer", "label_ko": "즉각 송금",
         "regex": re.compile(r"(즉시|지금|당장|빨리|얼른).{0,12}(송금|이체|보내|입금)"),
         "by_victim": (3, True, "송금을 멈추세요. 보내기 전에 가족·기관 대표번호로 먼저 확인하세요."),
         "by_scammer": (2, False, "지금 송금하라는 압박을 받고 있습니다 — 서두르지 말고 멈추세요."),
+        "agnostic": (3, True, "즉시 송금 정황이 감지됐습니다 — 보내기 전에 가족·기관 대표번호로 먼저 확인하세요."),
     },
     {
         "flag": "safe_account", "label_ko": "안전계좌",
@@ -89,31 +98,36 @@ _SPEAKER_PATTERNS: list[dict] = [
         # 사기범의 대표 수법 — 강한 누적(level 3, non-instant). 본인이 되묻는 건 낮음.
         "by_victim": (1, False, "'안전계좌' 안내를 받고 있어요 — 그런 계좌는 존재하지 않습니다."),
         "by_scammer": (3, False, "'안전계좌'는 존재하지 않습니다. 어떤 계좌로도 이체하지 마세요."),
+        "agnostic": (3, False, "'안전계좌'는 존재하지 않습니다 — 어떤 계좌로도 이체하지 마세요."),
     },
     {
         "flag": "fake_gov", "label_ko": "공공기관 사칭",
         "regex": re.compile(r"(검찰청|금융감독원|경찰청|국정원|금감원|중앙지검|수사관)"),
         "by_victim": None,  # 본인이 기관명 언급 = 의심·되묻기 → 무시
         "by_scammer": (2, False, "검찰·경찰·금감원은 전화로 돈 이체나 계좌 정보를 요구하지 않습니다."),
+        "agnostic": (2, False, "검찰·경찰·금감원은 전화로 돈 이체나 계좌 정보를 요구하지 않습니다."),
     },
     {
         "flag": "urgent_call_demand", "label_ko": "통화 유지 압박",
         "regex": re.compile(r"(끊지\s*마|전화\s*끊지|통화\s*유지)"),
         "by_victim": None,
         "by_scammer": (2, False, "전화를 끊어도 됩니다. '끊지 말라'는 요구 자체가 사기 신호입니다."),
+        "agnostic": (2, False, "전화를 끊어도 됩니다. '끊지 말라'는 요구 자체가 사기 신호입니다."),
     },
     {
         "flag": "app_install_lure", "label_ko": "앱 설치 유도",
         "regex": re.compile(r"(앱|어플|어플리케이션|보안.{0,3}프로그램|업데이트).{0,8}(설치|다운로드)"),
         "by_victim": None,
         "by_scammer": (1, False, "상대가 요구하는 앱·프로그램을 설치하지 마세요."),
+        "agnostic": (1, False, "요구받은 앱·프로그램을 설치하지 마세요."),
     },
     {
         "flag": "meta_aware", "label_ko": "메타인식(본인 의심)",
         "regex": re.compile(r"(사기.{0,5}같|이상한데|진짜.{0,3}인가|이거.{0,3}사기)"),
-        # 🟢 보호 신호 — 본인이 의심 중. 경보 X (낮은 누적), 사기범 발화면 무시.
+        # 🟢 보호 신호 — 통화 중 의심 표현. 경보 X (낮은 누적), 사기범 발화면 무시.
         "by_victim": (1, False, "잘 의심하고 계세요. 끊고 해당 기관 대표번호로 직접 다시 확인하세요."),
         "by_scammer": None,
+        "agnostic": (1, False, "잘 의심하고 계세요. 끊고 해당 기관 대표번호로 직접 다시 확인하세요."),
     },
 ]
 
@@ -121,19 +135,15 @@ _SPEAKER_PATTERNS: list[dict] = [
 def _classify(pat: dict, role: str | None) -> tuple[int, bool, str] | None:
     """(패턴, 화자) → (level, instant, action). 무시면 None.
 
-    role 이 None(화자 미상 fallback) 이면 두 분류 중 *더 심각한* 쪽 — 화자를 모를 땐
-    critical 신호를 놓치지 않는 게 안전.
+    role 이 None(화자 미상 — Live 즉시 검출, 화자 분리 skip)이면 패턴별 명시 `agnostic`
+    분류를 쓴다 (중립 행동 문구 + 안전측 severity). 화자별 정밀 구분은 by_victim/by_scammer
+    로 별도 유지(파일 분석의 _scan_turns 경로).
     """
     if role == "본인":
         return pat["by_victim"]
     if role == "상대방":
         return pat["by_scammer"]
-    v, sc = pat["by_victim"], pat["by_scammer"]
-    if v is None:
-        return sc
-    if sc is None:
-        return v
-    return v if (v[1], v[0]) >= (sc[1], sc[0]) else sc
+    return pat.get("agnostic")
 
 
 def _match_in(pat: dict, role: str | None, snippet: str) -> dict | None:

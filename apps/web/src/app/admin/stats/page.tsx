@@ -2,17 +2,16 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  CartesianGrid,
-} from "recharts";
+import dynamic from "next/dynamic";
+
+// recharts 는 클라이언트 전용 + 무거운 청크 → lazy-load (초기 admin 진입 JS 에서 제외)
+const DailyRunsChart = dynamic(
+  () => import("../charts").then((m) => m.DailyRunsChart),
+  { ssr: false },
+);
+const HBarChart = dynamic(() => import("../charts").then((m) => m.HBarChart), {
+  ssr: false,
+});
 
 interface DashboardStats {
   total_runs: number;
@@ -94,19 +93,7 @@ export default function StatsPage() {
         {stats.daily_runs.length > 0 && (
           <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
             <h2 className="text-base font-semibold text-gray-800 mb-4">일별 분석 수 (최근 30일)</h2>
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={stats.daily_runs}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis
-                  dataKey="date"
-                  tick={{ fontSize: 11 }}
-                  tickFormatter={(v: string) => v.slice(5)}
-                />
-                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                <Tooltip />
-                <Line type="monotone" dataKey="count" stroke="#3b82f6" strokeWidth={2} dot={false} name="분석 수" />
-              </LineChart>
-            </ResponsiveContainer>
+            <DailyRunsChart data={stats.daily_runs} />
           </div>
         )}
 
@@ -117,18 +104,12 @@ export default function StatsPage() {
             {stats.scam_type_distribution.length === 0 ? (
               <p className="text-sm text-gray-400">데이터 없음</p>
             ) : (
-              <ResponsiveContainer width="100%" height={240}>
-                <BarChart
-                  data={stats.scam_type_distribution}
-                  layout="vertical"
-                  margin={{ left: 10, right: 20 }}
-                >
-                  <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
-                  <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={100} />
-                  <Tooltip />
-                  <Bar dataKey="count" fill="#3b82f6" radius={[0, 4, 4, 0]} name="건수" />
-                </BarChart>
-              </ResponsiveContainer>
+              <HBarChart
+                data={stats.scam_type_distribution}
+                height={240}
+                fill="#3b82f6"
+                name="건수"
+              />
             )}
           </div>
 
@@ -139,18 +120,12 @@ export default function StatsPage() {
           {stats.labeled_by_type.length > 0 && (
             <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm md:col-span-2">
               <h2 className="text-base font-semibold text-gray-800 mb-4">유형별 라벨 완료 현황</h2>
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart
-                  data={stats.labeled_by_type}
-                  layout="vertical"
-                  margin={{ left: 10, right: 20 }}
-                >
-                  <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
-                  <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={100} />
-                  <Tooltip />
-                  <Bar dataKey="count" fill="#22c55e" radius={[0, 4, 4, 0]} name="라벨 완료" />
-                </BarChart>
-              </ResponsiveContainer>
+              <HBarChart
+                data={stats.labeled_by_type}
+                height={200}
+                fill="#22c55e"
+                name="라벨 완료"
+              />
             </div>
           )}
         </div>

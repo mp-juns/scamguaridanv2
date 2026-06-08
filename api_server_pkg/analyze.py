@@ -87,11 +87,27 @@ async def analyze(payload: AnalyzeRequest, request: Request) -> dict:
         source[:100], payload.whisper_model, payload.skip_verification,
         payload.use_rag,
     )
+    from platform_layer import abuse_guard as _ag
+    key_id = getattr(request.state, "api_key_id", None)
+    user_id = request.headers.get("x-user-id", "").strip() or None
+
+    # 프롬프트 인젝션(우회) — source/text 무관하게 본문에 우회 시도가 섞여 있으면 즉시 접근 제한.
+    # 웹은 텍스트를 source 로 보내므로(아래 text-only 가드 우회) 여기서 별도 검사.
+    if _ag.detect_prompt_injection(source):
+        if user_id:
+            _ag.force_block(user_id)  # 식별되면 즉시 차단(누적 무관)
+        log.warning("/api/analyze 프롬프트 인젝션 차단: %s", source[:120])
+        raise HTTPException(
+            status_code=423,
+            detail={
+                "code": "INJECTION",
+                "message": "프롬프트 우회 시도가 감지되어 접근이 제한되었습니다.",
+                "detail": "",
+            },
+        )
+
     # 어뷰즈 가드 — 텍스트 입력에 한해 외부 API 호출 전 차단
     if payload.text and not payload.source:
-        from platform_layer import abuse_guard as _ag
-        key_id = getattr(request.state, "api_key_id", None)
-        user_id = request.headers.get("x-user-id", "").strip() or None
         rej = _ag.guard(payload.text, key_id=key_id, user_id=user_id)
         if rej is not None:
             status = 423 if rej.code == "BLOCKED" else 400

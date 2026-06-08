@@ -4,6 +4,133 @@ milestone 단위 변경 로그. 누적 append, 최신이 위.
 
 ---
 
+## 2026-06-08 — 어드민 상단 하얀 바 제거 + 프롬프트 인젝션 즉시 차단
+
+**무엇 (1) 하얀 바 제거**:
+- `app/admin/layout.tsx` — 상단 `bg-slate-50` 이메일·로그아웃 바 삭제(전역 AccountNav pill 이
+  로그아웃 제공해 중복이었음). 레이아웃은 `<>{children}</>` 로 단순화.
+
+**무엇 (2) 프롬프트 인젝션(우회) 즉시 접근 제한**:
+- `platform_layer/abuse_guard.py` — `detect_prompt_injection(text)` (AI/시스템 프롬프트·역할
+  조작 패턴만, 일반 "무시"는 오탐 회피) + `force_block(user_id)` 추가.
+- `api_server_pkg/analyze.py` — resolve_source 결과(=웹 source 텍스트 포함)에 대해 인젝션
+  검사. 감지 시 `force_block`(user_id 있으면) + **423 INJECTION**. (웹은 텍스트를 source 로
+  보내 기존 text-only 가드를 우회하던 갭도 메움.)
+- `app/injectionGuard.ts` 신규 — 백엔드와 동일 패턴 거울. `looksLikeInjection()` +
+  localStorage 1시간 접근 제한(`sg_injection_block_until`).
+- `app/HomeClient.tsx` — handleSubmit 시작 시 ① 기존 제한 상태면 차단 ② 인젝션 감지 시
+  `blockForInjection()` + 차단(분석 미실행). 🚫 "접근이 제한되었습니다" 모달(z-[90]).
+
+**왜**: 사용자 요청 — "기존 프롬프트 무시" 류 우회 내용이 섞이면 바로 접근 제한.
+
+**검증**: detect_prompt_injection 단위(8케이스, 실제 사기 "이전 문자는 무시하고…"는 오탐 X)
+PASS. pytest abuse_guard 18 passed. 라이브: 인젝션 source→423 INJECTION / 사기 텍스트→200 /
+`/admin/login` 200 · `/admin` 307. 프론트 tsc·eslint 에러 0.
+
+**범위 메모**: 인젝션 차단은 *타이핑 텍스트* 벡터(홈 입력 + /api/analyze)에 적용. 라이브
+음성 transcript·업로드 파일 transcript 의 인젝션은 후속(드문 벡터).
+
+## 2026-06-08 — 비회원 일일 분석 한도 5회 (홈+라이브 합산) 하드 차단
+
+**무엇**:
+- `app/guestLimit.ts` 신규 — 공유 일일 카운터(`sg_guest_daily_{YYYY-MM-DD}` localStorage,
+  로컬 날짜 기준). `GUEST_DAILY_LIMIT=5`, `guestOverDailyLimit()`, `bumpGuestDaily()`.
+- `app/HomeClient.tsx` — handleSubmit 시작 시 `isGuest && guestOverDailyLimit()` 면 분석 자체
+  차단(한도 모달). 성공 시 `bumpGuestDaily()`. 한도 모달(⛔, z-[80]) + ESC 처리.
+- `app/live/page.tsx` — server 컴포넌트 async 화, `auth()` → `isGuest` 를 `LiveVoiceUpload` 에 전달.
+- `app/live/LiveVoiceUpload.tsx` — prop `isGuest`. 업로드(`handleSubmit`)·실시간(`startLive`)
+  두 진입 모두 시작 시 한도 가드 + 시작 시 `bumpGuestDaily()`. 동일 ⛔ 차단 모달.
+
+**왜**: 사용자 요청 — 비회원은 하루 5회 이상 분석하면 결과를 볼 수 없게(라이브 음성 포함 합산).
+홈/라이브가 **같은 일일 카운터** 공유. 5회까지 허용, 6회째부터 차단(quota=5).
+
+**검증** (Funnel 라이브): `/live` 200 · 비회원 홈 200 · frontend.log 에러 0. `tsc` 변경파일
+에러 0, `eslint` 변경파일 에러 0(잔여 6건은 무관한 LiveVoiceUpload 기존 따옴표 이슈, 행번호만
+밀림). (카운트→차단 동작은 브라우저 localStorage 필요 — 코드/타입 검증.)
+
+**⚠️ 한계**: client localStorage 기반 → 시크릿창·스토리지 삭제로 우회 가능(데모 수준 마찰).
+엄격 강제는 unique guest id 쿠키 + 백엔드 일일 카운팅 필요(후속 과제).
+
+## 2026-06-08 — 비회원 분석 3회 이상 시 로그인 권유 모달
+
+**무엇**:
+- `app/page.tsx` — `HomeClient` 에 `isGuest={!session?.user?.email}` 전달.
+- `app/HomeClient.tsx` — prop `isGuest`. 분석 성공 시 비회원이면 `localStorage`
+  (`sg_guest_analysis_count`) 누적, **3회(`GUEST_PROMPT_THRESHOLD`) 이상이면 결과 모달 대신
+  로그인 권유 모달** 먼저 표시. 권유 모달 버튼: "Google 로 로그인"(client `signIn` from
+  next-auth/react, callbackUrl `/`) / "비회원으로 결과 보기"(닫고 결과 모달 표시). ESC·배경
+  클릭 = 결과 보기. z-[70] 로 최상단.
+
+**왜**: 사용자 요청 — 비회원이 분석 3회 이상부터 로그인 권유 창. "권하도록"이라 강제 차단 X,
+dismiss 가능(비회원으로 계속 결과 확인 가능).
+
+**동작 메모**: 3회째부터 매 분석마다 권유(dismiss 가능). 로그인하면 isGuest=false 라 더 안 뜸.
+
+**검증**: 비회원 랜딩 200 + frontend.log 에러 0. `tsc`·`eslint` 에러 0.
+(카운트→모달 동작은 브라우저 localStorage+클릭 필요 — 코드/타입 검증, 실브라우저 미검증.)
+
+## 2026-06-08 — 홈 첫 진입 선택 게이트 (비회원 / 로그인)
+
+**무엇**: 홈(`/`) 첫 진입 시 랜딩 전에 선택 게이트를 띄움.
+- `app/page.tsx` — server 게이트로 전환. `auth()` 세션 + 비회원 쿠키 검사 → 둘 다 없으면
+  `<EntryGate />`, 있으면 기존 랜딩(`<HomeClient />`).
+- `app/HomeClient.tsx` — 기존 랜딩 client 컴포넌트 (구 `page.tsx` 를 `git mv` + `Home`→`HomeClient`).
+- `app/EntryGate.tsx` 신규 — 2버튼: "비회원으로 둘러보기"(server action 으로 `sg_entry=guest`
+  httpOnly 쿠키 30일 set 후 redirect) / "Google 로 로그인"(권한 따라 회원·관리자 자동).
+- `app/guest.ts` 신규 — `GUEST_COOKIE`/`GUEST_VALUE`/`GUEST_MAX_AGE` 공유 상수.
+- `app/AccountNav.tsx` — 게이트 화면(미진입)에선 위젯 숨김. 비회원의 "로그인"은
+  `/admin/login`(어드민 페이지) 아닌 **일반 Google signIn** 으로 직행(회원 로그인 시 "권한 없음"
+  오인 방지).
+
+**왜**: 사용자 요청 — 홈 첫 화면에서 비회원/회원/관리자를 로그인으로 분기. 회원·관리자는
+allowlist 로 자동 구분되므로 버튼은 비회원/로그인 2개 (사용자 선택). 비회원은 쿠키로 기억해
+다음 방문부터 게이트 생략.
+
+**검증** (Funnel 라이브): 쿠키 없는 새 방문 → 게이트("어떻게 이용하시겠어요"·"비회원으로
+둘러보기" 노출, "보이스피싱" 0) / `sg_entry=guest` 쿠키 → 랜딩("보이스피싱" 노출, 게이트 0).
+`tsc`·`eslint` 변경파일 에러 0. (Google 로그인 후 상태는 OAuth 필요 — 코드/타입 검증.)
+
+## 2026-06-08 — 로그인 세션 역할 구분 (admin / user) — ChatGPT 방식
+
+**무엇** (위 pill 작업을 역할 기반으로 확장):
+- `auth.ts` — `signIn` 이 **모든 Google 계정 로그인 허용**으로 변경(기존: allowlist 만 통과).
+  `jwt` 콜백이 최초 로그인 시 `backendAllows(email)` 조회 → `token.role = admin|user` 고정.
+  `session` 콜백이 `session.user.role` 노출. `authorized` fallback 도 `role==="admin"` 으로.
+- `proxy.ts` — `/admin` 게이트를 **세션 존재 → `role==="admin"`** 으로 강화 (보안 핵심:
+  이제 일반 user 도 세션을 가지므로 role 검사 없으면 user 가 /admin 통과해버림).
+- `app/admin/login/page.tsx` — admin 만 redirect. 로그인했지만 user 면 "관리자 권한 없음"
+  카드(홈으로 / 다른 계정 로그인). admin 의 /admin/login↔/admin redirect 루프 차단.
+- `app/AccountNav.tsx` 신규 (구 `AdminEntry.tsx` 대체) — 우측 상단 역할별 위젯:
+  익명→"로그인", user→로그아웃만, admin→"🛠️ 관리자" pill + 로그아웃.
+- `types/next-auth.d.ts` 신규 — Session.user.role / JWT.role 타입 보강.
+
+**왜**: 사용자 요청 — "관리자가 로그인하면 어드민 pill 노출, 사용자가 로그인하면 미노출".
+즉 로그인 창구 하나(Google) + 역할로 노출 분기 (ChatGPT 방식).
+
+**검증** (Funnel 라이브, 익명): `/` 200 + "로그인" pill 1회 + "관리자" 0회 / `/admin` →307
+`/admin/login` / `/admin/login` 200. `tsc`·`eslint` 변경파일 에러 0.
+(admin·user 로그인 상태는 OAuth 세션 필요 — 코드/타입 검증, 실로그인 미검증.)
+
+**⚠️ 주의**: 기존 admin JWT(역할 없는 토큰)는 `role ?? "user"` 로 떨어져 **한 번 로그아웃→
+재로그인 해야 admin 복구**됨. jwt 콜백이 최초 로그인 때만 role 을 박기 때문.
+
+## 2026-06-08 — 메인 페이지에 관리자 전용 진입 pill
+
+**무엇**:
+- `apps/web/src/app/AdminEntry.tsx` 신규 — server 컴포넌트, `auth()` 세션 있으면(관리자)만
+  우측 상단 작은 pill("🛠️ 관리자") 렌더, 없으면 null.
+- `apps/web/src/app/layout.tsx` — 루트 `<body>` 에 `<AdminEntry />` 삽입 (전 페이지 노출).
+
+**왜**: 일반 사용자는 어드민 진입점을 안 보이게, 관리자는 메인에서 바로 `/admin` 진입.
+
+**`/admin` 접근 차단은 이미 존재**: Next 16 은 middleware 를 `proxy.ts` 로 개명 →
+`apps/web/src/proxy.ts` 가 이미 `/admin/*` 세션 게이트(미인증 시 `/admin/login` redirect)를
+완비하고 있었음. (작업 초기에 `middleware.ts` 를 새로 만들었다가 `proxy.ts` 와 충돌해
+앱 전체 404 발생 → `middleware.ts` 삭제로 해결. AGENTS.md 경고대로 Next 16 ≠ 기존 Next.)
+
+**검증** (Tailscale Funnel 라이브): `/` 200 · `/admin/login` 200 · `/admin` → 307
+redirect `/admin/login?next=%2Fadmin` (게이트 작동) · 익명 `/` HTML 에 "관리자" 0회 (pill 숨김).
+
 ## 2026-05-26 — main ← origin/main-kyy 머지 + Tailscale Funnel 보존 백업 + README 갱신
 
 **무엇**: `origin/main-kyy` (kyy 영상 latency 단축 + cloudflared quick tunnel) 를 main 에
@@ -419,3 +546,23 @@ implementation" 으로 reframe. VirusTotal 모델 채택 — 검출 보고만, �
 **결과**: ✅ 93 passed. 분리 작업 시작 가능.
 
 다음: api_server/ 패키지 골격 + helpers + health 분리.
+
+---
+
+## 2026-06-04 — APK 동적분석 VM 'API server' 회색불 + AndroZoo 벤치마크 오류 디버깅
+
+**무엇**:
+1. `api_server_pkg/androzoo_client.py` — AndroZoo 리스트/다운로드 요청에 브라우저 User-Agent(`_HEADERS`) 추가 + HTML 응답 가드.
+2. `scripts/apk_dynamic_vm_ctl.sh` — `start_server` 를 nohup → **systemd 서비스(sg-apkdyn)** 로 교체 (Restart=always + WantedBy=multi-user.target). `logs`/`status` 도 journald 기준으로 갱신.
+
+**왜**:
+- 벤치마크 `Not a gzipped file (b'<h')`: AndroZoo 앞단 WAF 가 `python-requests` 기본 UA 를 "Request Rejected" HTML 로 차단 → gunzip 실패. (키 문제 아님 — 리스트는 공개.)
+- 카드 'API server' 회색: VM 안 `apk_dynamic_server/app.py` 가 supervision 없는 맨 nohup 프로세스라, ① 03:55 단발 SIGTERM, ② VM 재부팅(24h 내 3회) 한 번에 영구 다운. redroid/frida 는 docker/Android 측이라 생존, app.py 만 죽음.
+
+**결과**: ✅
+- AndroZoo: Python 클라이언트로 실제 gzip row 스트리밍 검증.
+- systemd: is-enabled=enabled / SIGTERM 후 자동 부활(MainPID 교체) / status-json server_up=true 검증. 디버깅 중 self-killing pkill(heredoc 의 'python3 app.py' 가 우리 shell argv 에 박힘)·pipefail+set -e 변수할당 중단 두 버그도 잡음.
+
+다음: 실제 end-to-end 동적분석은 WSL 브릿지(`vm_ctl.sh bridge`/`start`)도 떠야 함 — 카드 불과 별개 레이어.
+
+**후속**: `scripts/start_stack.sh` 에 APK 동적분석 WSL 브릿지 통합 — `ENABLE_APK_BRIDGE=auto`(기본). VM(sg-sandbox) 이 Running 일 때만 브릿지 자동 기동(6GB VM 강제부팅 회피), `true` 면 항상/`false` 면 스킵. stop 섹션·로그 힌트도 갱신. 이제 매번 `vm_ctl.sh bridge` 수동 실행 불필요.

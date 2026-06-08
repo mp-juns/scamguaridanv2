@@ -1,7 +1,8 @@
 import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 
-// 허용 판정은 백엔드(master env + admin_users DB)에 위임 — signIn 콜백이 단일 게이트.
+// 로그인은 누구나(Google) 가능 — 관리자 여부(allowlist)는 백엔드(master env + admin_users DB)
+// 에 위임해 role 로만 구분. admin 게이트는 proxy.ts 가 role==="admin" 으로 단독 차단.
 const API_BASE = process.env.SCAMGUARDIAN_API_URL ?? "http://127.0.0.1:8000";
 
 async function backendAllows(email: string): Promise<boolean> {
@@ -26,24 +27,30 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   pages: { signIn: "/admin/login", error: "/admin/login" },
   callbacks: {
     async signIn({ user }) {
-      // master(env) 또는 approved(DB) 만 통과. 모르는 계정은 백엔드가 pending 적재 후 거부.
-      const email = user?.email?.toLowerCase();
-      if (!email) return false;
-      return backendAllows(email);
+      // 모든 Google 계정 로그인 허용 — 역할(admin/user)은 jwt 콜백에서 allowlist 로 결정.
+      return Boolean(user?.email);
     },
     async jwt({ token, user }) {
-      if (user?.email) token.email = user.email;
+      // 최초 로그인 시점에만 allowlist 조회 → 역할 확정 후 토큰에 고정.
+      if (user?.email) {
+        token.email = user.email;
+        token.role = (await backendAllows(user.email.toLowerCase())) ? "admin" : "user";
+      }
       return token;
     },
     async session({ session, token }) {
       if (token?.email && typeof token.email === "string") {
-        session.user = { ...session.user, email: token.email };
+        session.user = {
+          ...session.user,
+          email: token.email,
+          role: token.role ?? "user",
+        };
       }
       return session;
     },
     async authorized({ auth: session }) {
-      // 세션 존재 = signIn 게이트 통과 = 승인됨. (allowlist 재확인 불필요)
-      return Boolean(session?.user?.email);
+      // 기본 미들웨어 fallback — 실제 /admin 게이트는 proxy.ts 가 role 로 판정.
+      return session?.user?.role === "admin";
     },
   },
 });

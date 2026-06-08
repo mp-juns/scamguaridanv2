@@ -2,19 +2,25 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import dynamic from "next/dynamic";
+
+// recharts 는 무거운 클라이언트 청크 → lazy-load (초기 admin 진입 JS 에서 제외)
+const SyntheticLabelBar = dynamic(
+  () => import("../charts").then((m) => m.SyntheticLabelBar),
+  { ssr: false },
+);
+const AttemptLine = dynamic(
+  () => import("../charts").then((m) => m.AttemptLine),
+  { ssr: false },
+);
+const GlinerLabelBar = dynamic(
+  () => import("../charts").then((m) => m.GlinerLabelBar),
+  { ssr: false },
+);
+const TrainingMetricsChart = dynamic(
+  () => import("../charts").then((m) => m.TrainingMetricsChart),
+  { ssr: false },
+);
 
 type DataStats = {
   classifier: { total: number; labels: Record<string, number> };
@@ -542,22 +548,7 @@ export default function TrainingClient() {
                 <h3 className="text-sm font-semibold text-white">데이터 균형</h3>
                 <p className="text-xs text-slate-400">막대 길이가 비슷할수록 모델이 특정 유형만 편애할 가능성이 줄어듭니다.</p>
               </div>
-              <ResponsiveContainer width="100%" height={260}>
-                <BarChart data={syntheticLabelBars} layout="vertical" margin={{ left: 42, right: 12 }}>
-                  <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" horizontal={false} />
-                  <XAxis type="number" stroke="#64748b" fontSize={11} />
-                  <YAxis dataKey="label" type="category" width={86} stroke="#94a3b8" fontSize={11} />
-                  <Tooltip
-                    contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}
-                    labelStyle={{ color: "#cbd5f5" }}
-                  />
-                  <Bar dataKey="count" radius={[0, 6, 6, 0]}>
-                    {syntheticLabelBars.map((entry, index) => (
-                      <Cell key={entry.label} fill={index % 2 ? "#38bdf8" : "#22c55e"} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              <SyntheticLabelBar data={syntheticLabelBars} />
             </div>
 
             <div className="border-t border-white/10 p-5 lg:border-l lg:border-t-0">
@@ -565,21 +556,7 @@ export default function TrainingClient() {
                 <h3 className="text-sm font-semibold text-white">학습 시도별 개선</h3>
                 <p className="text-xs text-slate-400">초록선은 골고루 맞힌 정도, 보라선은 전체 정답률입니다.</p>
               </div>
-              <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={attemptBars}>
-                  <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                  <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} />
-                  <YAxis stroke="#64748b" fontSize={11} domain={[0, 1]} tickFormatter={(v) => `${Math.round(Number(v) * 100)}%`} />
-                  <Tooltip
-                    formatter={(value) => pct(value)}
-                    contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}
-                    labelStyle={{ color: "#cbd5f5" }}
-                  />
-                  <Legend />
-                  <Line type="monotone" dataKey="f1" name="골고루 맞힌 정도" stroke="#22c55e" strokeWidth={2} />
-                  <Line type="monotone" dataKey="accuracy" name="전체 정답률" stroke="#a78bfa" strokeWidth={2} />
-                </LineChart>
-              </ResponsiveContainer>
+              <AttemptLine data={attemptBars} />
             </div>
           </div>
         </section>
@@ -653,22 +630,7 @@ export default function TrainingClient() {
               {stats?.gliner.label_count ?? 0} labels · {(stats?.gliner.total_entities ?? 0).toLocaleString("ko-KR")} entities
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={320}>
-            <BarChart data={glinerLabelBars} layout="vertical" margin={{ left: 94, right: 14 }}>
-              <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" horizontal={false} />
-              <XAxis type="number" stroke="#64748b" fontSize={11} />
-              <YAxis dataKey="label" type="category" width={132} stroke="#94a3b8" fontSize={11} />
-              <Tooltip
-                contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}
-                labelStyle={{ color: "#cbd5f5" }}
-              />
-              <Bar dataKey="count" radius={[0, 6, 6, 0]}>
-                {glinerLabelBars.map((entry, index) => (
-                  <Cell key={entry.label} fill={index < 6 ? "#38bdf8" : "#818cf8"} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
+          <GlinerLabelBar data={glinerLabelBars} />
         </section>
       )}
 
@@ -953,37 +915,11 @@ export default function TrainingClient() {
               {chartData.length > 0 && (
                 <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3">
                   <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">메트릭 그래프</div>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <LineChart data={chartData}>
-                      <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                      <XAxis dataKey="step" stroke="#64748b" fontSize={11} />
-                      <YAxis stroke="#64748b" fontSize={11} />
-                      <Tooltip
-                        contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}
-                        labelStyle={{ color: "#cbd5f5" }}
-                      />
-                      <Legend />
-                      {hasClassifierChart && (
-                        <>
-                          <Line type="monotone" dataKey="loss" stroke="#22d3ee" dot={false} connectNulls />
-                          <Line type="monotone" dataKey="eval_loss" stroke="#f97316" dot={false} connectNulls />
-                          <Line type="monotone" dataKey="eval_macro_f1" stroke="#22c55e" dot={false} connectNulls />
-                          <Line type="monotone" dataKey="eval_accuracy" stroke="#a78bfa" dot={false} connectNulls />
-                        </>
-                      )}
-                      {hasGlinerChart && (
-                        <Line
-                          type="monotone"
-                          dataKey="gliner_progress"
-                          name="gliner_progress"
-                          stroke="#38bdf8"
-                          strokeWidth={2}
-                          dot
-                          connectNulls
-                        />
-                      )}
-                    </LineChart>
-                  </ResponsiveContainer>
+                  <TrainingMetricsChart
+                    data={chartData}
+                    hasClassifierChart={hasClassifierChart}
+                    hasGlinerChart={hasGlinerChart}
+                  />
                   {hasGlinerChart && (
                     <div className="mt-2 text-xs text-slate-500">
                       GLiNER 0.2.x 환경에서 trainer API 가 없으면 train/val JSON 준비 완료까지의 진행값을 표시합니다.

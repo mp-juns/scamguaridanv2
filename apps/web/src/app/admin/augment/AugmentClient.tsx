@@ -1,18 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import dynamic from "next/dynamic";
+
+// recharts 는 무거운 클라이언트 청크 → lazy-load (초기 admin 진입 JS 에서 제외)
+const CoverageBar = dynamic(
+  () => import("../charts").then((m) => m.CoverageBar),
+  { ssr: false },
+);
+const AugmentProgressLine = dynamic(
+  () => import("../charts").then((m) => m.AugmentProgressLine),
+  { ssr: false },
+);
 
 type SeedStats = {
   scam_types: string[];
@@ -270,19 +269,7 @@ export default function AugmentClient() {
             총 {stats?.total ?? 0}개 · 굶은 유형(≤{stats?.starved_threshold ?? 3}) {stats?.starved.length ?? 0}개
           </p>
         </div>
-        <ResponsiveContainer width="100%" height={240}>
-          <BarChart data={coverageData} margin={{ top: 8, right: 8, bottom: 40, left: 0 }}>
-            <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-            <XAxis dataKey="type" stroke="#64748b" fontSize={10} angle={-35} textAnchor="end" interval={0} height={60} />
-            <YAxis stroke="#64748b" fontSize={11} allowDecimals={false} />
-            <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} labelStyle={{ color: "#cbd5f5" }} />
-            <Bar dataKey="count">
-              {coverageData.map((d) => (
-                <Cell key={d.type} fill={d.starved ? "#f43f5e" : "#22d3ee"} />
-              ))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
+        <CoverageBar data={coverageData} />
         <p className="mt-1 text-xs text-slate-500">빨강 = 굶은 유형 (씨앗 부족 → 학습 F1 낮음)</p>
       </section>
 
@@ -495,15 +482,7 @@ export default function AugmentClient() {
               )}
 
               {progressData.length > 1 && (
-                <ResponsiveContainer width="100%" height={180}>
-                  <LineChart data={progressData}>
-                    <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                    <XAxis dataKey="done" stroke="#64748b" fontSize={10} />
-                    <YAxis stroke="#64748b" fontSize={10} allowDecimals={false} />
-                    <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} labelStyle={{ color: "#cbd5f5" }} />
-                    <Line type="monotone" dataKey="generated" stroke="#22d3ee" dot={false} connectNulls />
-                  </LineChart>
-                </ResponsiveContainer>
+                <AugmentProgressLine data={progressData} />
               )}
 
               <pre

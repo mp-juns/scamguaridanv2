@@ -1,18 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import {
-  Area,
-  AreaChart,
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import dynamic from "next/dynamic";
+
+// recharts 는 무거운 클라이언트 청크 → lazy-load (초기 admin 진입 JS 에서 제외)
+const DailyCostArea = dynamic(
+  () => import("../charts").then((m) => m.DailyCostArea),
+  { ssr: false },
+);
+const ProviderBar = dynamic(
+  () => import("../charts").then((m) => m.ProviderBar),
+  { ssr: false },
+);
 
 type ApiKey = {
   id: string;
@@ -234,52 +233,10 @@ export default function PlatformClient() {
                   {fmtMoney(cost.total.usd / Math.max(1, cost.daily.length))}/일
                 </span>
               </div>
-              <ResponsiveContainer width="100%" height={220}>
-                <AreaChart
-                  data={cost.daily.map((d) => ({ ...d, label: fmtDay(d.day) }))}
-                  margin={{ top: 5, right: 8, left: 0, bottom: 5 }}
-                >
-                  <defs>
-                    <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.6} />
-                      <stop offset="100%" stopColor="#22d3ee" stopOpacity={0.05} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                  <XAxis
-                    dataKey="label"
-                    stroke="#64748b"
-                    tick={{ fontSize: 11 }}
-                    axisLine={{ stroke: "#334155" }}
-                  />
-                  <YAxis
-                    stroke="#64748b"
-                    tick={{ fontSize: 11 }}
-                    axisLine={{ stroke: "#334155" }}
-                    tickFormatter={(v: number) => (v < 1 ? `$${v.toFixed(2)}` : `$${v.toFixed(0)}`)}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "#0f172a",
-                      border: "1px solid #334155",
-                      borderRadius: 8,
-                      fontSize: 12,
-                    }}
-                    labelStyle={{ color: "#cbd5e1" }}
-                    formatter={(value, name) => {
-                      const n = typeof value === "number" ? value : Number(value ?? 0);
-                      return name === "usd" ? [fmtMoney(n), "USD"] : [`${n}회`, "호출"];
-                    }}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="usd"
-                    stroke="#22d3ee"
-                    strokeWidth={2}
-                    fill="url(#costGradient)"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
+              <DailyCostArea
+                data={cost.daily.map((d) => ({ ...d, label: fmtDay(d.day) }))}
+                fmtMoney={fmtMoney}
+              />
             </div>
           )}
 
@@ -287,51 +244,11 @@ export default function PlatformClient() {
           {cost.by_provider.length > 0 && (
             <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/40 p-4">
               <h3 className="mb-3 text-sm font-semibold text-slate-200">🔍 프로바이더 USD 비중</h3>
-              <ResponsiveContainer
-                width="100%"
-                height={Math.max(120, cost.by_provider.length * 38)}
-              >
-                <BarChart
-                  data={cost.by_provider}
-                  layout="vertical"
-                  margin={{ top: 0, right: 16, left: 0, bottom: 0 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={false} />
-                  <XAxis
-                    type="number"
-                    stroke="#64748b"
-                    tick={{ fontSize: 11 }}
-                    axisLine={{ stroke: "#334155" }}
-                    tickFormatter={(v: number) => (v < 1 ? `$${v.toFixed(2)}` : `$${v.toFixed(0)}`)}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="provider"
-                    stroke="#64748b"
-                    tick={{ fontSize: 12 }}
-                    axisLine={{ stroke: "#334155" }}
-                    width={92}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "#0f172a",
-                      border: "1px solid #334155",
-                      borderRadius: 8,
-                      fontSize: 12,
-                    }}
-                    labelStyle={{ color: "#cbd5e1" }}
-                    formatter={(value) => {
-                      const n = typeof value === "number" ? value : Number(value ?? 0);
-                      return [fmtMoney(n), "USD"];
-                    }}
-                  />
-                  <Bar dataKey="usd" radius={[0, 6, 6, 0]}>
-                    {cost.by_provider.map((p) => (
-                      <Cell key={p.provider} fill={providerColor(p.provider)} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              <ProviderBar
+                data={cost.by_provider}
+                fmtMoney={fmtMoney}
+                colorOf={providerColor}
+              />
             </div>
           )}
           {cost.by_key.length > 0 && (

@@ -11,16 +11,8 @@ type Flag = {
   source: string;
 };
 
-type RiskBand = {
-  min: number;
-  max: number;
-  level: string;
-  description: string;
-};
-
 type Methodology = {
   flags: Flag[];
-  risk_bands: RiskBand[];
   weights: {
     llm_flag_score_ratio: number;
     llm_entity_merge_threshold: number;
@@ -31,13 +23,6 @@ type Methodology = {
     keyword_boost_weight: number;
   };
   models: Record<string, string>;
-};
-
-const RISK_BAND_COLORS: Record<string, string> = {
-  "매우 위험": "bg-red-700/30 border-red-500 text-red-200",
-  "위험": "bg-orange-700/30 border-orange-500 text-orange-200",
-  "주의": "bg-yellow-700/30 border-yellow-500 text-yellow-200",
-  "안전": "bg-emerald-700/30 border-emerald-500 text-emerald-200",
 };
 
 function CitationGroup({ title, children }: { title: string; children: React.ReactNode }) {
@@ -131,8 +116,6 @@ export default async function MethodologyPage() {
 
   const positive = data.flags.filter((f) => f.score_delta > 0);
   const negative = data.flags.filter((f) => f.score_delta < 0);
-  // Identity Boundary — 백엔드가 risk_bands(등급)를 더 이상 노출하지 않을 수 있음. 없으면 섹션 숨김(빌드 prerender 크래시 방지).
-  const riskBands = data.risk_bands ?? [];
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,#111827_0%,#020617_60%,#000000_100%)] px-4 py-8 text-slate-100 sm:px-6 sm:py-10">
@@ -156,26 +139,6 @@ export default async function MethodologyPage() {
             맹신을 막기 위한 보수적 설계입니다.
           </p>
         </section>
-
-        {riskBands.length > 0 ? (
-        <section className="rounded-2xl border border-slate-700 bg-slate-900/60 p-6">
-          <h2 className="mb-3 text-lg font-semibold text-slate-100">위험도 등급</h2>
-          <div className="grid gap-3 sm:grid-cols-2">
-            {riskBands.map((band) => (
-              <div
-                key={band.level}
-                className={`rounded-xl border px-4 py-3 ${RISK_BAND_COLORS[band.level] ?? "bg-slate-700/30 border-slate-500 text-slate-200"}`}
-              >
-                <div className="font-mono text-xs opacity-70">
-                  {band.min}~{band.max}점
-                </div>
-                <div className="mt-1 text-lg font-semibold">{band.level}</div>
-                <div className="mt-1 text-xs opacity-80">{band.description}</div>
-              </div>
-            ))}
-          </div>
-        </section>
-        ) : null}
 
         <section className="rounded-2xl border border-slate-700 bg-slate-900/60 p-6">
           <h2 className="mb-1 text-lg font-semibold text-slate-100">

@@ -3,11 +3,14 @@
 스피커폰 양쪽 캡처 시나리오. 클라이언트(브라우저 getUserMedia + MediaRecorder)가
 **통화 시작부터 지금까지의 누적 오디오**를 ~7초마다 보내면, 백엔드가 통째로 재분석한다.
 
-왜 누적 통째 재분석인가:
-- 5초 chunk 독립 분석은 CLOVA 화자 label 이 chunk 마다 달라져 상대방/본인이 뒤집힌다
-  (whole-file 로 고친 그 문제). 누적 통째 분석은 매번 전역 일관 diarization 을 얻어 회피.
-- 기존 `stt.transcribe`(CLOVA + 역할배정) + `stream_analyze._scan_turns`(화자별 신호) +
-  tier 를 그대로 재사용 → 화자분리 품질 유지.
+실시간 윈도우는 화자 분리를 하지 않는다 (`diarize=False`):
+- 역할 배정(상대방/본인)을 건너뛰어 (1) 누적 윈도우마다 화자가 뒤집히던 flip 문제와
+  (2) 7초마다의 역할 배정 Claude 호출(비용·지연)을 *동시에* 제거.
+- 대신 전사 텍스트에 위험 시그널을 화자 무관으로 즉시 스캔(`stream_analyze._scan_text`,
+  패턴별 `agnostic` 분류) → 검출되자마자 경보.
+- 중지 시 full 분석(`window_sec==0`)만 화자 분리 1회 — 통화 후 말풍선 리뷰·음성 재생용
+  (단일 호출이라 flip 없음). matches 는 항상 화자 무관으로 통일.
+- 누적 통째 재분석은 완전한 전사 + 윈도우 sliding(window_sec)로 비용 bound 하기 위함.
 
 stateless — 서버는 상태를 안 들고, 클라이언트가 누적 오디오와 monotonic tier 를 관리.
 
@@ -71,7 +74,7 @@ async def live_analyze(
             raise HTTPException(status_code=400, detail="빈 오디오입니다.")
 
         from api_server_pkg.stream_analyze import (
-            _compute_tier, _ffmpeg_af_args, _scan_turns,
+            _compute_tier, _ffmpeg_af_args, _scan_text,
         )
 
         # 누적 오디오 → clean 16k mono wav (CLOVA: 무필터가 STT 정확도 최고)
@@ -115,11 +118,19 @@ async def live_analyze(
                 LOG.info("[live] window 트림: 전체 %.1fs → 최근 %ds (seq=%d)", dur, window_sec, seq)
 
         from pipeline import stt as _stt
-        result = await asyncio.to_thread(_stt.transcribe, str(stt_path))
-        turns = result.turns or []
+        # 실시간 윈도우(window_sec>0)는 화자 분리 skip → 역할 배정 Claude 호출 제거 +
+        # 누적 윈도우 flip 원천 소거 + 지연↓. 중지 시 full 분석(window_sec==0)만 화자 분리
+        # 1회 — 통화 후 말풍선 리뷰·재생용(단일 호출이라 flip 없음).
+        final_full = window_sec <= 0
+        result = await asyncio.to_thread(
+            _stt.transcribe, str(stt_path), diarize=final_full,
+        )
+        turns = result.turns or []  # 실시간 윈도우 []; 중지 시 화자분리 turns
 
-        # 화자별 신호 스캔 + 이 window 한정 tier (누적 tier 는 프론트가 dedup match 로 계산)
-        level, matches = _scan_turns(turns) if turns else (0, [])
+        # 화자 무관 시그널 즉시 스캔 — 검출되자마자 경보. matches 는 항상 화자 무관
+        # (speaker=None) 으로 통일해 프론트 dedup 키(flag|snippet|speaker) 일관성 유지.
+        # (window 한정 tier; 누적 tier 는 프론트가 dedup match 로 계산)
+        level, matches = _scan_text(result.text or "")
         instant_seen = any(m["instant"] for m in matches)
         cum_score = sum(m["level"] for m in matches if not m["instant"])
         tier = _compute_tier(cum_score, instant_seen, bool(matches))

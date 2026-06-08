@@ -1,6 +1,9 @@
 "use client";
 
+import { signIn } from "next-auth/react";
 import { useEffect, useRef, useState } from "react";
+
+import { GUEST_DAILY_LIMIT, bumpGuestDaily, guestOverDailyLimit } from "../guestLimit";
 
 type DetectedSignal = {
   flag: string;
@@ -182,7 +185,8 @@ function scanTranscript(text: string) {
   return { matches, level: maxLevel };
 }
 
-export default function LiveVoiceUpload() {
+export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean }) {
+  const [guestBlocked, setGuestBlocked] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   // 업로드한 파일의 blob URL — turn 별 ▶️ 재생용 (단일 모드)
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -225,7 +229,9 @@ export default function LiveVoiceUpload() {
   const liveMatchesRef = useRef<StreamMatch[]>([]); // 누적 dedup match 소스 (tier 계산용)
   const notifiedDangerRef = useRef(false); // danger OS 알림 1회 발사 가드
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const LIVE_WINDOW_SEC = 45; // 실시간 tick 윈도우 (지배 비용 bound)
+  const LIVE_WINDOW_SEC = 20; // 실시간 tick 윈도우 — CLOVA STT 가 처리할 최근 오디오 길이.
+  // 지연 지배 비용은 STT(~오디오 길이 비례) → 45→20 으로 절반. 신호 스캔은 최근 맥락만
+  // 필요하고 7초 tick + 프론트 누적 dedup 으로 과거 신호는 이미 잡혀 손실 없음.
   const liveStreamRef = useRef<MediaStream | null>(null);
   const liveChunksRef = useRef<Blob[]>([]);
   const liveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -304,7 +310,13 @@ export default function LiveVoiceUpload() {
       setAnalysisError("음성 파일을 선택해주세요.");
       return;
     }
+    // 비회원 일일 한도(홈+라이브 합산) 초과 시 분석 차단
+    if (isGuest && guestOverDailyLimit()) {
+      setGuestBlocked(true);
+      return;
+    }
     reset();
+    if (isGuest) bumpGuestDaily(); // 이번 실행을 오늘 카운트에 반영
     if (mode === "stream") {
       await runStreaming(file);
     } else {
@@ -480,6 +492,11 @@ export default function LiveVoiceUpload() {
   }
 
   async function startLive() {
+    // 비회원 일일 한도(홈+라이브 합산) 초과 시 실시간 분석 차단
+    if (isGuest && guestOverDailyLimit()) {
+      setGuestBlocked(true);
+      return;
+    }
     reset();
     setLiveError("");
     // 🔔 크롬 알림 권한 요청 — 시작 버튼 제스처 안에서. 탭 안 볼 때 OS 토스트로 경보.
@@ -508,6 +525,7 @@ export default function LiveVoiceUpload() {
         },
       });
       liveStreamRef.current = stream;
+      if (isGuest) bumpGuestDaily(); // 실시간 세션 시작 = 오늘 1회 소진
       // Opus 압축 손실 줄이려 비트레이트 ↑ (미지원 브라우저는 기본값 fallback)
       let mr: MediaRecorder;
       try {
@@ -575,21 +593,66 @@ export default function LiveVoiceUpload() {
   const signals = analysis?.detected_signals ?? analysis?.triggered_flags ?? [];
 
   return (
-    <section className="rounded-3xl border border-rose-400/30 bg-rose-500/5 p-8 backdrop-blur">
+    <section className="rounded-3xl border border-[#bbf7d0] bg-white p-8 shadow-[0_2px_12px_rgba(0,0,0,0.05)]">
+      {guestBlocked ? (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-[#191f28]/50 p-4 sm:p-6"
+          onClick={() => setGuestBlocked(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="my-auto flex w-full max-w-sm flex-col"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="relative rounded-3xl border border-[#e5e8eb] bg-white p-7 text-center shadow-[0_8px_30px_rgba(0,0,0,0.12)]">
+              <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-[#fff1f0] text-3xl">
+                ⛔
+              </span>
+              <h3 className="mt-4 text-lg font-bold text-[#191f28]">
+                오늘 비회원 분석 한도를 모두 썼어요
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-[#4e5968]">
+                비회원은 하루 {GUEST_DAILY_LIMIT}회까지 분석할 수 있어요(라이브 음성 포함).
+                로그인하면 이어서 계속 이용할 수 있어요.
+              </p>
+              <div className="mt-6 space-y-2">
+                <button
+                  type="button"
+                  onClick={() => signIn("google", { callbackUrl: "/live" })}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#3182f6] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#1b64da]"
+                >
+                  <svg className="h-4 w-4" viewBox="0 0 48 48" aria-hidden>
+                    <path fill="#fff" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
+                  </svg>
+                  Google 로 로그인
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setGuestBlocked(false)}
+                  className="inline-flex w-full items-center justify-center rounded-2xl px-5 py-3 text-sm font-semibold text-[#8b95a1] transition hover:bg-[#f2f4f6]"
+                >
+                  닫기
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-center gap-3">
-        <h2 className="text-xl font-semibold text-white">
+        <h2 className="text-xl font-semibold text-[#191f28]">
           🎧 녹음 파일로 미리 테스트
         </h2>
-        <span className="rounded-full border border-amber-300/40 bg-amber-400/10 px-2.5 py-0.5 text-[10px] font-medium tracking-wide text-amber-200 uppercase">
+        <span className="rounded-full border border-amber-300/40 bg-amber-400/10 px-2.5 py-0.5 text-[10px] font-medium tracking-wide text-amber-700 uppercase">
           Preview · 사전 녹음 sandbox
         </span>
       </div>
-      <p className="mt-2 text-xs leading-6 text-slate-400">
+      <p className="mt-2 text-xs leading-6 text-[#8b95a1]">
         모드 선택 — <strong>전체 분석</strong>: 전사 + 분석 두 API 병렬 1회 호출,{" "}
         <strong>스트리밍 분석</strong>: 1분씩 잘라 각 청크 도착 즉시 표시 + 위험 신호 시 경보음 (v4 시뮬).
       </p>
 
-      <div className="mt-4 inline-flex rounded-full border border-rose-400/30 bg-slate-950/60 p-1 text-xs">
+      <div className="mt-4 inline-flex rounded-full border border-[#bbf7d0] bg-white p-1 text-xs">
         {(
           [
             { v: "single" as Mode, label: "🔍 전체 분석" },
@@ -607,8 +670,8 @@ export default function LiveVoiceUpload() {
             }}
             className={`rounded-full px-4 py-1.5 transition ${
               mode === opt.v
-                ? "bg-rose-500/80 text-white shadow"
-                : "text-slate-300 hover:text-white"
+                ? "bg-[#16a34a] text-white shadow"
+                : "text-[#4e5968] hover:text-[#191f28]"
             } disabled:cursor-not-allowed disabled:opacity-50`}
           >
             {opt.label}
@@ -618,8 +681,8 @@ export default function LiveVoiceUpload() {
 
       {mode !== "live" && (
       <form onSubmit={handleSubmit} className="mt-5 space-y-4">
-        <label className="flex flex-col gap-2 text-sm text-slate-200">
-          <span className="font-medium text-rose-100">
+        <label className="flex flex-col gap-2 text-sm text-[#333d4b]">
+          <span className="font-medium text-[#15803d]">
             음성 파일 (mp3, wav, m4a 등)
           </span>
           <input
@@ -630,10 +693,10 @@ export default function LiveVoiceUpload() {
               reset();
             }}
             disabled={submitting}
-            className="block w-full cursor-pointer rounded-2xl border border-rose-400/30 bg-slate-950/40 px-4 py-3 text-sm text-slate-200 file:mr-4 file:rounded-full file:border-0 file:bg-rose-500/20 file:px-4 file:py-1.5 file:text-xs file:font-semibold file:text-rose-100 hover:file:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+            className="block w-full cursor-pointer rounded-2xl border border-[#bbf7d0] bg-white px-4 py-3 text-sm text-[#333d4b] file:mr-4 file:rounded-full file:border-0 file:bg-[#dcfce7] file:px-4 file:py-1.5 file:text-xs file:font-semibold file:text-[#15803d] hover:file:bg-[#bbf7d0] disabled:cursor-not-allowed disabled:opacity-50"
           />
           {file && (
-            <span className="text-xs text-slate-400">
+            <span className="text-xs text-[#8b95a1]">
               선택됨: {file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)
             </span>
           )}
@@ -642,7 +705,7 @@ export default function LiveVoiceUpload() {
         <button
           type="submit"
           disabled={!file || submitting}
-          className="rounded-2xl bg-rose-500/80 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-rose-950/30 transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-slate-700/50 disabled:text-slate-400 disabled:shadow-none"
+          className="rounded-2xl bg-[#16a34a] px-5 py-2.5 text-sm font-semibold text-white shadow-lg transition hover:bg-[#15803d] disabled:cursor-not-allowed disabled:bg-[#e5e8eb] disabled:text-[#8b95a1] disabled:shadow-none"
         >
           {submitting ? "처리 중..." : "🚨 전사 + 신호 검출 시작"}
         </button>
@@ -651,7 +714,7 @@ export default function LiveVoiceUpload() {
 
       {/* === 🎤 실시간 마이크 모드 === */}
       {mode === "live" && (
-        <section className="mt-5 rounded-2xl border border-rose-400/20 bg-slate-950/60 p-5">
+        <section className="mt-5 rounded-2xl border border-[#bbf7d0] bg-white p-5">
           {tier >= 3 && !dangerDismissed && (
             <DangerOverlay
               matches={cumulativeMatches}
@@ -659,21 +722,21 @@ export default function LiveVoiceUpload() {
             />
           )}
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-base font-semibold text-white">
-              🎤 실시간 마이크 분석 {liveActive && <span className="animate-pulse text-rose-400">● REC</span>}
+            <h3 className="text-base font-semibold text-[#191f28]">
+              🎤 실시간 마이크 분석 {liveActive && <span className="animate-pulse text-rose-600">● REC</span>}
             </h3>
             {liveLatency > 0 && (
-              <span className="text-[10px] text-slate-400">분석 {liveLatency}ms</span>
+              <span className="text-[10px] text-[#8b95a1]">분석 {liveLatency}ms</span>
             )}
           </div>
-          <p className="mt-2 text-xs leading-5 text-slate-400">
+          <p className="mt-2 text-xs leading-5 text-[#8b95a1]">
             통화를 <strong>스피커폰</strong>으로 두고 시작하세요. ~7초마다 최근 음성을 분석해
             화자별 위험 신호를 표시하고, 결정적 신호(본인 민감정보 발설·송금 동의) 시 🔴 경보합니다.
             시작 시 <strong>알림 권한</strong>을 허용하면, 다른 화면을 보고 있어도 🔔 OS 알림으로 경보가 떠요.
           </p>
 
           {liveError && (
-            <div className="mt-3 rounded-xl border border-rose-400/50 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+            <div className="mt-3 rounded-xl border border-rose-400/50 bg-rose-500/10 px-4 py-3 text-sm text-rose-700">
               {liveError}
             </div>
           )}
@@ -683,7 +746,7 @@ export default function LiveVoiceUpload() {
               <button
                 type="button"
                 onClick={() => void startLive()}
-                className="rounded-2xl bg-rose-500/80 px-5 py-2.5 text-sm font-semibold text-white shadow-lg transition hover:bg-rose-500"
+                className="rounded-2xl bg-[#16a34a] px-5 py-2.5 text-sm font-semibold text-white shadow-lg transition hover:bg-[#15803d]"
               >
                 🎤 실시간 분석 시작
               </button>
@@ -691,7 +754,7 @@ export default function LiveVoiceUpload() {
               <button
                 type="button"
                 onClick={stopLive}
-                className="rounded-2xl border border-rose-400/50 bg-slate-900/60 px-5 py-2.5 text-sm font-semibold text-rose-100 transition hover:bg-slate-800/60"
+                className="rounded-2xl border border-[#e5e8eb] bg-[#f2f4f6] px-5 py-2.5 text-sm font-semibold text-[#4e5968] transition hover:bg-[#eef1f4]"
               >
                 ⏹ 중지
               </button>
@@ -716,15 +779,15 @@ export default function LiveVoiceUpload() {
 
           {/* 화자 분리 대화 (말풍선) — 중지 후 클릭하면 해당 음성 재생 */}
           {liveFinalizing ? (
-            <div className="mt-4 rounded-xl border border-dashed border-white/15 bg-slate-950/40 px-4 py-6 text-center text-sm text-slate-400">
+            <div className="mt-4 rounded-xl border border-dashed border-[#e5e8eb] bg-white px-4 py-6 text-center text-sm text-[#8b95a1]">
               ⏳ 전체 통화 분석 마무리 중… (완료되면 말풍선 클릭으로 음성 재생 가능)
             </div>
           ) : liveTurns.length > 0 ? (
-            <div className="mt-4 rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3">
-              <div className="mb-2 flex items-center justify-between text-[11px] font-semibold text-slate-300">
+            <div className="mt-4 rounded-xl border border-[#e5e8eb] bg-white px-4 py-3">
+              <div className="mb-2 flex items-center justify-between text-[11px] font-semibold text-[#4e5968]">
                 <span>화자 분리 대화</span>
                 {liveAudioUrl ? (
-                  <span className="text-emerald-300">▶️ 말풍선 클릭 → 해당 음성 재생</span>
+                  <span className="text-emerald-600">▶️ 말풍선 클릭 → 해당 음성 재생</span>
                 ) : (
                   <span className="opacity-60">중지하면 말풍선 클릭으로 음성 재생</span>
                 )}
@@ -733,9 +796,9 @@ export default function LiveVoiceUpload() {
             </div>
           ) : (
             liveTranscript && (
-              <div className="mt-4 rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3">
-                <div className="mb-1 text-[11px] font-semibold text-slate-300">실시간 전사</div>
-                <p className="max-h-40 overflow-y-auto whitespace-pre-wrap text-sm leading-6 text-slate-100">
+              <div className="mt-4 rounded-xl border border-[#e5e8eb] bg-white px-4 py-3">
+                <div className="mb-1 text-[11px] font-semibold text-[#4e5968]">실시간 전사</div>
+                <p className="max-h-40 overflow-y-auto whitespace-pre-wrap text-sm leading-6 text-[#191f28]">
                   {liveTranscript}
                 </p>
               </div>
@@ -744,8 +807,8 @@ export default function LiveVoiceUpload() {
 
           {/* 누적 검출 신호 */}
           {cumulativeMatches.length > 0 && (
-            <div className="mt-4 rounded-xl border border-rose-400/30 bg-rose-500/5 p-4">
-              <h4 className="text-sm font-semibold text-rose-100">
+            <div className="mt-4 rounded-xl border border-[#e5e8eb] bg-white p-4">
+              <h4 className="text-sm font-semibold text-[#191f28]">
                 🚨 검출 신호 ({cumulativeMatches.length}개)
               </h4>
               <ul className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
@@ -755,7 +818,7 @@ export default function LiveVoiceUpload() {
                     className={`rounded-full px-2 py-0.5 ${
                       m.instant
                         ? "border border-rose-400/60 bg-rose-500/20 text-rose-50"
-                        : "border border-amber-400/40 bg-amber-500/15 text-amber-100"
+                        : "border border-amber-400/40 bg-amber-500/15 text-amber-700"
                     }`}
                   >
                     {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko}
@@ -765,7 +828,7 @@ export default function LiveVoiceUpload() {
             </div>
           )}
 
-          <p className="mt-4 text-[11px] leading-5 text-slate-500">
+          <p className="mt-4 text-[11px] leading-5 text-[#8b95a1]">
             ⚠️ iOS 는 통화 중 브라우저 마이크 접근이 제한됩니다 — 스피커폰 + 별도 기기 권장.
             ScamGuardian 은 신호만 알려드려요, 최종 판단은 본인이.
           </p>
@@ -773,9 +836,9 @@ export default function LiveVoiceUpload() {
       )}
 
       {mode === "single" && (transcriptPhase !== "idle" || analysisPhase !== "idle") && (
-        <section className="mt-6 rounded-2xl border border-rose-400/20 bg-slate-950/60 p-5">
+        <section className="mt-6 rounded-2xl border border-[#bbf7d0] bg-white p-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-base font-semibold text-white">🔍 검출 결과</h3>
+            <h3 className="text-base font-semibold text-[#191f28]">🔍 검출 결과</h3>
             <div className="flex flex-wrap gap-2 text-[10px]">
               <PhaseBadge phase={transcriptPhase} prefix="전사" />
               <PhaseBadge phase={analysisPhase} prefix="분석" />
@@ -783,44 +846,44 @@ export default function LiveVoiceUpload() {
           </div>
 
           {/* === 1) 전사된 텍스트 (검출 결과 안에 직접 노출) === */}
-          <div className="mt-4 rounded-xl border border-white/10 bg-slate-950/80 p-4">
+          <div className="mt-4 rounded-xl border border-[#e5e8eb] bg-white p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h4 className="text-sm font-semibold text-rose-100">
+              <h4 className="text-sm font-semibold text-[#191f28]">
                 📝 전사된 텍스트
               </h4>
-              <code className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] text-slate-400">
+              <code className="rounded bg-[#f2f4f6] px-1.5 py-0.5 text-[10px] text-[#8b95a1]">
                 POST /api/transcribe-upload
               </code>
             </div>
             {transcriptPhase === "running" && (
-              <p className="mt-3 text-sm text-slate-400">음성 인식 중...</p>
+              <p className="mt-3 text-sm text-[#8b95a1]">음성 인식 중...</p>
             )}
             {transcriptPhase === "error" && (
-              <p className="mt-3 text-sm text-rose-200">{transcriptError}</p>
+              <p className="mt-3 text-sm text-rose-700">{transcriptError}</p>
             )}
             {transcript && (
               <>
                 <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
                   {transcript.language && (
-                    <span className="rounded-full bg-white/5 px-2 py-0.5 text-slate-300">
+                    <span className="rounded-full bg-white px-2 py-0.5 text-[#4e5968]">
                       lang: {transcript.language}
                     </span>
                   )}
                   {typeof transcript.latency_ms === "number" && (
-                    <span className="rounded-full bg-white/5 px-2 py-0.5 text-slate-300">
+                    <span className="rounded-full bg-white px-2 py-0.5 text-[#4e5968]">
                       {transcript.latency_ms} ms
                     </span>
                   )}
-                  <span className="rounded-full bg-white/5 px-2 py-0.5 text-slate-300">
+                  <span className="rounded-full bg-white px-2 py-0.5 text-[#4e5968]">
                     {transcript.transcript_text.length} chars
                   </span>
                 </div>
                 {transcript.turns && transcript.turns.length > 0 ? (
-                  <div className="mt-3 max-h-96 overflow-y-auto rounded-lg border border-white/5 bg-black/40 p-3">
+                  <div className="mt-3 max-h-96 overflow-y-auto rounded-lg border border-[#eef1f4] bg-[#f2f4f6] p-3">
                     <Conversation turns={transcript.turns} audioUrl={audioUrl} />
                   </div>
                 ) : (
-                  <p className="mt-3 max-h-72 overflow-y-auto whitespace-pre-wrap rounded-lg border border-white/5 bg-black/40 p-3 text-sm leading-7 text-slate-100">
+                  <p className="mt-3 max-h-72 overflow-y-auto whitespace-pre-wrap rounded-lg border border-[#eef1f4] bg-[#f2f4f6] p-3 text-sm leading-7 text-[#191f28]">
                     {transcript.transcript_text || "(빈 텍스트)"}
                   </p>
                 )}
@@ -829,33 +892,33 @@ export default function LiveVoiceUpload() {
           </div>
 
           {/* === 2) 신호 검출 (같은 검출 결과 컨테이너 안) === */}
-          <div className="mt-4 rounded-xl border border-white/10 bg-slate-950/80 p-4">
+          <div className="mt-4 rounded-xl border border-[#e5e8eb] bg-white p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h4 className="text-sm font-semibold text-rose-100">
+              <h4 className="text-sm font-semibold text-[#191f28]">
                 🚨 검출된 신호
               </h4>
-              <code className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] text-slate-400">
+              <code className="rounded bg-[#f2f4f6] px-1.5 py-0.5 text-[10px] text-[#8b95a1]">
                 POST /api/analyze-upload
               </code>
             </div>
             {analysisPhase === "running" && (
-              <p className="mt-3 text-sm text-slate-400">
+              <p className="mt-3 text-sm text-[#8b95a1]">
                 분류 · 엔티티 추출 · 검출 중...
               </p>
             )}
             {analysisPhase === "error" && (
-              <p className="mt-3 text-sm text-rose-200">{analysisError}</p>
+              <p className="mt-3 text-sm text-rose-700">{analysisError}</p>
             )}
             {analysis && (
               <>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   {analysis.scam_type && (
-                    <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-slate-200">
+                    <span className="rounded-full bg-[#f2f4f6] px-3 py-1 text-xs text-[#333d4b]">
                       추정 유형: {analysis.scam_type}
                     </span>
                   )}
                   {typeof analysis.classification_confidence === "number" && (
-                    <span className="rounded-full bg-white/5 px-3 py-1 text-xs text-slate-300">
+                    <span className="rounded-full bg-white px-3 py-1 text-xs text-[#4e5968]">
                       신뢰도 {Math.round(analysis.classification_confidence * 100)}%
                     </span>
                   )}
@@ -863,20 +926,20 @@ export default function LiveVoiceUpload() {
 
                 {singleScan.matches.length > 0 && (
                   <div className="mt-3 rounded-xl border border-rose-400/30 bg-rose-500/10 p-3">
-                    <div className="text-xs font-semibold text-rose-100">
+                    <div className="text-xs font-semibold text-rose-700">
                       🔎 키워드 검출 (regex backup · {singleScan.matches.length}개)
                     </div>
                     <ul className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
                       {singleScan.matches.map((m, i) => (
                         <li
                           key={`scan-${m.flag}-${i}`}
-                          className="rounded-full border border-rose-400/40 bg-rose-500/15 px-2 py-0.5 text-rose-100"
+                          className="rounded-full border border-rose-400/40 bg-rose-500/15 px-2 py-0.5 text-rose-700"
                         >
                           {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · "{m.snippet}"
                         </li>
                       ))}
                     </ul>
-                    <p className="mt-2 text-[10px] text-rose-200/70">
+                    <p className="mt-2 text-[10px] text-rose-600/70">
                       pipeline 분류기·LLM 이 놓쳐도 명백한 패턴은 여기로 surface.
                     </p>
                   </div>
@@ -887,14 +950,14 @@ export default function LiveVoiceUpload() {
                     {signals.map((s, i) => (
                       <li
                         key={`${s.flag}-${i}`}
-                        className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs"
+                        className="rounded-xl border border-[#e5e8eb] bg-white px-3 py-2 text-xs"
                       >
-                        <div className="font-semibold text-rose-100">
+                        <div className="font-semibold text-rose-700">
                           {flagLabel(s)}
                         </div>
-                        <div className="text-slate-400">{s.flag}</div>
+                        <div className="text-[#8b95a1]">{s.flag}</div>
                         {s.rationale && (
-                          <div className="mt-1 text-[11px] leading-5 text-slate-400">
+                          <div className="mt-1 text-[11px] leading-5 text-[#8b95a1]">
                             {s.rationale}
                           </div>
                         )}
@@ -902,19 +965,19 @@ export default function LiveVoiceUpload() {
                     ))}
                   </ul>
                 ) : singleScan.matches.length === 0 ? (
-                  <p className="mt-3 text-sm text-slate-400">
+                  <p className="mt-3 text-sm text-[#8b95a1]">
                     검출된 위험 신호가 없습니다.
                   </p>
                 ) : (
-                  <p className="mt-3 text-xs text-slate-500">
+                  <p className="mt-3 text-xs text-[#8b95a1]">
                     pipeline 검출 신호 없음 — 위 키워드 검출만 surface 됨.
                   </p>
                 )}
-                <p className="mt-3 text-[11px] leading-5 text-slate-500">
+                <p className="mt-3 text-[11px] leading-5 text-[#8b95a1]">
                   ScamGuardian 은 신호 검출만 보고합니다. 자세한 근거는{" "}
                   <a
                     href="/evidence"
-                    className="text-rose-300 underline hover:text-rose-200"
+                    className="text-[#16a34a] underline hover:text-[#15803d]"
                   >
                     EVIDENCE
                   </a>{" "}
@@ -927,16 +990,16 @@ export default function LiveVoiceUpload() {
       )}
 
       {mode === "stream" && streamPhase !== "idle" && (
-        <section className="mt-6 rounded-2xl border border-rose-400/20 bg-slate-950/60 p-5">
+        <section className="mt-6 rounded-2xl border border-[#bbf7d0] bg-white p-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-base font-semibold text-white">
+            <h3 className="text-base font-semibold text-[#191f28]">
               🔴 실시간 검출 결과 (1분씩 스트리밍)
             </h3>
             <PhaseBadge phase={streamPhase} prefix="스트림" />
           </div>
 
           {streamError && (
-            <div className="mt-3 rounded-xl border border-rose-400/50 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+            <div className="mt-3 rounded-xl border border-rose-400/50 bg-rose-500/10 px-4 py-3 text-sm text-rose-700">
               {streamError}
             </div>
           )}
@@ -967,12 +1030,12 @@ export default function LiveVoiceUpload() {
           {tier === 2 && <CautionBanner matches={cumulativeMatches} />}
 
           {/* 진행률 */}
-          <div className="mt-4 flex items-center gap-3 text-xs text-slate-300">
+          <div className="mt-4 flex items-center gap-3 text-xs text-[#4e5968]">
             <span>
               진행: {streamHistory.length}
               {streamTotal > 0 && ` / ${streamTotal}`} 청크
             </span>
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/5">
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white">
               <div
                 className="h-full bg-rose-400/70 transition-all"
                 style={{
@@ -992,7 +1055,7 @@ export default function LiveVoiceUpload() {
             const activeChunk = streamHistory[activeIdx];
             return (
               <div className="mt-4">
-                <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-300">
+                <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-[#4e5968]">
                   <span className="font-semibold">청크 보기:</span>
                   <div className="flex flex-wrap gap-1.5">
                     {streamHistory.map((c, idx) => {
@@ -1005,7 +1068,7 @@ export default function LiveVoiceUpload() {
                           ? "border-amber-400/40"
                           : c.alert_level === 1
                           ? "border-yellow-400/30"
-                          : "border-white/20";
+                          : "border-[#e5e8eb]";
                       return (
                         <button
                           key={c.chunk_index}
@@ -1016,7 +1079,7 @@ export default function LiveVoiceUpload() {
                           className={`rounded-full border px-2.5 py-0.5 transition ${tone} ${
                             isActive
                               ? "bg-rose-500/30 text-rose-50"
-                              : "bg-slate-900/40 text-slate-300 hover:bg-slate-800/60"
+                              : "bg-[#f2f4f6]/40 text-[#4e5968] hover:bg-[#eef1f4]"
                           }`}
                           title={`${fmtTime(c.start_sec)} ~ ${fmtTime(c.end_sec)}${
                             c.matches.length > 0
@@ -1037,7 +1100,7 @@ export default function LiveVoiceUpload() {
                     <button
                       type="button"
                       onClick={() => setSelectedChunkIndex(null)}
-                      className="rounded-full border border-rose-400/40 bg-rose-500/15 px-2.5 py-0.5 text-rose-100 hover:bg-rose-500/25"
+                      className="rounded-full border border-rose-400/40 bg-rose-500/15 px-2.5 py-0.5 text-rose-700 hover:bg-rose-500/25"
                     >
                       최신 follow ↑
                     </button>
@@ -1045,11 +1108,11 @@ export default function LiveVoiceUpload() {
                 </div>
 
                 <div className="mb-1.5 flex items-center justify-between gap-2">
-                  <h4 className="text-sm font-semibold text-rose-100">
+                  <h4 className="text-sm font-semibold text-[#191f28]">
                     📝 전사 청크 {activeIdx + 1}/{streamHistory.length}
                     {selectedChunkIndex === null ? " (최신 follow)" : " (이전 보기)"}
                   </h4>
-                  <span className="text-[10px] text-slate-400">
+                  <span className="text-[10px] text-[#8b95a1]">
                     {fmtTime(activeChunk.start_sec)} ~ {fmtTime(activeChunk.end_sec)}
                     {" · "}
                     {activeChunk.latency_ms} ms
@@ -1057,7 +1120,7 @@ export default function LiveVoiceUpload() {
                 </div>
                 <ChunkRow chunk={activeChunk} />
                 {streamPhase === "running" && selectedChunkIndex === null && (
-                  <div className="mt-1.5 rounded-xl border border-dashed border-white/10 bg-slate-950/40 px-4 py-2 text-[11px] text-slate-500">
+                  <div className="mt-1.5 rounded-xl border border-dashed border-[#e5e8eb] bg-white px-4 py-2 text-[11px] text-[#8b95a1]">
                     다음 청크 처리 중 — 도착 시 자동으로 최신으로 이동. 위 칩에서 이전 청크 클릭하면 거기 머무름.
                   </div>
                 )}
@@ -1065,15 +1128,15 @@ export default function LiveVoiceUpload() {
             );
           })()}
           {streamHistory.length === 0 && (
-            <div className="mt-4 rounded-xl border border-dashed border-white/10 bg-slate-950/40 px-4 py-3 text-xs text-slate-400">
+            <div className="mt-4 rounded-xl border border-dashed border-[#e5e8eb] bg-white px-4 py-3 text-xs text-[#8b95a1]">
               첫 청크 처리 대기 중...
             </div>
           )}
 
           {/* === 누적 검출 신호 — 청크 사라져도 유지 === */}
           {cumulativeMatches.length > 0 && (
-            <div className="mt-4 rounded-xl border border-rose-400/30 bg-rose-500/5 p-4">
-              <h4 className="text-sm font-semibold text-rose-100">
+            <div className="mt-4 rounded-xl border border-[#e5e8eb] bg-white p-4">
+              <h4 className="text-sm font-semibold text-[#191f28]">
                 🚨 누적 검출 신호 ({cumulativeMatches.length}개)
               </h4>
               <ul className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
@@ -1084,8 +1147,8 @@ export default function LiveVoiceUpload() {
                       m.level >= 3
                         ? "border border-rose-400/60 bg-rose-500/20 text-rose-50"
                         : m.level === 2
-                        ? "border border-amber-400/40 bg-amber-500/15 text-amber-100"
-                        : "border border-yellow-400/30 bg-yellow-500/10 text-yellow-100"
+                        ? "border border-amber-400/40 bg-amber-500/15 text-amber-700"
+                        : "border border-yellow-400/30 bg-yellow-500/10 text-yellow-700"
                     }`}
                   >
                     {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · "{m.snippet}"
@@ -1095,10 +1158,10 @@ export default function LiveVoiceUpload() {
             </div>
           )}
 
-          <p className="mt-4 text-[11px] leading-5 text-slate-500">
+          <p className="mt-4 text-[11px] leading-5 text-[#8b95a1]">
             ScamGuardian 은 신호 검출만 보고합니다 — 판정은 통합 기업의 logic.
             자세한 근거는{" "}
-            <a href="/evidence" className="text-rose-300 underline hover:text-rose-200">
+            <a href="/evidence" className="text-[#16a34a] underline hover:text-[#15803d]">
               EVIDENCE
             </a>
             .
@@ -1134,7 +1197,7 @@ function CautionBanner({ matches }: { matches: StreamMatch[] }) {
   return (
     <div
       role="alert"
-      className="mt-4 flex animate-pulse items-start gap-3 rounded-2xl border border-amber-400/50 bg-amber-500/15 px-5 py-4 text-amber-100"
+      className="mt-4 flex animate-pulse items-start gap-3 rounded-2xl border border-amber-400/50 bg-amber-500/15 px-5 py-4 text-amber-700"
     >
       <div className="text-2xl leading-none">⚠️</div>
       <div>
@@ -1177,7 +1240,7 @@ function DangerOverlay({
           {picked.action}
         </div>
       )}
-      <div className="mt-3 max-w-md text-sm text-rose-100/90">
+      <div className="mt-3 max-w-md text-sm text-rose-50/90">
         위험 신호가 감지되었습니다. ScamGuardian 은 신호만 알려드려요 — 최종 판단은 본인이 하세요.
       </div>
       <button
@@ -1199,7 +1262,7 @@ function ChunkRow({ chunk }: { chunk: StreamChunk }) {
       ? "border-amber-400/40 bg-amber-500/10"
       : chunk.alert_level === 1
       ? "border-yellow-400/30 bg-yellow-500/5"
-      : "border-white/10 bg-white/5";
+      : "border-[#e5e8eb] bg-white";
   const badge =
     chunk.alert_level >= 3
       ? { label: "DANGER", tone: "bg-rose-500/80 text-white" }
@@ -1207,16 +1270,16 @@ function ChunkRow({ chunk }: { chunk: StreamChunk }) {
       ? { label: "WARN", tone: "bg-amber-500/80 text-white" }
       : chunk.alert_level === 1
       ? { label: "WATCH", tone: "bg-yellow-400/60 text-slate-900" }
-      : { label: "OK", tone: "bg-emerald-500/30 text-emerald-100" };
+      : { label: "OK", tone: "bg-emerald-500/30 text-emerald-700" };
   return (
     <li className={`rounded-xl border px-4 py-3 ${tone}`}>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-        <div className="flex items-center gap-2 text-slate-200">
+        <div className="flex items-center gap-2 text-[#333d4b]">
           <span className="font-semibold">청크 {chunk.chunk_index + 1}</span>
-          <span className="text-slate-400">
+          <span className="text-[#8b95a1]">
             {fmtTime(chunk.start_sec)} ~ {fmtTime(chunk.end_sec)}
           </span>
-          <span className="text-slate-500">· {chunk.latency_ms} ms</span>
+          <span className="text-[#8b95a1]">· {chunk.latency_ms} ms</span>
         </div>
         <span
           className={`rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide ${badge.tone}`}
@@ -1229,18 +1292,18 @@ function ChunkRow({ chunk }: { chunk: StreamChunk }) {
           <Conversation turns={chunk.turns} />
         </div>
       ) : chunk.transcript ? (
-        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-100">
+        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#191f28]">
           {chunk.transcript}
         </p>
       ) : (
-        <p className="mt-2 text-sm italic text-slate-500">(빈 전사)</p>
+        <p className="mt-2 text-sm italic text-[#8b95a1]">(빈 전사)</p>
       )}
       {chunk.matches.length > 0 && (
         <ul className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
           {chunk.matches.map((m, i) => (
             <li
               key={`${m.flag}-${i}`}
-              className="rounded-full border border-rose-400/40 bg-rose-500/10 px-2 py-0.5 text-rose-100"
+              className="rounded-full border border-rose-400/40 bg-rose-500/10 px-2 py-0.5 text-rose-700"
             >
               {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · "{m.snippet}"
             </li>
@@ -1255,13 +1318,13 @@ function PhaseBadge({ phase, prefix }: { phase: Phase; prefix: string }) {
   const badge = (() => {
     switch (phase) {
       case "running":
-        return { label: "처리 중", tone: "border-amber-300/40 bg-amber-400/10 text-amber-100" };
+        return { label: "처리 중", tone: "border-amber-300/40 bg-amber-400/10 text-amber-700" };
       case "done":
-        return { label: "완료", tone: "border-emerald-300/40 bg-emerald-400/10 text-emerald-100" };
+        return { label: "완료", tone: "border-emerald-300/40 bg-emerald-400/10 text-emerald-700" };
       case "error":
-        return { label: "오류", tone: "border-rose-400/50 bg-rose-500/15 text-rose-100" };
+        return { label: "오류", tone: "border-rose-400/50 bg-rose-500/15 text-rose-700" };
       default:
-        return { label: "대기", tone: "border-white/10 bg-white/5 text-slate-300" };
+        return { label: "대기", tone: "border-[#e5e8eb] bg-white text-[#4e5968]" };
     }
   })();
   return (
@@ -1340,13 +1403,13 @@ function Conversation({
                 canPlay ? "cursor-pointer" : ""
               } ${
                 isOther
-                  ? "rounded-tl-sm bg-rose-500/15 text-rose-50"
-                  : "rounded-tr-sm bg-sky-500/15 text-sky-50"
+                  ? "rounded-tl-sm bg-rose-500/15 text-[#191f28]"
+                  : "rounded-tr-sm bg-sky-500/15 text-[#191f28]"
               }`}
             >
               <div
                 className={`mb-0.5 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider ${
-                  isOther ? "text-rose-200/70" : "text-sky-200/70"
+                  isOther ? "text-rose-600/70" : "text-sky-600/70"
                 }`}
               >
                 <span>{t.speaker}</span>
@@ -1364,8 +1427,8 @@ function Conversation({
                           ? "bg-rose-400/40 text-rose-50"
                           : "bg-sky-400/40 text-sky-50"
                         : isOther
-                        ? "bg-rose-400/20 text-rose-100 hover:bg-rose-400/30"
-                        : "bg-sky-400/20 text-sky-100 hover:bg-sky-400/30"
+                        ? "bg-rose-400/20 text-rose-700 hover:bg-rose-400/30"
+                        : "bg-sky-400/20 text-sky-700 hover:bg-sky-400/30"
                     }`}
                     title={`${t.start_sec?.toFixed(1)}s ~ ${t.end_sec?.toFixed(1)}s`}
                   >
@@ -1384,8 +1447,8 @@ function Conversation({
                       key={`${e.label}-${j}`}
                       className={`rounded-full border px-1.5 py-0.5 ${
                         isOther
-                          ? "border-rose-300/40 bg-rose-500/10 text-rose-100"
-                          : "border-sky-300/40 bg-sky-500/10 text-sky-100"
+                          ? "border-rose-300/40 bg-rose-500/10 text-rose-700"
+                          : "border-sky-300/40 bg-sky-500/10 text-sky-700"
                       }`}
                       title={e.label}
                     >
