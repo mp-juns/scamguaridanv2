@@ -1,3 +1,106 @@
+# 6-class scam_category 실험 (증강·summary 후 진행) — 2026-06-08
+
+## 매핑 (12 scam_type → 6 scam_category)
+- 링크·문자 유도형 ← 스미싱
+- 기관·금융 사칭형 ← 기관 사칭, 대출 사기
+- 투자·가상자산형 ← 투자 사기, 코인 사기
+- 관계·지인 사칭형 ← 로맨스 스캠, 메신저 피싱
+- 거래·취업형 ← 중고거래 사기, 취업·알바 사기
+- 기타·특수형 ← 부동산 사기, 건강식품 사기, 납치·협박형
+
+## 설계 결정 (공정 비교)
+- **별도 변환 데이터셋** `data/generated/user_samples_augmented.category.jsonl` 생성 (원본 그대로 유지).
+- 비교는 **동일 데이터·동일 분할(seed17,val0.1)·동일 hparam(mDeBERTa LoRA ep10 bs7)** 로 12-class vs 6-class, 라벨 granularity만 차이.
+- ⚠️ DB(25건, 12-class 라벨) 혼입 시 6-class 라벨공간 오염 → 실험은 **jsonl-only 통제** (양쪽 동일 조건). 기타·특수형은 jsonl 에 0건일 수 있음(부동산/건강식품/납치는 DB만) → 실제론 5-class 분포 가능. 보고 시 명시.
+- 산출물 세션: `.scamguardian/training_sessions/cat6_exp_*`, `.../cls12_jsononly_*` (active_models 미적용).
+
+## Plan
+- [ ] 1. 증강(bp0uecatf) 완료 + dataset_summary 보고 (선행)
+- [ ] 2. `scripts/make_category_dataset.py` — scam_type→category 변환 jsonl
+- [ ] 3. 통제 실험 하네스 — jsonl-only, 12-class & 6-class 동일조건 학습
+- [ ] 4. `eval_classifier` 확장 — acc/macro_f1/per-label P·R·F1/confusion (양쪽)
+- [ ] 5. 비교 보고 + (6-class 더 안정적이면) UI 제안: scam_category 주표시 + scam_type 세부후보
+- [ ] active_models 미변경 / push 금지
+
+## Review (6-class 실험)
+- 변환셋 `user_samples_augmented.category.jsonl` 생성(0.29s, LLM 0). 원본 보존.
+- jsonl-only 통제(빈 DB) 12-class vs 6-class 동일조건 학습:
+  - 12-class(9라벨): acc 0.899 / macro_f1 **0.895** (최저 투자 0.773, 투자↔코인 혼동)
+  - 6-class(5라벨): acc 0.962 / macro_f1 **0.962** (전 카테고리 F1≥0.93)
+- ⚠️ seed-level 누수(변형 단위 split) → 수치 낙관적. 진짜 일반화는 seed-group split 필요.
+- ⚠️ 기타·특수형 0건(DB만) → 실제 5-class.
+- UI 제안: scam_category 주표시 + scam_type(scam_type_detail 보존) 세부 후보. 12-class 모델 옵션 유지.
+- active_models 미변경, push 없음.
+
+## Review (증강 병렬화)
+- `scripts/augment_seeds_concurrent.py` 신규 — concurrency(기본4,최대8) 병렬 생성 → worker는 파일 직접 안 씀(메모리/temp) → 일괄 스키마검증+text dedup → **단일 append** → 실패 seed retry(기본2). deficit-aware 유지.
+- FAKE 검증: 49 seed 병렬 +245 단일 append, 원본 불변, 스키마/중복 0. ✓
+- 미실행(실데이터): 현재 52 seed 모두 20 충족이라 신규 증강 대상 없음 — 차기 seed 배치용.
+
+---
+
+# synthetic seed 반영 + 증강 (학습 대기) — 2026-06-07
+
+## Plan
+- [ ] 1. draft 검증 → `admin_seeds.draft.jsonl`(32) → `admin_seeds.jsonl` append (신규 생성).
+- [ ] 2. append 전후 검증: JSON 파싱 / 중복 text / 중복 source_ref / scam_type 유효성.
+- [ ] 3. `scripts/augment_seeds.py` — 신규 32 seed만 × 20변형 (batch5/max_tokens8192, 기존 출력과 dedup).
+- [ ] 4. `user_samples_augmented.jsonl` 에 append (덮어쓰기 금지). 2280 → ~2920 예상.
+- [ ] 5. `python -m training.dataset_summary --extra-jsonl ...` → content_label/sample_kind/scam_type 분포 보고.
+- [ ] 6. 학습 미실행 (분포 확인 후 대기). active_models 변경·push 금지.
+
+## Review
+(작업 후)
+
+---
+
+# Classifier(mDeBERTa) 재학습 — top-up 데이터 — 2026-06-07
+
+## 배경·조건
+- 대상: `data/generated/user_samples_augmented.jsonl` (2280건). classifier 는 `content_label==scam_attempt` 1340건(9유형)만 사용.
+- 비교 대상 `110256ac407a`: **같은 파일의 top-up 이전(2188)** 으로 학습됨. 기록치 eval_acc **0.435** / macro_f1 **0.177** (메모리의 그 0.177).
+- top-up 이 classifier 클래스에 추가한 것: **로맨스 +20, 취업·알바 +5** 뿐 (나머지 67건 normal=미사용). **코인·투자는 +0** → 개선 기대 못 함(정직하게 보고).
+- 조건: classifier(mDeBERTa)만 / GLiNER X / active_models.json 미적용 / per-label P·R·F1 + confusion matrix 보고 / 110256ac407a 비교 / push X / 로컬.
+
+## Plan
+- [x] 1. 동일 설정 재학습 (GPU RTX 5070 Ti, early stopping@epoch2). 출력 `.scamguardian/training_sessions/topup_retrain_20260607/output`. active_models 미적용(classifier 현재 disabled 상태 유지).
+- [x] 2. `scripts/eval_classifier.py` — 동일 분할 재현 + per-label + confusion + LoRA 로드.
+- [x] 3. 신모델 own-val: acc 0.4403 / macro_f1 0.2705 (val 134건).
+- [x] 4. 110256ac407a 비교 — 기록 own-val acc0.435/mf1 0.177 / 동일 NEW-val 재평가 acc0.448/mf1 0.265(부분 누수).
+- [x] 5. 취업·알바/코인/투자 확인.
+
+## Review
+- 신모델 own-val macro_f1 **0.2705** vs baseline 기록 **0.177**. 단 **동일 val(134건) 직접비교는 0.2705 vs 0.2648 — 사실상 동률**(옛 모델은 부분 누수로 과대평가됨). → top-up 으로 의미 있는 개선 없음.
+- 원인: top-up 이 classifier 클래스에 추가한 건 로맨스 +20·취업 +5뿐, **코인·투자 +0**. 두 모델 모두 **코인 F1 0.000(val 4건)·투자 F1 0.000(val 6건)** — 소수 클래스가 스미싱(44)·기관사칭(24)으로 붕괴.
+- 취업·알바 F1 0.667 이지만 **val 2건** — 통계적으로 무의미.
+- 학습 매우 불안정(loss 149→20→4, epoch별 macro_f1 0.07→0.27→0.20→0.23) — LoRA+lr2e-5+심한 불균형. per-label 차이(로맨스 NEW0.0 vs OLD0.47 등)는 대부분 노이즈.
+- 신규: `scripts/eval_classifier.py`, `scripts/topup_augment.py`. active_models 미변경, push 안 함.
+- 권고: ① 코인·투자·중고·로맨스 **실물 시드 자체를 늘려** 증강(같은 시드 패러프레이즈는 다양성 한계) ② class weight / focal loss / 오버샘플링 ③ val_ratio↑ 또는 k-fold (현재 소수 클래스 val 2~6건은 평가 신뢰 불가).
+
+---
+
+# user_samples_augmented 미달 씨앗 top-up — 2026-06-07
+
+## 배경
+- `data/generated/user_samples_augmented.jsonl` (2188건, 고유 씨앗 114개) 증강이 불균등하게 중단됨.
+- 씨앗 파일(`data/processed/admin_seeds.jsonl`)은 이 base 워크스페이스에 없음 — 출력의 `seed_text`로 복원.
+- 목표: **미달 씨앗만 20변형까지** 채움 (18개 씨앗 / +92건). 균등 씨앗(20변형)은 건드리지 않음.
+
+## Plan
+- [x] 1. `scripts/topup_augment.py` — 기존 `_augment_seed`/`_get_client` 재사용. 출력에서 씨앗 복원 + per-seed deficit(목표-현재) 계산 → 부족분만 생성. 기존 텍스트 dedup 후 --append. FAKE 모드 지원.
+- [x] 2. FAKE 모드 복사본 검증 — 18씨앗 +92건, 전부 20도달 / 중복 0 / 스키마 일치 확인.
+- [x] 3. 실제 Claude 호출로 `user_samples_augmented.jsonl` 에 append (2188→2280).
+- [x] 4. 최종 검증 — 114씨앗 전부 20변형, 총 2280건, 중복 0, 스키마 누락 0.
+
+## Review
+- `scripts/topup_augment.py` 신규 + `scripts/augment_user_samples.py` 의 `_augment_seed` 에 `max_tokens` 파라미터 추가(기본 4096 하위호환).
+- 결과: `data/generated/user_samples_augmented.jsonl` 2188 → **2280건**, 고유 씨앗 114개 전부 20변형 도달.
+- **버그 발견·수정**: 긴 씨앗(채용공고·뉴스·교육문)에 변형을 한 번에 多 요청하니 출력이 `max_tokens=4096` 초과로 JSON 잘려 `variants=0` → 5개 씨앗이 계속 +0. 원인은 `stop_reason=max_tokens`. 호출당 배치 5로 제한 + max_tokens 8192 로 해소.
+- 라벨 분포: scam_attempt 1340 / normal 620 / scam_news_edu 320. scam_type 은 스미싱 440·기관사칭 240·대출 200·로맨스 140·메신저 100·중고거래 100·투자 60·코인 40·취업 20 (normal+scam_news_edu 940건은 유형 없음 — 정상).
+- 균등 씨앗(이미 20변형)은 건드리지 않음. 재실행 idempotent (deficit 재계산).
+
+---
+
 # 어드민 확장 2건 (augment + apk-dummy) — 2026-06-04 완료
 
 ## 1) 데이터 증강 어드민 `/admin/augment`

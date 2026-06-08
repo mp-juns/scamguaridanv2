@@ -145,10 +145,10 @@ def _spanify(text: str, ents: list[dict]) -> list[dict]:
     return out
 
 
-def _augment_seed(client, seed: dict, n: int, model: str, round_no: int = 1) -> list[dict]:
+def _augment_seed(client, seed: dict, n: int, model: str, round_no: int = 1, max_tokens: int = 4096) -> list[dict]:
     msg = client.messages.create(
         model=model,
-        max_tokens=4096,
+        max_tokens=max_tokens,
         system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         tools=[TOOL],
         tool_choice={"type": "tool", "name": "emit_variants"},
@@ -168,6 +168,11 @@ def _augment_seed(client, seed: dict, n: int, model: str, round_no: int = 1) -> 
     records: list[dict] = []
     seen: set[str] = {seed.get("text", "").strip()}
     for v in payload.get("variants", []):
+        # 모델이 가끔 변형을 dict 아닌 문자열로 반환 — text 만 있는 dict 로 보정
+        if isinstance(v, str):
+            v = {"text": v}
+        elif not isinstance(v, dict):
+            continue
         text = (v.get("text") or "").strip()
         if not text or text in seen:
             continue
