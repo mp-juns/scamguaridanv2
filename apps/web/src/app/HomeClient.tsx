@@ -126,6 +126,8 @@ function contentTypeBadge(
 const EXAMPLE_INPUT =
   "일론 머스크가 화성 이민 프로젝트에 300만원 투자하면 연 30% 수익을 보장한다고 합니다. 문의는 010-1234-5678로 하라고 합니다.";
 
+const EXAMPLE_VIDEO_URL = "https://youtube.com/watch?v=dQw4w9WgXcQ";
+
 function formatPercent(value: number) {
   return new Intl.NumberFormat("ko-KR", {
     style: "percent",
@@ -209,6 +211,21 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
   const [loginPromptOpen, setLoginPromptOpen] = useState(false);
   const [limitBlockOpen, setLimitBlockOpen] = useState(false);
   const [injectionBlocked, setInjectionBlocked] = useState(false);
+  // 진입 후 분석 방식 선택 허브: null = 허브 화면, 'content' = 콘텐츠 입력 폼
+  // (통화는 /live, APK는 /apk 별도 페이지 → 허브에서 Link 이동)
+  const [mode, setMode] = useState<"content" | null>(null);
+
+  // 허브에서 "콘텐츠 분석" 선택 → 입력 폼으로 전환 (텍스트·유튜브 URL·파일 한 폼)
+  function pickContent() {
+    setSource("");
+    setUploadFile(null);
+    setError("");
+    setMode("content");
+  }
+  function backToHub() {
+    setMode(null);
+    setError("");
+  }
 
   // 모달 열렸을 때 ESC 로 닫기 + 배경 스크롤 잠금
   useEffect(() => {
@@ -376,25 +393,86 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
             </Link>
           </div>
 
-          <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
-            <div className="space-y-5">
-              <h1 className="text-3xl font-bold leading-snug tracking-tight text-[#191f28] sm:text-[2.6rem]">
-                보이스피싱,<br />통화 중에 막아드릴게요.
-              </h1>
-              <p className="max-w-md text-base leading-7 text-[#4e5968]">
-                의심스러운 전화를 받는 중이라면 마이크만 켜세요. 위험 신호를
-                실시간으로 감지해 즉시 알려드려요.
-              </p>
+          {mode === null ? (
+            <div className="flex flex-col gap-3.5">
+              <div className="mb-1">
+                <h1 className="text-2xl font-bold tracking-tight text-[#191f28]">무엇을 분석할까요?</h1>
+                <p className="mt-2 text-sm leading-6 text-[#4e5968]">
+                  분석할 종류를 선택하면 바로 해당 화면으로 이동해요. 통화 중이라면 실시간 통화 분석을 추천해요.
+                </p>
+              </div>
+
+              {/* 통화 분석 — 실시간이 핵심 */}
               <Link
                 href="/live"
-                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#3182f6] px-6 py-4 text-base font-semibold text-white shadow-[0_6px_20px_rgba(49,130,246,0.28)] transition hover:bg-[#1b64da]"
+                className="group flex items-center gap-5 rounded-2xl border border-[#e5e8eb] bg-white p-6 shadow-[0_2px_12px_rgba(0,0,0,0.05)] transition hover:border-[#3182f6] hover:shadow-[0_6px_20px_rgba(49,130,246,0.12)]"
               >
-                🎙️ 통화 분석 시작 <span aria-hidden>→</span>
+                <span className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-2xl bg-[#e8f3ff] text-3xl">🎙️</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-lg font-bold text-[#191f28]">통화 분석</span>
+                  <span className="mt-1 block text-sm leading-6 text-[#4e5968]">
+                    통화 중 마이크를 켜면 위험 신호를 실시간으로 감지해요. 녹음 파일도 분석할 수 있어요.
+                  </span>
+                </span>
+                <span className="flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap text-sm font-semibold text-[#8b95a1] transition group-hover:text-[#3182f6]">
+                  분석 시작 <span aria-hidden>→</span>
+                </span>
               </Link>
+
+              {/* 콘텐츠 분석 — 텍스트·문자 또는 유튜브 URL */}
+              <button
+                type="button"
+                onClick={pickContent}
+                className="group flex items-center gap-5 rounded-2xl border border-[#e5e8eb] bg-white p-6 text-left shadow-[0_2px_12px_rgba(0,0,0,0.05)] transition hover:border-[#3182f6] hover:shadow-[0_6px_20px_rgba(49,130,246,0.12)]"
+              >
+                <span className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-2xl bg-[#e8f3ff] text-3xl">💬</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-lg font-bold text-[#191f28]">콘텐츠 분석</span>
+                  <span className="mt-1 block text-sm leading-6 text-[#4e5968]">
+                    의심 문자·메시지 또는 유튜브 URL을 붙여넣으면 위험 신호를 검출해요. 영상·음성 파일도 올릴 수 있어요.
+                  </span>
+                </span>
+                <span className="flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap text-sm font-semibold text-[#8b95a1] transition group-hover:text-[#3182f6]">
+                  분석 시작 <span aria-hidden>→</span>
+                </span>
+              </button>
+
+              {/* APK 분석 — 안드로이드 설치 파일 */}
+              <Link
+                href="/apk"
+                className="group flex items-center gap-5 rounded-2xl border border-[#e5e8eb] bg-white p-6 shadow-[0_2px_12px_rgba(0,0,0,0.05)] transition hover:border-[#3182f6] hover:shadow-[0_6px_20px_rgba(49,130,246,0.12)]"
+              >
+                <span className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-2xl bg-[#e8f3ff] text-3xl">📱</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-lg font-bold text-[#191f28]">APK 분석</span>
+                  <span className="mt-1 block text-sm leading-6 text-[#4e5968]">
+                    안드로이드 설치 파일(.apk)을 올려 악성 앱 신호를 검출해요. 격리 VM 으로만 분석합니다.
+                  </span>
+                </span>
+                <span className="flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap text-sm font-semibold text-[#8b95a1] transition group-hover:text-[#3182f6]">
+                  분석 시작 <span aria-hidden>→</span>
+                </span>
+              </Link>
+            </div>
+          ) : (
+          <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
+            <div className="space-y-5">
+              <button
+                type="button"
+                onClick={backToHub}
+                className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#4e5968] transition hover:text-[#191f28]"
+              >
+                <span aria-hidden>←</span> 분석 방식 선택으로
+              </button>
+              <h1 className="text-3xl font-bold leading-snug tracking-tight text-[#191f28] sm:text-[2.6rem]">
+                💬 콘텐츠 분석
+              </h1>
+              <p className="max-w-md text-base leading-7 text-[#4e5968]">
+                의심스러운 문자·메시지를 붙여넣거나 유튜브 영상 URL을 입력하면 위험 신호를 검출해요. 영상·음성 파일도 올릴 수 있어요.
+              </p>
               <div className="flex flex-wrap gap-2 pt-1 text-xs text-[#8b95a1]">
-                <span className="rounded-full bg-[#f2f4f6] px-3 py-1">실시간 위험 신호 감지</span>
-                <span className="rounded-full bg-[#f2f4f6] px-3 py-1">통화 후 화자 분리 리뷰</span>
-                <span className="rounded-full bg-[#f2f4f6] px-3 py-1">온디바이스 분석</span>
+                <span className="rounded-full bg-[#f2f4f6] px-3 py-1">검출만 — 판정은 본인이</span>
+                <span className="rounded-full bg-[#f2f4f6] px-3 py-1">학술·법적 근거 제공</span>
               </div>
             </div>
 
@@ -406,20 +484,35 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
                 <label className="text-sm font-medium text-[#333d4b]" htmlFor="source">
                   분석할 텍스트 또는 유튜브 URL
                 </label>
-                <button
-                  className="text-sm text-[#3182f6] transition hover:text-[#1b64da]"
-                  onClick={() => setSource(EXAMPLE_INPUT)}
-                  type="button"
-                >
-                  예시 채우기
-                </button>
+                <div className="flex gap-3">
+                  <button
+                    className="text-sm text-[#3182f6] transition hover:text-[#1b64da]"
+                    onClick={() => {
+                      setUploadFile(null);
+                      setSource(EXAMPLE_INPUT);
+                    }}
+                    type="button"
+                  >
+                    텍스트 예시
+                  </button>
+                  <button
+                    className="text-sm text-[#3182f6] transition hover:text-[#1b64da]"
+                    onClick={() => {
+                      setUploadFile(null);
+                      setSource(EXAMPLE_VIDEO_URL);
+                    }}
+                    type="button"
+                  >
+                    URL 예시
+                  </button>
+                </div>
               </div>
 
               <textarea
                 className="min-h-52 w-full rounded-2xl border border-[#e5e8eb] bg-[#f2f4f6] px-4 py-3 text-sm text-[#191f28] outline-none transition placeholder:text-[#8b95a1] focus:border-[#3182f6]"
                 id="source"
                 onChange={(event) => setSource(event.target.value)}
-                placeholder="텍스트를 붙여넣거나 유튜브 URL을 입력하세요."
+                placeholder="의심스러운 텍스트·문자를 붙여넣거나 유튜브 영상 URL을 입력하세요."
                 value={source}
               />
 
@@ -540,6 +633,7 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
               ) : null}
             </form>
           </div>
+          )}
         </section>
 
         {injectionBlocked ? (

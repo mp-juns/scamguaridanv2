@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 
 import { signIn } from "../auth";
 import { GUEST_COOKIE, GUEST_MAX_AGE, GUEST_VALUE } from "./guest";
+import { GUEST_DAILY_LIMIT } from "./guestLimit";
 
 // 홈 첫 진입 시 랜딩 전에 뜨는 선택 게이트.
 //  · 비회원으로 둘러보기 → 쿠키 기억 후 랜딩 (익명 사용 경로 보존)
@@ -26,41 +27,47 @@ export default function EntryGate() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center px-6">
-      <div className="w-full rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
-        <h1 className="text-center text-2xl font-bold text-slate-900">ScamGuardian</h1>
-        <p className="mt-2 text-center text-sm text-slate-500">
-          어떻게 이용하시겠어요?
+    <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center bg-[#f2f4f6] px-6 text-[#191f28]">
+      <section className="w-full rounded-3xl border border-[#e5e8eb] bg-white p-8 text-center shadow-[0_2px_12px_rgba(0,0,0,0.05)]">
+        <span className="inline-block rounded-full bg-[#e8f3ff] px-4 py-2 text-base font-bold tracking-[0.08em] text-[#3182f6]">
+          ScamGuardian
+        </span>
+        <h1 className="mt-6 text-[22px] font-bold leading-[1.4] text-[#191f28]">
+          로그인하고
+          <br />
+          ScamGuardian 을 시작하세요
+        </h1>
+        <p className="mt-3 text-sm leading-7 text-[#4e5968]">
+          영상·텍스트·통화 속 사기 위험 신호를 검출해 드려요. 최종 판단은 언제나 본인이.
         </p>
 
-        <form action={continueAsGuest} className="mt-7">
-          <button
-            type="submit"
-            className="w-full rounded-xl bg-indigo-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-600"
-          >
-            비회원으로 둘러보기
-          </button>
-        </form>
+        <div className="mt-7 flex flex-col gap-2.5">
+          <form action={loginWithGoogle}>
+            <button
+              type="submit"
+              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#3182f6] px-4 py-3.5 text-[15px] font-semibold text-white shadow-[0_6px_20px_rgba(49,130,246,0.28)] transition hover:bg-[#1b64da]"
+            >
+              <svg className="h-[18px] w-[18px]" viewBox="0 0 48 48" aria-hidden>
+                <path fill="#fff" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
+              </svg>
+              Google 로 로그인
+            </button>
+          </form>
 
-        <form action={loginWithGoogle} className="mt-3">
-          <button
-            type="submit"
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-          >
-            <svg className="h-4 w-4" viewBox="0 0 48 48" aria-hidden>
-              <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
-              <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 16 18.9 13 24 13c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
-              <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.5-5.2l-6.2-5.3C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8L6.1 33C9.5 39.7 16.2 44 24 44z" />
-              <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.2 5.6l6.2 5.3C40.7 35.6 44 30.3 44 24c0-1.3-.1-2.4-.4-3.5z" />
-            </svg>
-            Google 로 로그인
-          </button>
-        </form>
+          <form action={continueAsGuest}>
+            <button
+              type="submit"
+              className="w-full rounded-2xl border border-[#e5e8eb] bg-white px-4 py-3.5 text-[15px] font-semibold text-[#4e5968] transition hover:bg-[#f2f4f6]"
+            >
+              비회원으로 시작하기
+            </button>
+          </form>
+        </div>
 
-        <p className="mt-5 text-center text-xs text-slate-400">
-          로그인 시 권한에 따라 회원 / 관리자가 자동으로 구분됩니다.
+        <p className="mt-5 text-xs leading-6 text-[#8b95a1]">
+          비회원은 하루 {GUEST_DAILY_LIMIT}회까지 분석할 수 있어요. 로그인 시 권한에 따라 회원 / 관리자가 자동으로 구분됩니다.
         </p>
-      </div>
+      </section>
     </main>
   );
 }

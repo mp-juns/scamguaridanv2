@@ -22,6 +22,7 @@ from . import (
     androzoo_eval,
     apk_dummy,
     apk_dynamic,
+    apk_public,
     docs_ui,
     health,
     kakao,
@@ -143,6 +144,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_augment.router)
     app.include_router(admin_users.router)
     app.include_router(apk_dynamic.router)
+    app.include_router(apk_public.router)
     app.include_router(apk_dummy.router)
     app.include_router(androzoo_eval.router)
     app.include_router(v4_stream.router)

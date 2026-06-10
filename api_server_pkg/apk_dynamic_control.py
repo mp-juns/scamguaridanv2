@@ -161,6 +161,51 @@ def _launch_op(name: str) -> dict[str, Any]:
     return _op_public(rec)
 
 
+def _bridge_reachable(timeout: float = 4.0) -> bool:
+    """api_server 가 격리 VM(브릿지 경유)에 실제로 닿는지 — REMOTE_URL/health ping."""
+    if not REMOTE_URL:
+        return False
+    try:
+        import requests
+
+        headers = {"Authorization": f"Bearer {REMOTE_TOKEN}"} if REMOTE_TOKEN else {}
+        resp = requests.get(f"{REMOTE_URL}/health", headers=headers, timeout=timeout)
+        return resp.status_code == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _ensure_bridge(log) -> bool:
+    """VM start 후 api_server↔VM 도달을 보장 — 안 닿으면 WSL 브릿지를 (재)기동 후 재확인.
+
+    `vm_ctl.sh start` 가 USE_BRIDGE=1 로 브릿지를 띄우긴 하지만, VM 을 admin 밖에서
+    켰거나 브릿지 프로세스가 죽은 경우를 대비해 여기서 명시적으로 보장한다.
+    """
+    if _bridge_reachable():
+        log("[bridge] 이미 도달 가능")
+        return True
+    log("[bridge] 미도달 — WSL 브릿지 (재)기동")
+    try:
+        subprocess.run(
+            ["bash", str(SCRIPT), "bridge"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=os.environ.copy(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log(f"[bridge] 기동 실패: {type(exc).__name__}: {exc}")
+        return False
+    for _ in range(10):  # 브릿지 + VM /health 가 뜰 때까지 최대 ~20s 폴링
+        if _bridge_reachable():
+            log("[bridge] 재기동 후 도달 가능")
+            return True
+        time.sleep(2)
+    log("[bridge] 재기동했지만 여전히 미도달 — VM/redroid 상태 확인 필요")
+    return False
+
+
 def _run_op(op_id: str, name: str, log_path: Path) -> None:
     rc: int | None = None
     try:
@@ -189,14 +234,22 @@ def _run_op(op_id: str, name: str, log_path: Path) -> None:
                 rec["status"] = "done" if rc == 0 else "error"
                 rec["ended_at"] = _now()
                 rec["exit_code"] = rc
+        with _status_guard:
+            _status_cache["at"] = 0.0  # 다음 조회 시 강제 재프로브
+        # op lock 을 *먼저* 해제 — 아래 후처리(특히 브릿지 도달 폴링 ~20s)가 lock 을
+        # 잡고 있으면 다음 VM op 이 거짓으로 거절된다. 후처리는 동시성 보호 대상 아님.
+        _op_lock.release()
         # start 성공 → remote 설정 주입(서버 재시작 없이 즉시 분석 가능). stop → 비활성으로.
         if name == "start" and rc == 0:
             apk_analyzer.configure_remote(REMOTE_URL, REMOTE_TOKEN, enabled=True)
+            # 브릿지까지 보장 — api_server 가 VM 에 실제로 닿아야 Lv3 동적 분석이 실행됨.
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    _ensure_bridge(lambda m: (f.write(m + "\n"), f.flush()))
+            except OSError:
+                _ensure_bridge(lambda m: None)
         elif name == "stop":
             apk_analyzer.configure_remote(REMOTE_URL, REMOTE_TOKEN, enabled=False)
-        with _status_guard:
-            _status_cache["at"] = 0.0  # 다음 조회 시 강제 재프로브
-        _op_lock.release()
 
 
 def _op_public(rec: dict[str, Any]) -> dict[str, Any]:

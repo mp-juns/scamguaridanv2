@@ -199,7 +199,7 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
     setAudioUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [file]);
-  const [mode, setMode] = useState<Mode>("stream");
+  const [mode, setMode] = useState<Mode>("live");
   // 단일 호출 모드 (전사 + 분석 병렬)
   const [transcriptPhase, setTranscriptPhase] = useState<Phase>("idle");
   const [transcript, setTranscript] = useState<TranscriptResult | null>(null);
@@ -641,23 +641,23 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
       ) : null}
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="text-xl font-semibold text-[#191f28]">
-          🎧 녹음 파일로 미리 테스트
+          🎙️ 통화 중 실시간 분석
         </h2>
         <span className="rounded-full border border-amber-300/40 bg-amber-400/10 px-2.5 py-0.5 text-[10px] font-medium tracking-wide text-amber-700 uppercase">
-          Preview · 사전 녹음 sandbox
+          Preview · 시뮬레이션
         </span>
       </div>
       <p className="mt-2 text-xs leading-6 text-[#8b95a1]">
-        모드 선택 — <strong>전체 분석</strong>: 전사 + 분석 두 API 병렬 1회 호출,{" "}
-        <strong>스트리밍 분석</strong>: 1분씩 잘라 각 청크 도착 즉시 표시 + 위험 신호 시 경보음 (v4 시뮬).
+        핵심은 <strong>통화 중 실시간 감지</strong> — 의심 통화를 받는 중이라면 <strong>실시간 마이크</strong>로 바로 시작하세요.{" "}
+        녹음 파일은 <strong>1분씩 스트리밍</strong> 또는 <strong>전체 분석</strong>으로 미리 테스트해볼 수 있어요 (v4 시뮬).
       </p>
 
-      <div className="mt-4 inline-flex rounded-full border border-[#bbf7d0] bg-white p-1 text-xs">
+      <div className="mt-4 inline-flex flex-wrap rounded-full border border-[#bbf7d0] bg-white p-1 text-xs">
         {(
           [
-            { v: "single" as Mode, label: "🔍 전체 분석" },
-            { v: "stream" as Mode, label: "🔴 1분씩 스트리밍 + 화면 경고" },
             { v: "live" as Mode, label: "🎤 실시간 마이크" },
+            { v: "stream" as Mode, label: "🔴 1분씩 스트리밍 + 화면 경고" },
+            { v: "single" as Mode, label: "🔍 전체 분석" },
           ] as const
         ).map((opt) => (
           <button
@@ -935,7 +935,7 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
                           key={`scan-${m.flag}-${i}`}
                           className="rounded-full border border-rose-400/40 bg-rose-500/15 px-2 py-0.5 text-rose-700"
                         >
-                          {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · "{m.snippet}"
+                          {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · &ldquo;{m.snippet}&rdquo;
                         </li>
                       ))}
                     </ul>
@@ -1151,7 +1151,7 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
                         : "border border-yellow-400/30 bg-yellow-500/10 text-yellow-700"
                     }`}
                   >
-                    {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · "{m.snippet}"
+                    {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · &ldquo;{m.snippet}&rdquo;
                   </li>
                 ))}
               </ul>
@@ -1305,7 +1305,7 @@ function ChunkRow({ chunk }: { chunk: StreamChunk }) {
               key={`${m.flag}-${i}`}
               className="rounded-full border border-rose-400/40 bg-rose-500/10 px-2 py-0.5 text-rose-700"
             >
-              {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · "{m.snippet}"
+              {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · &ldquo;{m.snippet}&rdquo;
             </li>
           ))}
         </ul>

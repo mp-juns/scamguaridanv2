@@ -31,11 +31,12 @@ NGROK_BIN="${NGROK_BIN:-$HOME/bin/ngrok}"
 NGROK_DOMAIN="${NGROK_DOMAIN:-}"  # 예약 도메인 있으면 지정, 없으면 매번 랜덤
 NGROK_API="http://127.0.0.1:4040/api/tunnels"
 
-# APK 동적분석 WSL 브릿지 (127.0.0.1:18002 → VM 안 app.py). VM 안 서버는 systemd 로
-# 자동 기동되지만 host 쪽 브릿지는 별도 — 스택과 함께 올린다.
-#   auto (기본): VM(sg-sandbox)이 Running 일 때만 기동 — 6GB VM 강제 부팅 회피
-#   true: 항상 기동 / false: 스킵
-ENABLE_APK_BRIDGE="${ENABLE_APK_BRIDGE:-auto}"
+# APK 동적분석 WSL 브릿지 (127.0.0.1:18002 → VM 안 app.py, multipass exec 우회).
+# ⚠️ DEPRECATED: VM 을 Tailscale 에 올려(.env APK_DYNAMIC_REMOTE_URL=http://<vm-tailscale-ip>:8002)
+#    api_server 가 VM 에 *직접 HTTP* 하도록 전환 → 매 호출 multipass exec(SSH) 경합 제거.
+#    그래서 기본값을 false(스킵)로. 브릿지 방식으로 되돌리려면 ENABLE_APK_BRIDGE=auto/true.
+#   auto: VM(sg-sandbox)이 Running 일 때만 기동 / true: 항상 / false(기본): 스킵
+ENABLE_APK_BRIDGE="${ENABLE_APK_BRIDGE:-false}"
 APK_DYNAMIC_VM_NAME="${APK_DYNAMIC_VM_NAME:-sg-sandbox}"
 APK_BRIDGE_PORT="${APK_DYNAMIC_BRIDGE_PORT:-18002}"
 MULTIPASS_EXE="${MULTIPASS_EXE:-/mnt/c/Program Files/Multipass/bin/multipass.exe}"
@@ -128,7 +129,11 @@ setsid bash -lic "
     source \"\$HOME/.nvm/nvm.sh\"
   fi
 
-  npm run dev -- --hostname 0.0.0.0 --port '$FRONTEND_PORT'
+  # --hostname 0.0.0.0 을 빼고 기본 바인딩(localhost) 사용 — Next dev 가 명시적
+  # --hostname 을 받으면 그 값(0.0.0.0)을 OAuth 콜백 origin 으로 써버려 콜백이
+  # http://0.0.0.0:3100/... 로 깨진다. 기본 바인딩이면 요청 Host 헤더(localhost)를
+  # 그대로 origin 으로 사용. Funnel·ngrok 은 127.0.0.1:3100 로 프록시하므로 영향 없음.
+  npm run dev -- --port '$FRONTEND_PORT'
 " >"$LOG_DIR/frontend.log" 2>&1 < /dev/null &
 
 # (NEW) frontend 도 첫 컴파일 끝날 때까지 대기 — Turbopack 초기 컴파일이 끝나야

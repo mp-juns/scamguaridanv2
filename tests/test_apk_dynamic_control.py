@@ -89,6 +89,8 @@ class _FakePopen:
 def test_start_vm_op_injects_remote_config(monkeypatch, tmp_path):
     monkeypatch.setattr(ctl, "OPS_DIR", tmp_path / "ops")
     monkeypatch.setattr(ctl.subprocess, "Popen", _FakePopen)
+    # start 후처리의 브릿지 보장은 별도 — 여기선 remote 주입만 검증 (실제 subprocess 차단)
+    monkeypatch.setattr(ctl, "_ensure_bridge", lambda *a, **k: True)
 
     recorded = {}
     monkeypatch.setattr(
@@ -117,6 +119,7 @@ def test_concurrent_vm_op_rejected(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ctl.subprocess, "Popen", _SlowPopen)
     monkeypatch.setattr(apk_analyzer, "configure_remote", lambda *a, **k: None)
+    monkeypatch.setattr(ctl, "_ensure_bridge", lambda *a, **k: True)
 
     op = ctl.start_vm()
     with pytest.raises(RuntimeError):
