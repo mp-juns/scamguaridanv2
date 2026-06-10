@@ -311,6 +311,41 @@ export function GlinerLabelBar({ data }: { data: LabelBar[] }) {
   );
 }
 
+// ── gate (content_label 3-class) ──────────────────────────────────────
+
+export type GatePerClass = {
+  label: string;
+  precision: number;
+  recall: number;
+  f1: number;
+};
+
+export function GatePerClassBar({ data }: { data: GatePerClass[] }) {
+  return (
+    <ResponsiveContainer width="100%" height={240}>
+      <BarChart data={data} margin={{ top: 8, right: 8, bottom: 8, left: 0 }}>
+        <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
+        <XAxis dataKey="label" stroke="#94a3b8" fontSize={11} />
+        <YAxis
+          stroke="#64748b"
+          fontSize={11}
+          domain={[0, 1]}
+          tickFormatter={(v) => `${Math.round(Number(v) * 100)}%`}
+        />
+        <Tooltip
+          formatter={(value) => pct(value)}
+          contentStyle={darkTooltip}
+          labelStyle={{ color: "#cbd5f5" }}
+        />
+        <Legend />
+        <Bar dataKey="precision" name="정밀도(P)" fill="#22d3ee" radius={[4, 4, 0, 0]} />
+        <Bar dataKey="recall" name="재현율(R)" fill="#a78bfa" radius={[4, 4, 0, 0]} />
+        <Bar dataKey="f1" name="F1" fill="#22c55e" radius={[4, 4, 0, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
 export type MetricRow = {
   step: number;
   loss: number | null;

@@ -4,6 +4,107 @@ milestone 단위 변경 로그. 누적 append, 최신이 위.
 
 ---
 
+## 2026-06-10 — 게이트 학습·content_label 증강·게이트 시각화 웹 연결
+
+**무엇**: 게이트(content_label) 파트가 CLI 전용이라 웹에서 제어 불가 → **기존 코드를 웹에 배선만**
+(새 학습/증강 알고리즘 0줄).
+- 게이트 학습을 파인튜닝 세션에 연결: `training/sessions.py start_session` 에 `model=="gate"` 분기 →
+  기존 `scripts/content_label_gate.py --train` 를 subprocess 로 호출(스크립트가 끝에 `record_gate_session`
+  자가 등록). `_watch_process` 가드 추가 — `kind=="gate"` 면 종료 시 슬림 metrics 로 last_metrics 를
+  덮어쓰지 않아 confusion/per_class/watch_cells 보존. `/admin/training` 에 "게이트 학습" 패널(입력 JSONL·
+  epochs·val_ratio) + 게이트/분류기/추출기 역할 차이 카드.
+- content_label 증강: `run_augment_session._load_seeds` 에 `--content-label` 필터(scam_type 필터 미러),
+  `augment_sessions.AugmentParams.content_label`, `admin_augment` content_label 전달 + normal 씨앗 허용
+  (scam_attempt 만 scam_type 필수) + `by_content_label` 통계.
+- `/admin/augment` 를 **두 파트 탭 분리**: ① 게이트(정상·사기·예방 3-class — content_label 커버리지·정상/예방 HN
+  씨앗 폼·게이트 클래스 필터 증강) ② 분석 분류기·추출기(scam_type 12종 — 기존 커버리지·사기 시도 씨앗 폼·
+  scam_type 필터 증강). 각 파트는 해당 파트 씨앗만 보여주고 맞는 필터만 전송(게이트→content_label,
+  분석→scam_type+content_label=scam_attempt).
+- 게이트 시각화: augment 페이지 content_label 3-class 커버리지 바, training 페이지 게이트 세션에
+  confusion 히트맵 + per-class P/R/F1 막대(`charts.GatePerClassBar`) + 집중 오류셀(정상→사기) 콜아웃.
+
+**왜**: 증강 페이지가 `content_label==scam_attempt` 만 집계/필터해서 게이트의 normal/scam_news_edu
+  hard-negative 가 웹에서 안 보이고 추가·증강 불가(그래서 normal HN 작업을 전부 CLI 로 했음). 게이트 학습도
+  웹에서 시작 불가. 게이트 워크플로 전체를 웹으로 끌어올림.
+
+**검증**: `npm run lint`·`build` OK · `pytest` 398 passed(회귀 0) · FAKE 증강 content_label=normal
+  72×2=144 필터 OK(scam_attempt/news_edu 제외) · gate 세션 배선+가드 PASS(실제 순서 record→exit→watch
+  로 confusion·macro_f1·watch_cells 보존). active_models 미변경·push 없음. 실제 게이트 학습 1회는 미실행(GPU 수분).
+
+## 2026-06-10 — 정부·세금·공과금 정상 HN 5건 보강 (gate 오탐 #1 원인 대응)
+
+**무엇**: content_label gate 오탐 분석에서 #1 원인이던 "정부·세금·공과금 납부 안내"(기존 seed 1개) 보강.
+- 사용자 제공 실수신 고지문 5건 → `pending_normal_tax_utility_seeds.jsonl`: 건강보험 체납(normal),
+  건강보험공단 사칭 피싱 주의(scam_news_edu), 도로공사 통행료/김포·대구 상하수도(normal). PII(차량번호/주소/
+  고객번호/전자납부번호/가상계좌) 마스킹, 기관명·금액·기한·대표번호 유지.
+- 검증(파싱·exact/source_ref·fuzzy 최고 0.24) 통과 → `admin_seeds.jsonl` 239→244(+5).
+- 증강 3변형씩(긴 고지문 정책) → `user_samples_augmented.jsonl` 4347→4362(+15). normal 899→911,
+  scam_news_edu 328→331, scam_attempt 3120 유지. 단일 append, deficit-aware.
+- 증강 검수: normal 변형 risk_flags/flag_groups 오염 0, scam_type "" 유지. scam-framed 증강기가 붙인
+  스캠형 entity 라벨 11개(9레코드) 제거(텍스트 미수정) → 잔존 0. category 4362 재생성.
+
+**왜**: 정상 "기관+금액+납부기한+미납/가산세" 고지가 기관사칭 납부유도 사기와 표면 동일 → 정상 측 커버리지
+  부족으로 오탐. 유형 다양화로 경계 학습 보강.
+
+**검증**: dataset_summary 총 4362 / 고유 seed 244 / 중복 0 / 스키마 오류 0. active_models 미변경·학습·push 없음.
+  gate 재학습은 보류(데이터 반영·검증까지만).
+
+## 2026-06-09 — 게이트(평가 전용) 세션을 /admin/training 페이지에 노출
+
+**무엇**:
+- `training/sessions.py` — `record_gate_session()` 추가. CLI 게이트 실험(content_label gate, group-split 등)을
+  학습 세션 목록과 같은 위치에 `status.json`(`kind="gate"`) + `metrics.jsonl` + `train.log`(사람이 읽는 결과 요약)로
+  기록. `list_sessions`(status.json 있는 디렉토리만 노출)에 자동으로 잡힘. `_format_gate_summary()`로 acc/macro_f1/
+  per-class/confusion/집중오류셀을 train.log 에 써서 상세 화면 log tail 에 그대로 보이게 함.
+- `activate_session()` — `kind=="gate"` 면 거부(게이트는 파이프라인 적용 불가). 미지 model 이라 어차피 artifact
+  체크에서 막히지만 명시 가드 + 친절 메시지 추가.
+- `scripts/content_label_gate.py` — `--train` 종료 시 `record_gate_session` 호출(세션 자동 등록). run_eval 이
+  per-class/confusion/watch_cells 전체 반환하도록 확장.
+- `apps/web/.../training/TrainingClient.tsx` — `SessionInfo.model` 타입 `string` 으로 완화 + `kind`/`gate_name` 추가.
+  목록 행에 `평가` 배지, 상세에서 게이트는 "파이프라인 적용" 버튼 대신 "게이트 · 평가 전용(적용 불가)" pill.
+  (적용 페이지 `ModelsClient` 는 classifier/gliner 만 필터 → 게이트 자동 제외.)
+- 방금 끝난 `content_label_gate_20260609` 실행을 재학습 없이 백필 등록(run.log→train.log 복사 + 알려진 지표).
+
+**왜**: CLI 게이트 실험이 페이지에 안 보여서(관리형 `start_session` 경로가 아니라 status.json 미생성) 사용자가
+  학습 이력을 확인 못 함. 게이트도 목록에 보이되, 평가 전용임을 명시하고 적용은 막아 안전 유지.
+
+**검증**: tsc --noEmit 0 에러, sessions/gate 스크립트 문법·import OK, list_sessions 노출 확인,
+  activate 거부 확인, 상세 log tail 에 결과 포함 확인. active_models 미변경·push 없음.
+
+## 2026-06-09 — 정상 hard negative 실수신 문자함 → seed 40건 + 증강 144건
+
+**무엇**:
+- 사용자 실수신 문자함(택배·인증·카드·정부·통신사 안내 + 사기예방 안내) 원문 66건을 메시지 단위로 분리.
+  exact 1건·구조중복 24건 제거 → 대표 40건만 `data/processed/pending_normal_seeds.jsonl` 생성.
+  개인정보(이름→홍길동, 인증번호/휴대폰/이메일/ID/기사실명) 마스킹, 주소 공란 유지.
+- 라벨: normal_content 38 / scam_news_education 2 (LG U+·LGU+ 스미싱 주의 안내). scam_type 공란.
+- 검증(파싱·라벨·exact/source_ref 중복·fuzzy 0.85) 통과 → `admin_seeds.jsonl` 198→239(+41).
+- 증강(`augment_seeds_concurrent.py`, 단일 append, deficit-aware): 일반 normal 5변형×11,
+  긴 광고/공지(≥200자) 3변형×28, edu 4변형×2 → `user_samples_augmented.jsonl` 4200→4347(+147).
+  normal 760→899, scam_news_edu 320→328, scam_attempt 3120 유지.
+- CJ대한통운 + `http://앱다운.com`: 처음엔 스미싱 의심으로 보류했으나 **사용자 정정 — 실수신 정상 문자**.
+  normal 로 재라벨해 41번째 seed 로 편입(`user-normal-hn-cj-appdown-url`), 3변형 증강. 단,
+  scam-framed 증강기가 의심 URL 씨앗을 스미싱으로 오해해 risk_flags/악성 entity 를 붙인 것을 발견 →
+  본문은 정상 배송문이라 유지하되 메타(entities/risk_flags/flag_groups)를 []로 정리. `pending_scam_candidates.jsonl` 삭제.
+- **entity 라벨 오염 정리(사용자 승인)**: scam-framed 증강기가 *normal* 변형에도 `사칭 기관명`(정부24·고려대 등)·
+  `허위 운송장 번호`(정상 송장) 등 스캠형 entity 라벨을 붙여온 것을 발견(신규 130 + 기존 760 누적 454).
+  본문은 정상이라 유지, normal 레코드 459개에서 스캠형 라벨 entity **584개 제거**(중립 entity 유지). 신규+기존 일괄.
+- **category 재생성**: `user_samples_augmented.category.jsonl` 4200(stale)→**4347**. scam_attempt만 12→6 카테고리
+  치환(실제 5: 기타·특수형 seed 0), normal/scam_news_edu 보존. scam_news_edu 328 전건 scam_type 공란 유지.
+- **gate 준비/검증(학습 미실행)**: `group_split_experiment.py`는 scam_attempt(3120)만 평가 → normal HN은 이 지표
+  불반영. SEED=17·val_ratio0.1 group-split 검증: train2820/val300, 누수 0, 12-class 9라벨·6-class 5라벨 각 val≥1.
+  deps(torch2.11/transformers5.1/peft/sklearn)·GPU(RTX5070Ti) 가용. 실행 명령만 준비, train 미실행.
+- **content_label 3-class gate 신규**(`scripts/content_label_gate.py`): HN 효과(FP 억제) 측정용.
+  normal/scam_news_edu/scam_attempt 전체 4347 사용, group=(source_ref,seed_text) split, content_label stratify.
+  기본은 검증 only(학습 X), `--train` 시에만 mDeBERTa+LoRA 학습. per-class P/R/F1 + confusion + 집중 오류 셀
+  (normal→scam_attempt 오탐 등) 출력. 검증 결과: train3925/val422, 누수 0, 3클래스 val 모두 포함, val HN seed 6개.
+
+**왜**: 5/6-class 모델의 정상/사기 경계 강화. 인증·택배·환급·소멸안내 등 "사기처럼 보이는 정상" +
+  "사기 경고 안내문"을 hard negative 로 보강해 false positive 억제.
+
+**결과/검증**: 신규 144변형 risk_flags 오염 0·scam_type 오염 0, 중복 text 0, 스키마 오류 0.
+  active_models.json·학습·push 변경 없음. category 파일(4200, stale)은 gate 평가 전 재생성 필요.
+
 ## 2026-06-08 — 어드민 상단 하얀 바 제거 + 프롬프트 인젝션 즉시 차단
 
 **무엇 (1) 하얀 바 제거**:
@@ -566,3 +667,112 @@ implementation" 으로 reframe. VirusTotal 모델 채택 — 검출 보고만, �
 다음: 실제 end-to-end 동적분석은 WSL 브릿지(`vm_ctl.sh bridge`/`start`)도 떠야 함 — 카드 불과 별개 레이어.
 
 **후속**: `scripts/start_stack.sh` 에 APK 동적분석 WSL 브릿지 통합 — `ENABLE_APK_BRIDGE=auto`(기본). VM(sg-sandbox) 이 Running 일 때만 브릿지 자동 기동(6GB VM 강제부팅 회피), `true` 면 항상/`false` 면 스킵. stop 섹션·로그 힌트도 갱신. 이제 매번 `vm_ctl.sh bridge` 수동 실행 불필요.
+
+---
+
+## 2026-06-10 — 디자인 시스템 프로토타입 적용 (허브 재구성 + 사용자용 APK 분석)
+
+**무엇**:
+1. 업로드된 디자인 시스템 번들(`ScamGuardian_Design_System` HTML)을 실제 Next 앱에 반영.
+2. **허브 재구성** (`HomeClient.tsx`): 통화/영상/텍스트 → **통화 / 콘텐츠 / APK** 3카드. 영상+텍스트를 "콘텐츠 분석" 한 폼으로 통합(텍스트·유튜브 URL·파일 업로드 모두 한 폼, `mode` 상태 `text|video` → `content`). 통화는 `/live`, APK는 `/apk` Link.
+3. **로그인 화면** (`EntryGate.tsx`): slate/indigo → Toss 팔레트(블루 #3182f6 primary). Google 우선 + 비회원, "비회원은 하루 5회".
+4. **사용자용 APK 분석 (신규)**:
+   - UI: `apps/web/src/app/apk/{page.tsx,ApkClient.tsx}` — 업로드 + Lv1/Lv2/Lv3 티어 카드 + VT 배지 + 검출 요약. 검출 0개면 emerald 톤. "예시 악성앱" 버튼은 데모 결과.
+   - 백엔드: `api_server_pkg/apk_public.py` — `POST /api/analyze-apk` 동기 정적 분석(`analyze_apk_static` Lv1 + `analyze_apk_bytecode` Lv2 + `analyze_apk_dynamic`(보통 비활성) + VirusTotal `scan_file`). 티어 구조로 반환. app.py include + 미들웨어 require-key 등록.
+   - 프록시: `apps/web/src/app/api/analyze-apk/route.ts` (internal key 자동 첨부, analyze-upload 패턴).
+
+**왜**: 프로토타입이 zip 패치보다 최신 — 허브를 통화/콘텐츠/APK 로 합의. 사용자용 APK 분석은 그동안 admin(`apk-dynamic`)에만 있던 기능을 일반 사용자 화면으로 노출. 동적(Lv3)은 격리 VM 필요 → host-safe 한 정적만 동기 실행하고 동적은 "비활성" 정직 표기 (Identity Boundary — 검출만, 판정 X).
+
+**결과**: ✅
+- tsc 0 / eslint 0 (web 전체 변경 파일).
+- 백엔드 라우트 등록 확인 + pytest **398 passed**.
+- E2E: moqhao.apk(실제 MoqHao 샘플) → Next 프록시 경유 정적 신호 9개(Lv1 3 + Lv2 6) 검출, VT 0/75, 동적 비활성, 비-APK 업로드는 400 거부.
+- Live Voice(탭 순서·기본값·문구)·결과 모달·상세 오버레이는 프로토타입과 이미 일치 — 변경 불필요.
+
+다음: APK Lv3 동적 분석 실연결(격리 VM `vm_ctl.sh start` 기동 시), `/apk` 페이지 비회원 한도 가드 적용 검토.
+
+---
+
+## 2026-06-10 (2) — 사용자 APK 화면: VM 상태 LED + 실제 샘플 10개 + VirusTotal 상세 링크
+
+**무엇**:
+1. **VM 상태 LED** (`/apk`, 읽기 전용): 동적 분석 VM 가동 여부만 표시(제어 X — VM 기동/정지는 어드민 콘솔 전용). 백엔드 `GET /api/apk-dynamic-status` (`ctl.vm_status` 캐시 → `{vm_running, server_up}`), 프론트 20초 폴링 + 펄스 LED.
+2. **실제 샘플 APK 무작위 10개**: `GET /api/apk-samples` — AndroZoo 실제 악성앱(`data/androzoo/malware`) + 패밀리 샘플(`data_examples/apk`) 풀에서 무작위 10개. `/api/analyze-apk` 가 `sample` form 파라미터로 서버 측 샘플을 분석(basename 검증으로 traversal 차단, repo 파일은 미삭제). 데모 mock 제거 → 전부 실제 분석.
+3. **VirusTotal 상세 링크 + 위험 카테고리**: 응답 `vt` 에 `permalink`(VT GUI 리포트 `virustotal.com/gui/file/{sha256}`) + `categories`(threat 라벨) 추가. 결과 카드에 "상세 리포트 열기 ↗" 링크 + "뭐가 위험한지" 칩.
+
+**왜**: 사용자가 직접 .apk 를 구하기 어려우니 실제 샘플로 바로 검증 가능하게. VT permalink 는 엔진별 탐지·행위·앱 정보를 보여주는 실제 페이지 — 우리가 재구현할 필요 없이 연결. 동적 분석은 무거운 VM 작업이라 사용자 화면은 정적+LED 까지, 실행은 어드민.
+
+**결과**: ✅ tsc 0 / eslint 0 / pytest 398 passed.
+- E2E: `/api/apk-samples` 18개 중 10개 무작위, `/api/apk-dynamic-status` {false,false}(VM 미가동 → LED 회색).
+- 실제 AndroZoo 악성앱 분석 → VT **27/75 탐지**, categories `Adware.AndroidOS.Domob.A!c` 등(Domob 애드웨어), permalink 정상.
+
+다음: VM 가동 시 사용자 화면에서도 Lv3 동적 결과 옵션 노출 검토, VT rate limit(4/min) 캐시·큐.
+
+---
+
+## 2026-06-10 (3) — APK Lv3 LED/판정 불일치 수정 (VM 가동중인데 '미실행')
+
+**증상**: 사용자 `/apk` 에서 LED 초록("동적 분석 VM 가동 중")인데 Lv3 카드는 "미실행"으로 떠 모순.
+
+**원인**: 두 출처가 달랐음 — LED 는 `vm_ctl status-json`(VM 부팅 여부)만 보고, Lv3 는 `analyze_apk_dynamic`(실제 호출). VM 은 부팅됐지만 **WSL 브릿지(127.0.0.1:18002)가 안 떠 있어** api_server 가 VM 에 못 닿음 → `analyze_apk_dynamic` = status `error`(ConnectionError). 그런데 `_build_report` 가 error 를 disabled 와 똑같이 "격리 VM 미가동/미실행"으로 뭉갬.
+
+**수정**:
+1. `/api/apk-dynamic-status` 를 **실제 도달성 기준**으로 — `apk_analyzer` REMOTE_URL/health 를 직접 ping(3s) → `{enabled, ready}`. VM 부팅돼도 브릿지 끊기면 ready=false.
+2. LED: ready=초록("가동 중") / enabled&&!ready=노랑("연결 안 됨") / 비활성=회색. → 초록 = Lv3 실제 실행 가능, 으로 일치.
+3. `_build_report` Lv3 상태 구분: completed→pass/fail, **error→"연결 실패"(amber)**, blocked_local→차단, disabled→비활성(미실행). 프론트 배지에 `error` 추가.
+
+**결과**: ✅ tsc 0 / eslint 0 / pytest 통과.
+- 브릿지 down: status `{enabled:true, ready:false}` → LED 노랑, Lv3 verdict=error "연결 실패".
+- `vm_ctl bridge` 로 브릿지 기동 후: VM /health ok(redroid_booted) → status `{ready:true}` → LED 초록, Lv3 **실제 실행** verdict=pass(런타임 신호 0).
+
+**운영 메모**: VM 을 stack 기동 후에 켜면 브릿지가 auto-start 안 됨(ENABLE_APK_BRIDGE=auto 는 stack 시작 시점만 평가). VM 기동 후 `bash scripts/apk_dynamic_vm_ctl.sh bridge` 로 브릿지를 띄워야 api_server 가 VM 에 닿음.
+
+---
+
+## 2026-06-10 (4) — 어드민 'VM 시작' 이 브릿지까지 보장
+
+**무엇**: `apk_dynamic_control._run_op` 의 start 성공 후처리에 `_ensure_bridge()` 추가 — `configure_remote` 직후 REMOTE_URL/health 로 api_server↔VM 도달을 확인하고, 안 닿으면 `vm_ctl.sh bridge` 로 WSL 브릿지를 (재)기동 후 최대 ~20s 재확인. `_bridge_reachable()` 헬퍼 추가.
+
+**왜**: `vm_ctl.sh start`(start_all)가 USE_BRIDGE=1 로 브릿지를 띄우긴 하지만, VM 을 admin 밖에서 켰거나 브릿지 프로세스가 죽으면 api_server 가 VM 에 못 닿아 Lv3 가 'connection error' → 사용자에겐 LED 초록인데 미실행처럼 보였음. 이제 어드민 'VM 시작' 한 번이면 브릿지까지 보장.
+
+**구현 주의**: 후처리는 op lock 을 *해제한 뒤* 실행하도록 `_run_op` finally 순서 변경 — 브릿지 도달 폴링(~20s)이 lock 을 잡으면 다음 VM op 이 거짓 거절됨(동시성 테스트 깨짐). 후처리는 동시성 보호 대상 아님.
+
+**결과**: ✅ pytest 398 passed. start 트리거 테스트 2개에 `_ensure_bridge` mock 추가(실제 subprocess 차단). 헬퍼 단위 확인: 브릿지 가동 시 `_bridge_reachable()`=True.
+
+---
+
+## 2026-06-10 (5) — 시연용 데모 APK 샘플 (Lv1·Lv2·Lv3 전체 검출)
+
+**무엇**: `/apk` 샘플 목록 맨 앞에 "🎬 시연용 샘플 (전체 단계 검출)" 추가. 선택 시 `_DEMO_REPORT`(고정 결과) 반환 — Lv1(권한조합·자체서명·패키지위장) + Lv2(SMS자동발송·접근성악용·사칭키워드) + Lv3(런타임 SMS가로채기·오버레이·자격증명탈취) 각 3개 + VT 41/68(Banker). `is_demo=true` → 프론트에 "🎬 시연용 데모 결과" 배지.
+
+**왜**: 발표(시연) 때 3단계 파이프라인 전체 검출을 보여줘야 하는데, 실제 동적(Lv3)은 런타임 행위가 안 나오면 비어 라이브 시연에 불안정. 명확히 라벨된 고정 데모로 매번 전체 단계 검출 보장 (실제 분석과 배지로 구분 — 검출 보고만).
+
+**결과**: ✅ tsc 0 / eslint 0 / pytest 통과. E2E: 데모 샘플 → static/bytecode/dynamic 모두 verdict=fail(각 3 flags), signal_count=9, is_demo=true.
+
+---
+
+## 2026-06-10 (6) — APK 동적분석 통신을 Tailscale 직통으로 (multipass exec 제거)
+
+**무엇**: VM(sg-sandbox)을 Tailscale 에 올려 api_server 가 VM 의 `100.120.84.121:8002` 로 *직접 HTTP*. `.env` `APK_DYNAMIC_REMOTE_URL` 을 `127.0.0.1:18002`(WSL 브릿지) → VM tailscale IP 로 변경. `start_stack.sh` 의 `ENABLE_APK_BRIDGE` 기본값 auto→false (브릿지 deprecated).
+
+**왜**: 기존 브릿지는 매 호출 `multipass exec`(= VM SSH) → 동시 mpssh 세션과 SSH 경합으로 transient 502('연결 실패'). WSL↔VM 은 Hyper-V 서브넷 분리로 IP 직접 라우팅 불가(172.25.x ↔ 172.30.x, ping 손실 확인) → Tailscale 오버레이로 우회. 프로젝트가 이미 Tailscale 표준(funnel) 이라 자연스러운 선택.
+
+**작업**: VM 안 tailscale 설치(1.98.4) + `tailscale up`(사용자 계정 인증) + tailscaled enabled(재부팅 생존). VM 서버는 이미 `0.0.0.0:8002` bind → bind 변경 불필요. 토큰(dev-secret-123) 동일.
+
+**결과**: ✅ WSL→VM tailscale ping ok(~139ms), `100.120.84.121:8002/health` 200. **WSL 브릿지(127.0.0.1:18002) 종료한 상태에서** status `{ready:true}` + 동적 분석 Lv3 완료(verdict=pass) → multipass exec 없이 직통 동작 증명. 이제 mpssh 동시 사용해도 분석 안정.
+
+**메모**: VM tailscale IP 가 바뀌면 `.env` 의 REMOTE_URL 만 갱신(`multipass exec sg-sandbox -- sudo tailscale ip -4`). `_ensure_bridge`(admin start)는 tailscale 닿으면 no-op — deprecated 경로지만 무해해 유지.
+
+---
+
+## 2026-06-10 (7) — Lv3 '연결 실패' vs '분석 불가' 구분 (오해 수정)
+
+**증상**: tailscale 전환 후에도 일부 샘플이 Lv3 "연결 실패"로 떠 연결 문제로 오해.
+
+**진짜 원인**: 연결 문제 아님. VM 로그 확인 결과 POST 가 VM 에 정상 도착했고, *분석 자체*가 실패 — 패킹된 샘플(com.kezhan.buildAndsign, Secapk packer)이 redroid 에뮬레이터에서 `spawn 타임아웃 + am start 후 pid 없음` 으로 **실행 자체가 안 됨** → VM 이 502 반환. tailscale 연결은 정상(다른 샘플은 완료, /health 계속 200).
+
+**수정**: `analyze_apk_dynamic` 의 error 를 원인별로 구분 — `error` 문자열이 `remote http {5xx}` 로 시작(=VM 받았지만 분석 실패)이면 verdict `incomplete`("분석 불가", 주황) + "앱이 격리 VM 에서 실행 안 됨, 연결은 정상" 안내. `remote call failed`(진짜 네트워크 실패)일 때만 `error`("연결 실패"). 프론트 배지에 incomplete 추가.
+
+**결과**: ✅ tsc 0 / eslint 0 / pytest 통과. 그 패킹 샘플 재분석 → verdict=incomplete, "동적 분석 미완료 — 이 앱이 격리 VM 에서 실행되지 않았어요 (packing·anti-emulator 가능). 연결은 정상".
+
+**메모**: 패킹/anti-emulator APK 가 에뮬에서 안 뜨는 건 정적 분석 영역 밖 자체 한계 — 시연엔 '🎬 시연용 샘플' 또는 실행되는 일반 샘플 권장.

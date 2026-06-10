@@ -21,6 +21,10 @@ const TrainingMetricsChart = dynamic(
   () => import("../charts").then((m) => m.TrainingMetricsChart),
   { ssr: false },
 );
+const GatePerClassBar = dynamic(
+  () => import("../charts").then((m) => m.GatePerClassBar),
+  { ssr: false },
+);
 
 type DataStats = {
   classifier: { total: number; labels: Record<string, number> };
@@ -37,7 +41,9 @@ type DataStats = {
 
 type SessionInfo = {
   session_id: string;
-  model: "classifier" | "gliner";
+  model: string;
+  kind?: string;
+  gate_name?: string;
   status: "running" | "completed" | "failed" | "cancelled";
   started_at: number;
   ended_at: number | null;
@@ -185,6 +191,40 @@ type StartTrainingResponse = SessionInfo | {
   queued_sequence?: unknown;
 };
 
+type GatePerClassMetric = {
+  precision: number;
+  recall: number;
+  f1: number;
+  support: number;
+};
+
+type GateWatchCell = {
+  true: string;
+  pred: string;
+  count: number;
+  denom: number;
+  rate: number;
+};
+
+type GateMetrics = {
+  accuracy?: number;
+  macro_f1?: number;
+  labels?: string[];
+  per_class?: Record<string, GatePerClassMetric>;
+  confusion?: number[][];
+  watch_cells?: GateWatchCell[];
+};
+
+const GATE_LABEL_KO: Record<string, string> = {
+  normal: "정상",
+  scam_attempt: "사기 시도",
+  scam_news_edu: "사기 예방·뉴스",
+};
+
+function gateLabelKo(label: string): string {
+  return GATE_LABEL_KO[label] ?? label;
+}
+
 const STATUS_BADGE: Record<string, string> = {
   running: "bg-cyan-500/20 text-cyan-200 border-cyan-400/30",
   completed: "bg-emerald-500/20 text-emerald-200 border-emerald-400/30",
@@ -253,6 +293,14 @@ export default function TrainingClient() {
     early_stopping_patience: 2,
   });
   const [submitting, setSubmitting] = useState(false);
+
+  // 게이트(content_label 3-class) 학습 폼 — 평가 전용, classifier/gliner 와 분리.
+  const [gateForm, setGateForm] = useState({
+    epochs: 10,
+    val_ratio: 0.1,
+    input: "data/generated/user_samples_augmented.jsonl",
+  });
+  const [gateSubmitting, setGateSubmitting] = useState(false);
 
   const refreshList = useCallback(async () => {
     try {
@@ -361,6 +409,37 @@ export default function TrainingClient() {
     }
   }
 
+  async function startGateSession() {
+    setGateSubmitting(true);
+    setError("");
+    try {
+      const r = await fetch("/api/admin/training/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gate",
+          epochs: gateForm.epochs,
+          val_ratio: gateForm.val_ratio,
+          extra_jsonl: gateForm.input.trim() || null,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail ?? "게이트 세션 시작 실패");
+      const started = data as StartTrainingResponse;
+      const firstSessionId = "sessions" in started ? started.sessions[0]?.session_id : started.session_id;
+      if (firstSessionId) {
+        setSelectedId(firstSessionId);
+        const startedDetail = await fetchSessionDetail(firstSessionId);
+        if (startedDetail) setDetail(startedDetail);
+      }
+      await refreshList();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "게이트 세션 시작 실패");
+    } finally {
+      setGateSubmitting(false);
+    }
+  }
+
   async function cancelSession(id: string) {
     if (!confirm("이 세션을 취소할까요?")) return;
     const r = await fetch(`/api/admin/training/sessions/${id}/cancel`, { method: "POST" });
@@ -453,6 +532,10 @@ export default function TrainingClient() {
   );
   const hasGlinerChart = chartData.some((row) => row.gliner_progress !== null);
   const lossSpikes = detail?.loss_spikes ?? [];
+  const isGateSession = selectedSession?.kind === "gate";
+  const gateMetrics: GateMetrics | null = isGateSession
+    ? ((selectedSession?.last_metrics ?? null) as GateMetrics | null)
+    : null;
   const trainsClassifier = form.models.includes("classifier");
   const trainsGliner = form.models.includes("gliner");
   const toggleTrainingModel = (model: "classifier" | "gliner", checked: boolean) => {
@@ -820,6 +903,89 @@ export default function TrainingClient() {
         )}
       </section>
 
+      {/* 게이트(content_label 3-class) 학습 — 평가 전용 */}
+      <section className="rounded-2xl border border-amber-300/25 bg-amber-500/5 p-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-xs uppercase tracking-widest text-amber-200">Gate · content_label 3-class</div>
+            <h2 className="mt-1 text-lg font-semibold text-white">게이트 학습 (평가 전용)</h2>
+            <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-300">
+              파이프라인 맨 앞단에서 메시지를 <b>정상 / 사기 시도 / 사기 예방·뉴스</b> 3-class 로 거르는 게이트입니다.
+              hard negative(정상 안내문) 추가가 오탐(정상→사기)을 얼마나 줄이는지 측정하는 용도라, 학습은 하되
+              파이프라인에는 <b>적용하지 않습니다</b>(평가 전용).
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 rounded-xl border border-white/10 bg-slate-950/40 p-4 sm:grid-cols-3">
+          <GateRoleCard
+            tone="amber"
+            title="게이트 (이 카드)"
+            io="입력: 모든 메시지 · 출력: content_label 3종"
+            note="문지기 — 사기 시도만 다음 단계로 통과. 정상/예방 콘텐츠 오탐 차단."
+          />
+          <GateRoleCard
+            tone="cyan"
+            title="분류기 (classifier)"
+            io="입력: 사기 시도 · 출력: scam_type 12종"
+            note="게이트를 통과한 메시지가 어떤 사기 유형인지 판별. 파이프라인 Stage 2."
+          />
+          <GateRoleCard
+            tone="violet"
+            title="추출기 (GLiNER)"
+            io="입력: 사기 메시지 · 출력: entity 27종"
+            note="금액·기관·URL 등 사기 단서 span 추출. 파이프라인 Stage 3."
+          />
+        </div>
+
+        <div className="mt-4 grid gap-4 md:grid-cols-6">
+          <label className="space-y-1 text-sm md:col-span-3">
+            <span className="block text-slate-300">평가 입력 JSONL</span>
+            <input
+              type="text"
+              value={gateForm.input}
+              onChange={(e) => setGateForm({ ...gateForm, input: e.target.value })}
+              className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 font-mono text-xs"
+            />
+            <p className="text-xs text-slate-500">
+              증강 페이지에서 게이트 클래스(normal 등)를 늘린 뒤 promote 한 파일을 지정하면 됩니다.
+            </p>
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="block text-slate-300">epochs</span>
+            <input
+              type="number"
+              min={1}
+              max={30}
+              value={gateForm.epochs}
+              onChange={(e) => setGateForm({ ...gateForm, epochs: Number(e.target.value) })}
+              className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2"
+            />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="block text-slate-300">val ratio</span>
+            <input
+              type="number"
+              min={0.05}
+              max={0.5}
+              step={0.05}
+              value={gateForm.val_ratio}
+              onChange={(e) => setGateForm({ ...gateForm, val_ratio: Number(e.target.value) })}
+              className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2"
+            />
+          </label>
+          <div className="flex items-end md:col-span-1">
+            <button
+              onClick={() => void startGateSession()}
+              disabled={gateSubmitting}
+              className="w-full rounded-xl bg-amber-300 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {gateSubmitting ? "시작 중..." : "게이트 학습 시작"}
+            </button>
+          </div>
+        </div>
+      </section>
+
       <section className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-violet-300/20 bg-white/5 p-5">
         <div>
           <div className="text-xs uppercase tracking-widest text-violet-200">모델 비교 분석</div>
@@ -860,7 +1026,14 @@ export default function TrainingClient() {
                     {s.status}
                   </span>
                 </div>
-                <div className="mt-1 text-sm text-slate-200">{s.model}</div>
+                <div className="mt-1 flex items-center gap-1.5 text-sm text-slate-200">
+                  <span>{s.model}</span>
+                  {s.kind === "gate" && (
+                    <span className="rounded-full border border-amber-400/30 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200">
+                      평가
+                    </span>
+                  )}
+                </div>
                 <div className="mt-0.5 text-xs text-slate-500">
                   {fmtSeconds(s.started_at)} · {fmtDuration(s.started_at, s.ended_at)}
                 </div>
@@ -886,7 +1059,12 @@ export default function TrainingClient() {
                       취소
                     </button>
                   )}
-                  {detail.session.status === "completed" && (
+                  {detail.session.status === "completed" && detail.session.kind === "gate" && (
+                    <span className="rounded-xl border border-amber-400/30 bg-amber-500/15 px-4 py-2 text-sm font-semibold text-amber-200">
+                      게이트 · 평가 전용 (적용 불가)
+                    </span>
+                  )}
+                  {detail.session.status === "completed" && detail.session.kind !== "gate" && (
                     <button
                       onClick={() => void activateSession(detail.session.session_id)}
                       className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-200"
@@ -911,6 +1089,10 @@ export default function TrainingClient() {
                 <Stat label="시작" value={fmtSeconds(detail.session.started_at)} />
                 <Stat label="경과" value={fmtDuration(detail.session.started_at, detail.session.ended_at)} />
               </div>
+
+              {detail.session.kind === "gate" && gateMetrics && (
+                <GateMetricsPanel metrics={gateMetrics} />
+              )}
 
               {chartData.length > 0 && (
                 <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3">
@@ -1155,6 +1337,157 @@ function MiniMetric({ label, value }: { label: string; value: string }) {
     <div className="rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2">
       <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
       <div className="mt-1 font-mono text-sm text-slate-100">{value}</div>
+    </div>
+  );
+}
+
+function GateRoleCard({
+  tone,
+  title,
+  io,
+  note,
+}: {
+  tone: "amber" | "cyan" | "violet";
+  title: string;
+  io: string;
+  note: string;
+}) {
+  const toneClass = {
+    amber: "border-amber-400/30 bg-amber-500/10",
+    cyan: "border-cyan-400/30 bg-cyan-500/10",
+    violet: "border-violet-400/30 bg-violet-500/10",
+  }[tone];
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${toneClass}`}>
+      <div className="text-sm font-semibold text-white">{title}</div>
+      <div className="mt-1 font-mono text-[11px] text-slate-300">{io}</div>
+      <p className="mt-1 text-xs leading-relaxed text-slate-400">{note}</p>
+    </div>
+  );
+}
+
+function GateMetricsPanel({ metrics }: { metrics: GateMetrics }) {
+  const labels = metrics.labels ?? Object.keys(metrics.per_class ?? {});
+  const perClassBars = labels
+    .filter((l) => metrics.per_class?.[l])
+    .map((l) => {
+      const m = metrics.per_class![l];
+      return {
+        label: gateLabelKo(l),
+        precision: m.precision,
+        recall: m.recall,
+        f1: m.f1,
+      };
+    });
+  const confusion = metrics.confusion ?? [];
+  const watchCells = metrics.watch_cells ?? [];
+
+  return (
+    <div className="space-y-4 rounded-xl border border-amber-300/20 bg-amber-500/5 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-xs uppercase tracking-widest text-amber-200">게이트 평가 결과</div>
+          <h3 className="mt-1 text-lg font-semibold text-white">content_label 3-class 성능</h3>
+        </div>
+        <div className="flex gap-2">
+          <PlainMetric label="정확도" value={pct(metrics.accuracy)} help="전체 정답률" />
+          <PlainMetric label="macro F1" value={pct(metrics.macro_f1)} help="3 class 균형 점수" />
+        </div>
+      </div>
+
+      {perClassBars.length > 0 && (
+        <div className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
+          <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">클래스별 정밀도/재현율/F1</div>
+          <GatePerClassBar data={perClassBars} />
+        </div>
+      )}
+
+      {confusion.length > 0 && (
+        <div className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
+          <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">
+            혼동 행렬 (행=실제, 열=예측)
+          </div>
+          <div className="overflow-auto">
+            <table className="text-center text-xs">
+              <thead>
+                <tr className="text-slate-400">
+                  <th className="px-2 py-1" />
+                  {labels.map((l) => (
+                    <th key={l} className="px-2 py-1 font-medium">
+                      {gateLabelKo(l)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {confusion.map((row, i) => {
+                  const rowTotal = row.reduce((a, b) => a + b, 0) || 1;
+                  return (
+                    <tr key={labels[i] ?? i}>
+                      <td className="px-2 py-1 text-right font-medium text-slate-400">
+                        {gateLabelKo(labels[i] ?? String(i))}
+                      </td>
+                      {row.map((cell, j) => {
+                        const intensity = Math.min(1, cell / rowTotal);
+                        const correct = i === j;
+                        const bg = correct
+                          ? `rgba(34, 197, 94, ${0.12 + intensity * 0.55})`
+                          : cell > 0
+                            ? `rgba(244, 63, 94, ${0.1 + intensity * 0.6})`
+                            : "transparent";
+                        return (
+                          <td
+                            key={j}
+                            className="px-3 py-2 font-mono text-slate-100"
+                            style={{ backgroundColor: bg }}
+                          >
+                            {cell}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {watchCells.length > 0 && (
+        <div className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
+          <div className="mb-2 text-xs uppercase tracking-widest text-slate-400">
+            집중 오류 셀 (낮을수록 좋음 · 정상→사기 오탐이 핵심 지표)
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {watchCells.map((c) => {
+              const hot = c.rate >= 0.05;
+              return (
+                <div
+                  key={`${c.true}-${c.pred}`}
+                  className={`rounded-lg border px-3 py-2 ${
+                    hot
+                      ? "border-rose-400/40 bg-rose-500/10"
+                      : "border-emerald-400/25 bg-emerald-500/10"
+                  }`}
+                >
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-200">
+                      {gateLabelKo(c.true)} → {gateLabelKo(c.pred)}
+                    </span>
+                    <span className={`font-mono ${hot ? "text-rose-200" : "text-emerald-200"}`}>
+                      {pct(c.rate)}
+                    </span>
+                  </div>
+                  <div className="mt-1 font-mono text-[11px] text-slate-500">
+                    {c.count} / {c.denom}건
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

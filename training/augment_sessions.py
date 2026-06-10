@@ -40,6 +40,7 @@ class AugmentParams:
     concurrency: int = 8
     limit: int = 0
     scam_type: str | None = None        # 특정 유형 씨앗만 증강 (None = 전체)
+    content_label: str | None = None    # 게이트 클래스 씨앗만 증강 (None = 전체)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,6 +51,7 @@ class AugmentParams:
             "concurrency": self.concurrency,
             "limit": self.limit,
             "scam_type": self.scam_type,
+            "content_label": self.content_label,
         }
 
 
@@ -232,6 +234,8 @@ def start_session(params: AugmentParams) -> dict[str, Any]:
     ]
     if params.scam_type:
         cmd += ["--scam-type", params.scam_type]
+    if params.content_label:
+        cmd += ["--content-label", params.content_label]
 
     env = os.environ.copy()
     env["SCAMGUARDIAN_AUGMENT_METRICS"] = str(_metrics_path(session_id))

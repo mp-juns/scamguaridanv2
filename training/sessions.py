@@ -422,8 +422,8 @@ def start_sequential_sessions(
 
 
 def start_session(params: SessionParams) -> dict[str, Any]:
-    if params.model not in ALLOWED_MODELS:
-        raise ValueError(f"model 은 {ALLOWED_MODELS} 중 하나여야 합니다.")
+    if params.model not in (*ALLOWED_MODELS, "gate"):
+        raise ValueError(f"model 은 {(*ALLOWED_MODELS, 'gate')} 중 하나여야 합니다.")
     _ensure_root()
     session_id = uuid.uuid4().hex[:12]
     sdir = _session_dir(session_id)
@@ -431,31 +431,46 @@ def start_session(params: SessionParams) -> dict[str, Any]:
     output_dir = sdir / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    module = "training.train_classifier" if params.model == "classifier" else "training.train_gliner"
-    cmd: list[str] = [
-        *_training_python_command(), "-u", "-m", module,
-        "--output-dir", str(output_dir),
-        "--epochs", str(params.epochs),
-        "--batch-size", str(params.batch_size),
-        "--val-ratio", str(params.val_ratio),
-        "--seed", str(params.seed),
-    ]
-    if params.lora and params.model == "classifier":
-        cmd.append("--lora")
-    if params.model == "classifier":
-        cmd += [
-            "--early-stopping-patience",
-            str(params.early_stopping_patience),
-            "--early-stopping-threshold",
-            str(params.early_stopping_threshold),
+    cmd: list[str]
+    if params.model == "gate":
+        # content_label 3-class 게이트 평가 — 기존 standalone 스크립트를 그대로 호출.
+        # 스크립트가 끝나면 record_gate_session() 으로 status/metrics/log 를 자가 등록한다.
+        gate_input = params.extra_jsonl or "data/generated/user_samples_augmented.jsonl"
+        cmd = [
+            *_training_python_command(), "-u",
+            "scripts/content_label_gate.py", "--train",
+            "--session-id", session_id,
+            "--input", gate_input,
+            "--epochs", str(params.epochs),
+            "--val-ratio", str(params.val_ratio),
+            "--seed", str(params.seed),
         ]
-    if params.model == "gliner":
-        cmd += ["--device", os.getenv("SCAMGUARDIAN_GLINER_DEVICE", "cuda")]
-        cmd += ["--max-steps", os.getenv("SCAMGUARDIAN_GLINER_MAX_STEPS", "3000")]
-    if params.extra_jsonl:
-        cmd += ["--extra-jsonl", params.extra_jsonl]
-    if params.base_model:
-        cmd += ["--base-model", params.base_model]
+    else:
+        module = "training.train_classifier" if params.model == "classifier" else "training.train_gliner"
+        cmd = [
+            *_training_python_command(), "-u", "-m", module,
+            "--output-dir", str(output_dir),
+            "--epochs", str(params.epochs),
+            "--batch-size", str(params.batch_size),
+            "--val-ratio", str(params.val_ratio),
+            "--seed", str(params.seed),
+        ]
+        if params.lora and params.model == "classifier":
+            cmd.append("--lora")
+        if params.model == "classifier":
+            cmd += [
+                "--early-stopping-patience",
+                str(params.early_stopping_patience),
+                "--early-stopping-threshold",
+                str(params.early_stopping_threshold),
+            ]
+        if params.model == "gliner":
+            cmd += ["--device", os.getenv("SCAMGUARDIAN_GLINER_DEVICE", "cuda")]
+            cmd += ["--max-steps", os.getenv("SCAMGUARDIAN_GLINER_MAX_STEPS", "3000")]
+        if params.extra_jsonl:
+            cmd += ["--extra-jsonl", params.extra_jsonl]
+        if params.base_model:
+            cmd += ["--base-model", params.base_model]
 
     env = os.environ.copy()
     wsl_cuda_lib = "/usr/lib/wsl/lib"
@@ -495,6 +510,9 @@ def start_session(params: SessionParams) -> dict[str, Any]:
         "last_metrics": None,
         "command": cmd,
     }
+    if params.model == "gate":
+        # 평가 전용 세션 — record_gate_session 과 동일한 마킹(적용 버튼 숨김·메트릭 보존).
+        info["kind"] = "gate"
     _write_status(session_id, info)
 
     # subprocess 종료 감시 스레드 — exit_code 채우기
@@ -531,10 +549,13 @@ def _watch_process(session_id: str, process: subprocess.Popen, log_handle) -> No
         data["status"] = "completed" if rc == 0 else "failed"
     data["ended_at"] = time.time()
     data["exit_code"] = rc
-    # 마지막 metrics 행 한 번 더 읽어 last_metrics 갱신
-    rows = read_metrics(session_id, max_rows=1)
-    if rows:
-        data["last_metrics"] = rows[-1]
+    # 마지막 metrics 행 한 번 더 읽어 last_metrics 갱신.
+    # 단, 게이트 세션은 record_gate_session() 이 confusion/per_class/watch_cells 가 담긴
+    # 풍부한 last_metrics 를 이미 써놨으므로 슬림한 metrics.jsonl 행으로 덮어쓰지 않는다.
+    if data.get("kind") != "gate":
+        rows = read_metrics(session_id, max_rows=1)
+        if rows:
+            data["last_metrics"] = rows[-1]
     _write_status(session_id, data)
 
 
@@ -604,6 +625,8 @@ def activate_session(session_id: str) -> dict[str, Any]:
     data = _refresh_status(session_id)
     if data is None:
         raise FileNotFoundError("세션을 찾을 수 없습니다.")
+    if data.get("kind") == "gate":
+        raise ValueError("게이트(평가 전용) 세션은 파이프라인에 적용할 수 없습니다.")
     if data.get("status") != "completed":
         raise ValueError(f"완료된 세션만 활성화할 수 있습니다 (현재 status={data.get('status')}).")
     output_dir = data.get("output_dir") or ""
@@ -628,3 +651,84 @@ def activate_session(session_id: str) -> dict[str, Any]:
     except Exception:
         pass
     return {"model": model, "path": output_dir}
+
+
+def _format_gate_summary(gate_name: str, metrics: dict[str, Any]) -> str:
+    """게이트 평가 결과를 사람이 읽을 텍스트로 — 세션 상세의 log tail 에 노출."""
+    lines = [f"=== {gate_name} ===",
+             f"accuracy={metrics.get('accuracy', 0):.4f}  macro_f1={metrics.get('macro_f1', 0):.4f}",
+             "", "[per-class precision/recall/F1]"]
+    per = metrics.get("per_class") or {}
+    for label, m in per.items():
+        lines.append(f"  {label:14s} P {m.get('precision', 0):.3f}  R {m.get('recall', 0):.3f}  "
+                     f"F1 {m.get('f1', 0):.3f}  (support {m.get('support', 0)})")
+    labels = metrics.get("labels") or list(per.keys())
+    cm = metrics.get("confusion")
+    if cm:
+        lines += ["", f"[confusion matrix] 행=true, 열=pred  순서: {labels}"]
+        header = " " * 16 + "".join(f"{str(l)[:10]:>12}" for l in labels)
+        lines.append(header)
+        for i, l in enumerate(labels):
+            lines.append(f"  {str(l):14s}" + "".join(f"{cm[i][j]:>12}" for j in range(len(labels))))
+    cells = metrics.get("watch_cells") or []
+    if cells:
+        lines += ["", "[집중 오류 셀 (true→pred)]"]
+        for c in cells:
+            lines.append(f"  {c.get('true',''):14s} → {c.get('pred',''):14s}: "
+                         f"{c.get('count',0)} / {c.get('denom',0)} ({c.get('rate',0)*100:.1f}%)")
+    return "\n".join(lines) + "\n"
+
+
+def record_gate_session(
+    session_id: str,
+    *,
+    gate_name: str,
+    params: dict[str, Any],
+    metrics: dict[str, Any],
+    started_at: float,
+    ended_at: float | None = None,
+    status: str = "completed",
+    exit_code: int = 0,
+    output_dir: str | None = None,
+) -> dict[str, Any]:
+    """게이트(평가 전용) 실험을 학습 세션 목록에 등록.
+
+    분류기/GLiNER 처럼 파이프라인에 '적용'하는 모델이 아니라 효과 측정용 세션이다
+    (`kind="gate"`). `activate_session` 은 kind=gate 를 거부하고, 프론트엔드는 적용 버튼을
+    숨긴다. status.json/metrics.jsonl/train.log 를 일반 세션과 같은 위치에 써서 목록·상세에
+    그대로 노출된다.
+    """
+    _ensure_root()
+    out_dir = output_dir if output_dir is not None else str(_session_dir(session_id) / "output")
+    data = {
+        "session_id": session_id,
+        "kind": "gate",
+        "model": gate_name,        # 목록 표시용 라벨
+        "gate_name": gate_name,
+        "status": status,
+        "started_at": started_at,
+        "ended_at": ended_at if ended_at is not None else time.time(),
+        "exit_code": exit_code,
+        "pid": None,
+        "params": params,
+        "output_dir": out_dir,
+        "last_metrics": metrics,
+    }
+    _write_status(session_id, data)
+    # metrics.jsonl — 상세 화면 metric tail 용 (최종 결과 한 줄)
+    try:
+        mp = _metrics_path(session_id)
+        mp.parent.mkdir(parents=True, exist_ok=True)
+        with mp.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"event": "gate_eval",
+                                "eval_accuracy": metrics.get("accuracy"),
+                                "eval_macro_f1": metrics.get("macro_f1")}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # train.log — 상세 화면 log tail 에 사람이 읽는 결과 노출
+    try:
+        with _log_path(session_id).open("a", encoding="utf-8") as f:
+            f.write(_format_gate_summary(gate_name, metrics))
+    except Exception:
+        pass
+    return data

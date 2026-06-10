@@ -95,12 +95,13 @@ class AugmentStartRequest(BaseModel):
     concurrency: int = 8
     limit: int = 0
     scam_type: str | None = None        # 특정 유형 씨앗만 (None = 전체)
+    content_label: str | None = None    # 게이트 클래스 씨앗만 (None = 전체)
 
 
 class SeedCreateRequest(BaseModel):
     """관리자가 직접 작성하는 씨앗 1개 (굶은 유형 보강용)."""
     text: str
-    scam_type: str
+    scam_type: str | None = None        # normal/scam_news_edu 씨앗은 비워둘 수 있음
     content_label: str = GATE_SCAM_ATTEMPT
 
 

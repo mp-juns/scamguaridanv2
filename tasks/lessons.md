@@ -264,3 +264,28 @@ synthetic extra JSONL 포함 학습셋 12025건과 혼동을 만들었다.
 **적용 시점**: 다음번에도 정체성 변경·필드 폐기·token name rename 같은 큰 일이 있을 때 *반드시* 회귀 가드 테스트 동반.
 
 ---
+
+## 2026-06-09 — 사용자 제공 샘플을 내 휴리스틱으로 재분류하지 말 것
+
+**패턴**: 사용자가 *정상 hard negative* 로 모아 보낸 문자 중 `http://앱다운.com` 이 있는 CJ 배송문을
+내가 "MoqHao형 스미싱" 으로 단정해 scam_attempt 후보로 빼버림. 사용자 정정: "정상 문자인데 왜 스캠으로?".
+
+**규칙**:
+- 사용자가 특정 라벨 버킷으로 제공한 샘플은 사용자가 ground truth. 의심스러워도 내 판단으로 라벨을
+  뒤집지 말 것 — 의심되면 "이건 빼는 게 어떨지" *물어보고*, 단정/이동하지 말 것.
+- 오히려 "정상인데 의심 URL 포함" 은 false-positive 억제용 hard negative 로 가장 가치 큼.
+
+**부가 발견 (root cause)**: scam-framed 증강기(`augment_user_samples.SYSTEM_PROMPT`)는 의심 URL 이
+든 *normal* 씨앗을 스미싱으로 오해해 risk_flags/악성 entity 를 붙임. → normal/scam_news_edu 씨앗 증강 후
+**반드시** `content_label=='normal' 인데 risk_flags 비었는지` 검수. 오염 시 본문이 정상이면 메타([])만
+정리, 본문까지 스캠화됐으면 폐기.
+
+**검수 확장 (2026-06-09)**: risk_flags 만 보면 놓친다 — **entity 라벨**도 봐야 함. 증강기가 normal 변형의
+정상 기관/송장을 `사칭 기관명`·`허위 운송장 번호`·`사칭 서비스명`(라벨에 사칭/허위/악성/피싱/가짜 포함)으로
+달아둠(신규뿐 아니라 기존 760 normal 에도 454개 누적). normal 증강 검수 체크리스트:
+`risk_flags==[] && flag_groups==[] && entity 라벨에 사칭/허위/악성/피싱/가짜 없음`. 위반 시 본문 정상이면
+해당 entity 만 drop(중립 entity 유지), 텍스트는 보존.
+
+**gate 범위 주의**: group_split_experiment.load_records 는 content_label=='scam_attempt' 만 로드 →
+normal/scam_news_edu(HN) 추가는 이 group-split macro_f1 에 안 잡힘. HN 효과(FP 억제)는 content_label
+단위 별도 eval 필요. 학습 금지 제약 시 gate 는 명령만 준비하고 데이터 정합성(누수·라벨분포)만 검증.

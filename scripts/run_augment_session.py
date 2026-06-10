@@ -30,7 +30,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from training.augment_sessions import emit_metric
 
 
-def _load_seeds(path: Path, scam_type: str | None, limit: int) -> list[dict[str, Any]]:
+def _load_seeds(
+    path: Path,
+    scam_type: str | None,
+    limit: int,
+    content_label: str | None = None,
+) -> list[dict[str, Any]]:
     seeds: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as fp:
         for line in fp:
@@ -42,6 +47,8 @@ def _load_seeds(path: Path, scam_type: str | None, limit: int) -> list[dict[str,
             except json.JSONDecodeError:
                 continue
             if scam_type and (rec.get("scam_type") or "").strip() != scam_type:
+                continue
+            if content_label and (rec.get("content_label") or "").strip() != content_label:
                 continue
             seeds.append(rec)
     if limit and limit > 0:
@@ -81,10 +88,12 @@ def main() -> int:
     p.add_argument("--concurrency", type=int, default=8)
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--scam-type", default=None)
+    p.add_argument("--content-label", default=None,
+                   help="게이트 클래스 필터 (normal/scam_attempt/scam_news_edu). 비우면 전체.")
     args = p.parse_args()
 
     seed_path = Path(args.seed_file)
-    seeds = _load_seeds(seed_path, args.scam_type, args.limit)
+    seeds = _load_seeds(seed_path, args.scam_type, args.limit, args.content_label)
     rounds = max(1, args.rounds)
     concurrency = max(1, min(16, args.concurrency))
     # (seed, round) 작업 목록

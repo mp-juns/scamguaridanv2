@@ -658,10 +658,10 @@ async def admin_training_synthetic_summary() -> dict[str, Any]:
         "subprocess 로 학습 세션 spawn — `.scamguardian/training_sessions/{id}/` 에 "
         "`status.json` / `metrics.jsonl` / `train.log` 출력.\n\n"
         "**Body** (`StartTrainingRequest`):\n"
-        "- `model` — `classifier` (mDeBERTa) 또는 `gliner` (단일 세션, legacy)\n"
+        "- `model` — `classifier` (mDeBERTa) / `gliner` / `gate` (content_label 3-class 평가, 단일 세션)\n"
         "- `models` — `['classifier', 'gliner']` 처럼 보내면 선택된 모델을 각각 학습\n"
         "- `epochs` (기본 3), `batch_size` (기본 8), `lora` (LoRA 사용)\n"
-        "- `extra_jsonl` — 추가 데이터셋 경로\n"
+        "- `extra_jsonl` — 추가 데이터셋 경로 (gate 는 평가 입력 JSONL 로 사용)\n"
         "- `val_ratio` (기본 0.1), `seed` (기본 17), `base_model`"
     ),
     responses={**_ADMIN_RESPONSES, 400: {"description": "유효성 실패"}},
