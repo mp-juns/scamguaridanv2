@@ -113,7 +113,7 @@ gate 세션 wiring+가드 PASS(confusion·macro_f1·watch_cells 보존).
 # synthetic seed 반영 + 증강 (학습 대기) — 2026-06-07
 
 ## Plan
-- [ ] 1. draft 검증 → `admin_seeds.draft.jsonl`(32) → `admin_seeds.jsonl` append (신규 생성).
+- [ ] 1. draft 검증 → `pending_admin_draft_seeds.jsonl`(32) → `admin_seeds.jsonl` append (신규 생성).
 - [ ] 2. append 전후 검증: JSON 파싱 / 중복 text / 중복 source_ref / scam_type 유효성.
 - [ ] 3. `scripts/augment_seeds.py` — 신규 32 seed만 × 20변형 (batch5/max_tokens8192, 기존 출력과 dedup).
 - [ ] 4. `user_samples_augmented.jsonl` 에 append (덮어쓰기 금지). 2280 → ~2920 예상.

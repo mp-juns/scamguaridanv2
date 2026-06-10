@@ -7,7 +7,7 @@
 
 사용:
   python scripts/augment_seeds.py \
-    --seed-file data/processed/admin_seeds.draft.jsonl \
+    --seed-file data/processed/pending_admin_draft_seeds.jsonl \
     --output data/generated/user_samples_augmented.jsonl \
     --variants 20 --batch 5 --max-tokens 8192
 """

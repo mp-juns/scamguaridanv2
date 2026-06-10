@@ -243,3 +243,13 @@ data/generated/
 
 # AndroZoo 다운로드 샘플 (실제 멀웨어 — 절대 커밋 금지)
 data/androzoo/
+
+# 환경파일·문서 임시 백업 (커밋 금지)
+.env.bak*
+*.tmp.*
+
+# 데이터 작업 중 생기는 백업 스냅샷 (원본 jsonl 만 커밋)
+data/processed/*.bak-*
+
+# phh 워크스페이스 학습 산출물 사본 (대용량, 재생성 가능)
+.scamguardian/phh_training/
