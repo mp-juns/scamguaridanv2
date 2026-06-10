@@ -2,6 +2,17 @@
 
 > 메인 README 는 *실행법* 만. 이 문서는 *모든 것* — 철학·시나리오·아키텍처·API·데이터·플래그·프로토콜.
 
+> **최근 변경 (2026-06, 상세는 `changes.md`)** — 이 문서 본문에 아직 미반영된 추가분:
+> - **게이트 학습·증강 웹 워크플로**: `/admin/training` 게이트 학습 패널(kind=gate 평가 전용,
+>   confusion 시각화) + `/admin/augment` 2파트(게이트 content_label / 분석 scam_type) 분리.
+>   게이트 3-class macro_f1 0.960 / 5-class scam_category 벤치마크 0.957 (`docs/experiments/`)
+> - **홈 진입 게이트 + 비회원 일일 한도 + 프롬프트 인젝션 차단** (`EntryGate.tsx`, `detect_prompt_injection`)
+> - **APK 공개 페이지** `/apk` (`api_server_pkg/apk_public.py`)
+> - **모듈 분리 (facade — import 경로 불변)**: `pipeline/config` → config_taxonomy/gate/flags,
+>   `pipeline/stt` → stt_common/claude/clova, `pipeline/kakao_formatter` → kakao_result/dialog,
+>   `db/sqlite_repository` → sqlite_core/runs/platform
+> - 루트 문서 정리: 실험·감사 md → `docs/`, 완료 브랜치노트 → `archive/`, seed 파일 `pending_*` 통일
+
 목차:
 1. [핵심 철학](#1-핵심-철학----사기-funnel-다단계-인터럽트-시스템)
 2. [4단계 인터럽트 시나리오](#2-4단계-인터럽트-시나리오)

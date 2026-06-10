@@ -18,30 +18,30 @@ content_label 데이터 증강을 증강 섹션에 (3) 게이트 전용 데이�
 - `run_augment_session._load_seeds`(L44) scam_type 필터만 → content_label 타깃 증강 불가.
 
 ## Part A — 게이트 학습을 파인튜닝 세션에 연결
-- [ ] A1. `sessions.py` `start_session` 에 `model=="gate"` 분기 (content_label_gate.py --train
+- [x] A1. `sessions.py` `start_session` 에 `model=="gate"` 분기 (content_label_gate.py --train
       --session-id/--epochs/--val-ratio/--seed/--input 호출, kind="gate" 기록).
-- [ ] A1b. `_watch_process`: 기존 `kind=="gate"` 면 `last_metrics` 덮어쓰지 않음(가드).
-- [ ] A2. `admin_training.py` `POST /sessions` 에서 `model=="gate"` 단일 세션 허용.
-- [ ] A3. `TrainingClient.tsx` "게이트 학습" 전용 패널(epochs/val_ratio/input + 시작 버튼).
+- [x] A1b. `_watch_process`: 기존 `kind=="gate"` 면 `last_metrics` 덮어쓰지 않음(가드).
+- [x] A2. `admin_training.py` `POST /sessions` 에서 `model=="gate"` 단일 세션 허용.
+- [x] A3. `TrainingClient.tsx` "게이트 학습" 전용 패널(epochs/val_ratio/input + 시작 버튼).
 
 ## Part B — 게이트 전용 데이터 증강 (content_label)
-- [ ] B1. `run_augment_session._load_seeds` 에 `--content-label` 필터 추가(scam_type 필터 미러).
-- [ ] B2. `augment_sessions.AugmentParams` 에 `content_label` + 인자 전달.
-- [ ] B3. `models.py`: `AugmentStartRequest.content_label` 추가, `SeedCreateRequest.scam_type` 옵션화.
-- [ ] B4. `admin_augment.py`: augment_start content_label 전달 / `_append_seed` normal 허용 /
+- [x] B1. `run_augment_session._load_seeds` 에 `--content-label` 필터 추가(scam_type 필터 미러).
+- [x] B2. `augment_sessions.AugmentParams` 에 `content_label` + 인자 전달.
+- [x] B3. `models.py`: `AugmentStartRequest.content_label` 추가, `SeedCreateRequest.scam_type` 옵션화.
+- [x] B4. `admin_augment.py`: augment_start content_label 전달 / `_append_seed` normal 허용 /
       `_compute_seed_stats` `by_content_label` 추가.
-- [ ] B5. `AugmentClient.tsx`: 씨앗 폼 scam_type 옵션화 + 증강 폼 content_label 필터.
+- [x] B5. `AugmentClient.tsx`: 씨앗 폼 scam_type 옵션화 + 증강 폼 content_label 필터.
 
 ## Part C — 게이트 전용 시각화
-- [ ] C1. augment 페이지: content_label 3-class 커버리지 바.
-- [ ] C2. training 페이지(gate 세션): confusion 히트맵 + per-class P/R/F1 + watch_cells 콜아웃.
-- [ ] C3. `charts.tsx`: ConfusionMatrix / GatePerClassBar 컴포넌트.
+- [x] C1. augment 페이지: content_label 3-class 커버리지 바.
+- [x] C2. training 페이지(gate 세션): confusion 히트맵 + per-class P/R/F1 + watch_cells 콜아웃.
+- [x] C3. `charts.tsx`: ConfusionMatrix / GatePerClassBar 컴포넌트.
 
 ## 검증
-- [ ] V1. `SCAMGUARDIAN_AUGMENT_FAKE=1` content_label 필터 증강(비용 0).
-- [ ] V2. 웹에서 게이트 학습 시작 → 완료 후 confusion 보존(가드).
-- [ ] V3. `npm run lint`+`build`, 영향 `pytest`.
-- [ ] V4. classifier/gliner/scam_type 증강 회귀 없음.
+- [x] V1. `SCAMGUARDIAN_AUGMENT_FAKE=1` content_label 필터 증강(비용 0).
+- [x] V2. 웹에서 게이트 학습 시작 → 완료 후 confusion 보존(가드).
+- [x] V3. `npm run lint`+`build`, 영향 `pytest`.
+- [x] V4. classifier/gliner/scam_type 증강 회귀 없음.
 
 ## Review (완료 2026-06-10)
 

@@ -4,6 +4,32 @@ milestone 단위 변경 로그. 누적 append, 최신이 위.
 
 ---
 
+## 2026-06-11 — 프로젝트 전면 정리: 파일 구조화 + 긴 모듈 6개 분리 + 문서 최신화
+
+**무엇**:
+- **파일 정리**: 백업/임시 19개 삭제(~12.6MB — sqlite 스냅샷 4+symlink, admin_seeds .bak 11,
+  .env.bak, kyy.md.tmp). seed 파일 `pending_*` 네이밍 통일(내용·source_ref 불변, seed-stats
+  분포 135/228/22 불변 검증). gitignore 보강(.env.bak*, *.tmp.*, *.bak-*, phh_training).
+  실험·감사 md → `docs/experiments|audits/`, 완료 브랜치노트(kyy/hh/conversation_summary)·
+  일회성 스크립트(backregister/remap) → `archive/`. 루트 md 13→6개.
+- **긴 모듈 6개 분리** (facade 재export — 기존 import 경로 100% 호환, 새 모듈은 원본 역import 금지):
+  `pipeline/kakao_formatter`(765→51) → kakao_result/dialog ·
+  `pipeline/stt`(922→365) → stt_common/claude/clova (Whisper 체인은 테스트 monkeypatch 제약으로 잔류) ·
+  `db/sqlite_repository`(1,264→57) → sqlite_core(스키마 한 덩어리)/runs/platform ·
+  `pipeline/config`(1,059→143) → config_taxonomy/gate/flags (새 모듈은 순수 데이터·함수만) ·
+  `AdminRunEditor.tsx`(1,268→869) → runEditorShared/RunContextPanel/RunMediaPanel ·
+  `TrainingClient.tsx`(1,763→923) → trainingShared/panels/KnowledgeGraphCanvas (charts dynamic 패턴 일관)
+- **문서 최신화**: README 전체를 기존 형식 유지하며 2026-06-11 기준 재작성(게이트 0.960·5-class
+  0.957·증강 2파트·APK /apk·데이터 현황·모델 비활성 사유·남은 일 우선순위). tasks/todo.md 완료
+  체크박스 [x] 정리. .scamguardian/README 에 최근 변경 노트 삽입.
+
+**왜**: README가 05-27에서 멈춰 3주 진전 미반영, 루트에 실험/임시 파일 혼재, 1,000줄+ 파일이
+  14개로 유지보수 부담. 완성도 감사 결과 "분석 엔진 완성, 데이터·운영 정비 단계"로 판정 — 구조를
+  정리해 다음 단계(실물 seed 수집→재학습→active 적용) 진입 비용을 낮춤.
+
+**검증**: 분리 단계마다 영향 pytest → 전체 `pytest -q` 398 passed (총 5회) · `npm run lint`+`build`
+  통과 (3회) · seed-stats 분포 불변 · 활성 DB·augmented·active_models 미변경. 단계당 1 commit.
+
 ## 2026-06-10 — 게이트 학습·content_label 증강·게이트 시각화 웹 연결
 
 **무엇**: 게이트(content_label) 파트가 CLI 전용이라 웹에서 제어 불가 → **기존 코드를 웹에 배선만**
