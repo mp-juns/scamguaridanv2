@@ -188,9 +188,9 @@ export default function AdminDashboardPage() {
           <div className="flex gap-2">
             <Link
               className="rounded-2xl border border-white/10 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/5"
-              href="/admin/stats"
+              href="/admin/models"
             >
-              대시보드
+              🧠 모델
             </Link>
             <Link
               className="rounded-2xl border border-white/10 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/5"

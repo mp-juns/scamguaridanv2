@@ -196,3 +196,114 @@ def test_news_fast_path_helper_one_marker():
     """뉴스 마커 1개만 있으면 (임계 미달) None 반환."""
     text = "이 사건은 검찰에 따르면 진행 중이다. 자세한 내용은 추후 공개된다."
     assert gate._news_edu_fast_path(text) is None
+
+
+# ── 광고성 문자 fast-path (정보통신망법 제50조 의무 표시) ──
+
+_TEMU_AD = """[Web발신]
+(광고)Temu:
+이 상품의 원가가 5,750원이었는데, 지금은 575원!
+장바구니 상품이 특별가로 판매되고 있습니다! 지금 확인해보세요!
+https://temu.com/v/zBdrpD7A
+
+주소: 6 RAFFLES QUAY, #14-06, SINGAPORE
+무료수신거부: 0808208368"""
+
+
+def test_promotional_ad_fast_path_temu():
+    result = gate.classify_gate(_TEMU_AD)
+    assert result.bucket == GATE_NORMAL
+    assert result.source == "heuristic"
+    assert "광고표시" in result.reason
+
+
+def test_promotional_ad_helper_direct():
+    hit = gate._promotional_ad_fast_path(
+        "(광고)특가 세일! https://shop.example.com/sale\n무료수신거부: 0800001234"
+    )
+    assert hit is not None
+    assert hit.bucket == GATE_NORMAL
+
+
+def test_promotional_ad_missing_opt_out_falls_through():
+    # 무료수신거부 없으면 fast-path 미적용
+    text = "(광고)특가 세일! https://shop.example.com/sale"
+    assert gate._promotional_ad_fast_path(text) is None
+
+
+def test_promotional_ad_missing_marker_falls_through():
+    # (광고) 없으면 fast-path 미적용
+    text = "특가 세일! https://shop.example.com/sale\n무료수신거부: 0800001234"
+    assert gate._promotional_ad_fast_path(text) is None
+
+
+def test_promotional_ad_with_phishing_override_not_suppressed():
+    # (광고) + 수신거부 있어도 계정 확인 요구면 fast-path 안 걸림
+    text = (
+        "(광고)계정 인증이 필요합니다. https://fake.com/login\n"
+        "무료수신거부: 0808001234"
+    )
+    assert gate._promotional_ad_fast_path(text) is None
+
+
+def test_promotional_ad_with_otp_phishing_override():
+    text = "(광고)OTP 입력하세요: 1234\n무료수신거부: 0808001234"
+    assert gate._promotional_ad_fast_path(text) is None
+
+
+# ── 사기 메타 토론·영상 콘텐츠 fast-path ──
+
+_VOICE_TRANSCRIPT_META = """
+관련해가지고 과목을 하나 만들어야 된다 해야돼 30% 가져 30% 30%
+형 30프로 하지말고 70프로 지시부로 사기라고 생각을...
+70이 넘어야 이제 사기라고 할 수 있지 90% 넘어야.
+이 사기 유형일 확률이... 지금부터 관리해야돼
+아니, 앞에 게이트가 판난한 2단계에서 1단계
+게이트 분류해 두기잖아 정상인지 사기인지 불명하고
+시청해주셔서 감사합니다! 구독과 좋아요 부탁드려요! 다음 영상에서 만나요
+"""
+
+
+def test_scam_discussion_fast_path_youtube_transcript():
+    """사기 분류 회의 + 유튜브 마커 → scam_news_edu heuristic fast-path."""
+    result = gate.classify_gate(_VOICE_TRANSCRIPT_META)
+    assert result.bucket == GATE_SCAM_NEWS_EDU
+    assert result.source == "heuristic"
+    assert result.model == ""  # LLM 미호출
+
+
+def test_scam_discussion_helper_direct():
+    """_scam_discussion_fast_path 헬퍼 단독 — 마커 2개 이상이면 GateResult 반환."""
+    hit = gate._scam_discussion_fast_path(
+        "게이트 분류기가 정상인지 사기인지 판단해요. 구독과 좋아요 부탁드려요!"
+    )
+    assert hit is not None
+    assert hit.bucket == GATE_SCAM_NEWS_EDU
+    assert "메타 토론" in hit.reason
+
+
+def test_scam_discussion_youtube_alone_triggers():
+    """유튜브 outro 2개만으로도 fast-path 적용."""
+    text = "시청해주셔서 감사합니다! 구독과 좋아요 부탁드려요! 다음 영상에서 만나요!"
+    hit = gate._scam_discussion_fast_path(text)
+    assert hit is not None
+    assert hit.bucket == GATE_SCAM_NEWS_EDU
+
+
+def test_scam_discussion_single_marker_falls_through():
+    """마커 1개만 있으면 fast-path 미적용."""
+    text = "파이프라인 구조를 설명할게요. 오늘 날씨가 좋습니다. 별다른 내용 없습니다." * 3
+    # "파이프라인" 3회 → findall 3개 → 2 이상이므로 fast-path 적용됨 (의도된 동작)
+    # 정말 1회 단독 케이스:
+    text2 = "파이프라인 구조를 설명할게요. 그냥 일상적인 내용입니다."
+    result = gate._scam_discussion_fast_path(text2)
+    assert result is None
+
+
+def test_scam_discussion_blocked_by_direct_demand():
+    """사기 메타 마커 여러 개라도 직접 명령형 요구 있으면 fast-path 미적용."""
+    text = (
+        "게이트 분류기 설명입니다. 구독과 좋아요 부탁드려요! 다음 영상에서 만나요. "
+        "지금 송금하세요 계좌번호를 입력하세요."
+    )
+    assert gate._scam_discussion_fast_path(text) is None

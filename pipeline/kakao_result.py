@@ -307,7 +307,7 @@ def _build_safety_warning_block(report: dict[str, Any]) -> dict[str, Any] | None
     kind_label = "URL" if target_kind == "url" else "파일"
     icon = "🚨" if level == "malicious" else "⚠️"
     if level == "malicious":
-        head = f"{icon} 위험! 이 {kind_label}은 악성으로 확인됐어요."
+        head = f"{icon} 이 {kind_label}에서 악성 신호가 검출됐어요."
     else:
         head = f"{icon} 주의: 이 {kind_label}에 일부 의심 신호가 있어요."
     lines = [head]

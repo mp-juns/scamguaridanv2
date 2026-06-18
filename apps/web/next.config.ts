@@ -24,6 +24,8 @@ const nextConfig: NextConfig = {
   },
   reactCompiler: true,
   allowedDevOrigins: [
+    "127.0.0.1",
+    "localhost",
     "111.91.153.117",
     "scamguardian.tail7e5dfc.ts.net",
     "scribble-failing-ludicrous.ngrok-free.dev",

@@ -85,6 +85,27 @@ def _default_metadata(metadata: object) -> dict[str, Any]:
         return metadata
     return {"source": "batch_ingest"}
 
+
+def _detected_signals(report_dict: dict[str, Any]) -> list[dict[str, Any]]:
+    signals = report_dict.get("detected_signals")
+    if isinstance(signals, list):
+        return [s for s in signals if isinstance(s, dict)]
+    legacy_flags = report_dict.get("triggered_flags")
+    if isinstance(legacy_flags, list):
+        return [f for f in legacy_flags if isinstance(f, dict)]
+    return []
+
+
+def _signal_count(report_dict: dict[str, Any]) -> int:
+    return len(_detected_signals(report_dict))
+
+
+def _print_detection_result(report_dict: dict[str, Any], run_id: str | None) -> None:
+    signal_count = _signal_count(report_dict)
+    suffix = f" | run_id={run_id}" if run_id else " | [dry-run, not saved]"
+    print(f"  → {report_dict['scam_type']} | 검출 신호 {signal_count}개{suffix}")
+
+
 torch.set_default_dtype(torch.float32)
 def _analyze_one(
     idx: int,
@@ -186,17 +207,14 @@ def run_batch(
                         },
                         entities_predicted=d["entities"],
                         verification_results=d.get("all_verifications", []),
-                        triggered_flags_predicted=d["triggered_flags"],
-                        total_score_predicted=d["total_score"],
-                        risk_level_predicted=d["risk_level"],
+                        triggered_flags_predicted=_detected_signals(d),
+                        total_score_predicted=_signal_count(d),
+                        risk_level_predicted="",
                         llm_assessment=d.get("llm_assessment"),
                         metadata=result["metadata"],
                     )
 
-                print(
-                    f"  → {d['scam_type']} | {d['risk_level']} ({d['total_score']}점)"
-                    + (f" | run_id={run_id}" if run_id else " | [dry-run, not saved]")
-                )
+                _print_detection_result(d, run_id)
                 ok += 1
             except Exception as exc:
                 print(f"  ✗ 오류: {exc}")
@@ -244,17 +262,14 @@ def run_batch(
                             },
                             entities_predicted=d["entities"],
                             verification_results=d.get("all_verifications", []),
-                            triggered_flags_predicted=d["triggered_flags"],
-                            total_score_predicted=d["total_score"],
-                            risk_level_predicted=d["risk_level"],
+                            triggered_flags_predicted=_detected_signals(d),
+                            total_score_predicted=_signal_count(d),
+                            risk_level_predicted="",
                             llm_assessment=d.get("llm_assessment"),
                             metadata=result["metadata"],
                         )
 
-                    print(
-                        f"  → {d['scam_type']} | {d['risk_level']} ({d['total_score']}점)"
-                        + (f" | run_id={run_id}" if run_id else " | [dry-run, not saved]")
-                    )
+                    _print_detection_result(d, run_id)
                     ok += 1
                 except Exception as exc:
                     print(f"  ✗ 오류: {exc}")

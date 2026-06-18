@@ -14,7 +14,13 @@ from typing import Any
 
 from db import repository
 from pipeline import rag
-from pipeline.config import DETECTED_FLAGS, get_runtime_scam_taxonomy
+from pipeline.config import (
+    DETECTED_FLAGS,
+    GATE_LOW_CONFIDENCE_THRESHOLD,
+    GATE_NORMAL,
+    GATE_SCAM_NEWS_EDU,
+    get_runtime_scam_taxonomy,
+)
 from pipeline.runner import ScamGuardianPipeline
 
 from .models import AnalyzeRequest, ScamTypeCatalogRequest
@@ -261,6 +267,43 @@ def materialize_executable_url(url: str) -> str:
     return str(target)
 
 
+def _apply_gate_safety_net(report_dict: dict, gate_result) -> None:
+    """게이트 안전 버킷(normal/scam_news_edu) 단정 방지 — 간단 분석 표시 보수화.
+
+    두 조건 중 하나라도 해당하면 content_type 을 "추가 확인 필요"로 교체하고
+    심층 분석을 권장한다 (파이프라인 실행 강도는 그대로 — 표시 레이어만):
+      1. 룰 등 고위험 신호 ≥1 (게이트가 안전하다고 했는데 신호가 잡힌 충돌)
+      2. 게이트 confidence < GATE_LOW_CONFIDENCE_THRESHOLD (저신뢰 판단을 확정 취급 금지
+         — 1인칭 검찰 사칭이 scam_news_edu 0.51 로 빠져나간 사례)
+
+    deep 실행에서는 호출하지 않는다 (이미 풀 파이프라인).
+    """
+    if gate_result.bucket not in (GATE_NORMAL, GATE_SCAM_NEWS_EDU):
+        return
+
+    detected = report_dict.get("detected_signals") or []
+    low_confidence = gate_result.confidence < GATE_LOW_CONFIDENCE_THRESHOLD
+    if not detected and not low_confidence:
+        return
+
+    signal_labels = [
+        str(s.get("label_ko") or s.get("flag") or "").strip() for s in detected[:3]
+    ]
+    signal_labels = [l for l in signal_labels if l]
+    signal_part = f"{' · '.join(signal_labels)} 신호가 감지되어" if signal_labels else ""
+
+    if low_confidence and signal_part:
+        reason = f"게이트 판단 신뢰도가 낮고 {signal_part} 심층 분석을 권장합니다."
+    elif low_confidence:
+        reason = "게이트 판단 신뢰도가 낮아 심층 분석을 권장합니다."
+    else:
+        reason = f"1차 게이트는 {gate_result.label_ko}으로 판단했지만, {signal_part} 심층 분석을 권장합니다."
+
+    report_dict["content_type"] = {"bucket": "needs_review", "label_ko": "추가 확인 필요"}
+    report_dict["deep_recommended"] = True
+    report_dict["deep_recommended_reason"] = reason
+
+
 def run_pipeline(payload: AnalyzeRequest) -> dict:
     normalized_payload = AnalyzeRequest(
         source=payload.source,
@@ -269,6 +312,7 @@ def run_pipeline(payload: AnalyzeRequest) -> dict:
         skip_verification=payload.skip_verification,
         use_llm=True,
         use_rag=payload.use_rag,
+        deep=payload.deep,
     )
     source = resolve_source(normalized_payload)
     if not source:
@@ -296,6 +340,7 @@ def run_pipeline(payload: AnalyzeRequest) -> dict:
             skip_verification=normalized_payload.skip_verification,
             use_llm=True,
             use_rag=normalized_payload.use_rag,
+            deep=normalized_payload.deep,
         )
         transcript_text = pipeline.last_transcript_result.text if pipeline.last_transcript_result else ""
         from platform_layer.abuse_guard import MAX_CHARS as _MAX_CHARS
@@ -320,6 +365,9 @@ def run_pipeline(payload: AnalyzeRequest) -> dict:
             content_type = _safe_content_type(pipeline.last_gate_result.to_dict())
             if content_type:
                 report_dict["content_type"] = content_type
+
+        if not normalized_payload.deep and pipeline.last_gate_result is not None:
+            _apply_gate_safety_net(report_dict, pipeline.last_gate_result)
 
         return report_dict
     finally:

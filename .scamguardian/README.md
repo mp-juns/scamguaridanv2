@@ -20,7 +20,7 @@
 4. [채널별 통신 프로토콜](#4-채널별-통신-프로토콜)
 5. [API 엔드포인트 전체 목록](#5-api-엔드포인트-전체-목록)
 6. [파이프라인 7-Phase 상세](#6-파이프라인-7-phase-상세)
-7. [플래그 시스템 (스코어링)](#7-플래그-시스템-스코어링)
+7. [검출 신호 시스템](#7-검출-신호-시스템)
 8. [데이터 모델 (DB / 토큰 / 잡 상태)](#8-데이터-모델)
 9. [Sandbox 격리 정책 (v3.5)](#9-sandbox-격리-정책-v35)
 10. [Platform 레이어 (API key / 비용 / 어뷰즈)](#10-platform-레이어)
@@ -71,7 +71,7 @@ Stage 2: 사기범이 링크 보냄                  Interrupt 2 — 링크 분�
                 ↓ 통과 (URL 깨끗)
 Stage 3: APK/실행파일 도착                   Interrupt 3 — 파일 분석 (v3.5)
                                              EXECUTABLE_URL 자동 분류 → VT 파일 스캔
-                                             악성 확정 → fast-path 매우 위험 (80점)
+                                             악성 신호 검출 → 후속 분석 단축 + 검출 근거 보고
                 ↓ 통과 (협박 굴복)
 Stage 4: APK 설치 / 정보 누설 / 송금         Interrupt 4 — ?? (현재 미구현, 가장 임팩트 큼)
                                              후보:
@@ -235,7 +235,7 @@ Stage 4: APK 설치 / 정보 누설 / 송금         Interrupt 4 — ?? (현재 
   "version": "2.0",
   "template": {
     "outputs": [
-      { "basicCard": { "title": "🚨 매우 위험 | 80점", "description": "...", "buttons": [...] } }
+      { "basicCard": { "title": "위험 신호 3개 검출", "description": "...", "buttons": [...] } }
     ],
     "quickReplies": [
       { "label": "사용법", "action": "message", "messageText": "사용법" },
@@ -282,7 +282,7 @@ file=@suspicious.png
 options={"use_llm":true,...}
 ```
 
-#### 응답 — `ScamReport.to_dict()`
+#### 응답 — `DetectionReport.to_dict()`
 ```jsonc
 {
   "scam_type": "투자 사기",
@@ -293,15 +293,19 @@ options={"use_llm":true,...}
   "entities": [
     { "label": "수익 퍼센트", "text": "연 30%", "score": 0.9, "source": "gliner" }
   ],
-  "triggered_flags": [
-    { "flag": "abnormal_return_rate", "description": "...", "score_delta": 15,
-      "evidence": ["..."], "source": "rule" }
+  "detected_signals": [
+    {
+      "flag": "abnormal_return_rate",
+      "label_ko": "비정상적 고수익 약속",
+      "rationale": "...",
+      "source": "자본시장법 / 학술 근거",
+      "evidence": ["연 30%"],
+      "description": "...",
+      "detection_source": "rule"
+    }
   ],
-  "total_score": 45,
-  "risk_level": "위험",                          // 안전(0-20) / 주의(21-40) / 위험(41-70) / 매우 위험(71-100)
-  "risk_description": "다수의 스캠 징후가 확인됨",
-  "agent_verdict": "사기 의심",
-  "agent_reasoning": ["..."],
+  "summary": "위험 신호 1개 검출되었습니다. 자세한 근거는 detected_signals 참고.",
+  "disclaimer": "ScamGuardian은 사기 여부를 판정하지 않고 검출 신호만 보고합니다.",
   "transcript_preview": "...",
   "llm_assessment": { "summary": "...", "reasoning": [...], ... },
   "safety_check": { "scanner": "virustotal", "threat_level": "safe", ... },
@@ -368,7 +372,7 @@ Response:
 | 카테고리 | 엔드포인트 | 인증 | 비고 |
 |---|---|---|---|
 | **공개** | `GET /health` | 없음 | liveness |
-| | `GET /api/methodology` | 없음 | 점수 산정 방식 / 학술 인용 |
+| | `GET /api/methodology` | 없음 | 검출 신호 카탈로그 / 학술·법적 근거 |
 | | `GET /api/result/{token}` | 없음 (token 자체가 권한) | 1시간 TTL |
 | **분석** | `POST /api/analyze` | API key 필수 | 외부 SDK·웹 |
 | | `POST /api/analyze-upload` | API key 필수 | multipart 업로드 |
@@ -486,7 +490,7 @@ Phase 5    Scoring                 scorer.py     ─ flag aggregation → ScamRe
   - 파일 → SHA256 lookup → 미스면 업로드 + `analyses/{id}` 폴링 (최대 30s)
   - 4 req/min 토큰버킷 (`VIRUSTOTAL_RPM=4` free tier)
 - **출력**: `SafetyResult { threat_level, detections, suspicious, total_engines, threat_categories, ... }`
-- **fast-path**: 파일이 *malicious* 면 STT/분류 skip → 즉시 매우 위험 보고
+- **fast-path**: 파일이 *malicious* 면 STT/분류 skip → 악성 신호와 검사 근거를 즉시 보고
 - **비용 ledger**: `record_virustotal()` 호출
 
 ### Phase 0.5 — Sandbox Detonation (`pipeline/sandbox.py`, v3.5)
@@ -529,7 +533,7 @@ Phase 5    Scoring                 scorer.py     ─ flag aggregation → ScamRe
 `ThreadPoolExecutor` 로 동시 실행:
 
 1. **`extractor.py` (GLiNER)** — 스캠 유형별 라벨셋으로 엔티티 추출. fine-tuned 가용 시 swap.
-2. **`llm_assessor.analyze_unified()`** — Claude 1회 호출로 ① 스캠 유형 재판정 ② 엔티티 제안 ③ 플래그 제안 묶음. `user_context` (Q&A 페어) 가 있으면 prior 로 주입.
+2. **`llm_assessor.analyze_unified()`** — Claude 1회 호출로 ① 스캠 유형 추정 보정 ② 엔티티 제안 ③ 검출 신호 제안 묶음. `user_context` (Q&A 페어) 가 있으면 prior 로 주입.
 3. **`rag.retrieve_similar_runs()`** — SBERT 임베딩으로 과거 사람 라벨 사례 top-K 검색. `use_rag=True` 일 때만.
 
 ### Phase 4 — Verification (`pipeline/verifier.py`)
@@ -539,16 +543,11 @@ Phase 5    Scoring                 scorer.py     ─ flag aggregation → ScamRe
 - 검증 대상 상위 15개 (라벨당 최대 2)
 - `skip_verification=True` 면 phase 자체 skip
 
-### Phase 5 — Scoring (`pipeline/scorer.py`)
+### Phase 5 — Detection Report Assembly (`pipeline/signal_detector.py`)
 
-플래그 합산 → 위험 점수 → 등급:
-
-| 점수 구간 | 등급 |
-|---|---|
-| 0–20 | 안전 ✅ |
-| 21–40 | 주의 🔶 |
-| 41–70 | 위험 ⚠️ |
-| 71–100 | 매우 위험 🚨 |
+검증·안전성·sandbox·APK 분석 결과를 `detected_signals[]` 로 통합한다. 각 신호는
+`flag`, 한국어 라벨, evidence, detection_source, 학술·법적 근거(`rationale`, `source`)를
+포함한다. 외부 응답에는 점수·등급·사기 여부 판정 필드를 노출하지 않는다.
 
 플래그 합산 규칙:
 - Rule 플래그: `SCORING_RULES[flag]` 만큼 가산
@@ -559,67 +558,70 @@ Phase 5    Scoring                 scorer.py     ─ flag aggregation → ScamRe
 
 ---
 
-## 7. 플래그 시스템 (스코어링)
+## 7. 검출 신호 시스템
 
-전체 플래그는 `pipeline/config.py:SCORING_RULES` (32종). 카테고리별:
+전체 신호 카탈로그는 `pipeline/config_flags.py:DETECTED_FLAGS` 와
+`pipeline/config_flags.py:FLAG_RATIONALE` 에 있다. 외부 API와 UI는 이 카탈로그에서
+검출된 항목만 `detected_signals[]` 로 보고한다.
 
 ### 7.1 일반 사기 신호 (검증 결과 기반 — Serper 등)
 
-| 플래그 | 점수 | 출처 |
+| 플래그 | 의미 | 출처 |
 |---|---|---|
-| `business_not_registered` | 20 | 국세청 사업자 |
-| `phone_scam_reported` | 25 | 더치트 / 후후 |
-| `ceo_name_mismatch` | 15 | DART / 사업자 |
-| `fss_not_registered` | 15 | 금감원 |
-| `fake_certification` | 20 | KOLAS 등 |
-| `website_scam_reported` | 20 | 사이트 신고 DB |
-| `abnormal_return_rate` | 15 | 자본시장법 (>20% 보장 = 위반) |
-| `fake_government_agency` | 25 | 검찰청·경찰청·금감원 합동 가이드 |
-| `personal_info_request` | 20 | 개인정보보호법 |
-| `medical_claim_unverified` | 20 | 식약처 |
-| `fake_exchange` | 20 | 금감원 가상자산사업자 등록 |
-| `account_scam_reported` | 25 | 통합사기방지망 |
-| `prepayment_requested` | 20 | 대부업법·취업사기 패턴 |
-| `urgent_transfer_demand` | 20 | 보이스피싱 1순위 패턴 (경찰청 통계) |
-| `threat_or_coercion` | 25 | 협박·강요 발화 |
-| `impersonation_family` | 20 | 메신저 피싱 패턴 |
-| `romance_foreign_identity` | 15 | Whitty (2018) 로맨스 스캠 |
-| `job_deposit_requested` | 20 | 취업·알바 사기 패턴 |
-| `smishing_link_detected` | 20 | KISA 스미싱 차단 |
-| `fake_escrow_bypass` | 15 | 중고거래 패턴 |
+| `business_not_registered` | 사업자 등록 확인 실패 | 국세청 사업자 |
+| `phone_scam_reported` | 전화번호 신고 이력 | 더치트 / 후후 |
+| `ceo_name_mismatch` | 대표자명 불일치 | DART / 사업자 |
+| `fss_not_registered` | 금융업 등록 확인 실패 | 금감원 |
+| `fake_certification` | 인증·마크 위장 | KOLAS 등 |
+| `website_scam_reported` | 사이트 신고 이력 | 사이트 신고 DB |
+| `abnormal_return_rate` | 비정상적 고수익 약속 | 자본시장법 / 투자사기 연구 |
+| `fake_government_agency` | 공공기관 사칭 | 검찰청·경찰청·금감원 합동 가이드 |
+| `personal_info_request` | 민감정보 요구 | 개인정보보호법 |
+| `medical_claim_unverified` | 의료·효능 주장 검증 실패 | 식약처 |
+| `fake_exchange` | 미등록/위장 거래소 | 금감원 가상자산사업자 등록 |
+| `account_scam_reported` | 계좌 신고 이력 | 통합사기방지망 |
+| `prepayment_requested` | 선납·보증금 요구 | 대부업법·취업사기 패턴 |
+| `urgent_transfer_demand` | 즉시 송금 압박 | 보이스피싱 패턴 |
+| `threat_or_coercion` | 협박·강요 발화 | 협박형 사기 패턴 |
+| `impersonation_family` | 가족·지인 사칭 | 메신저 피싱 패턴 |
+| `romance_foreign_identity` | 로맨스 스캠 신원 위장 | Whitty 로맨스 스캠 연구 |
+| `job_deposit_requested` | 취업·알바 명목 선입금 | 취업·알바 사기 패턴 |
+| `smishing_link_detected` | 문자·메신저 링크 유도 | KISA 스미싱 차단 |
+| `fake_escrow_bypass` | 안전결제 우회 유도 | 중고거래 패턴 |
 
-### 7.2 Phase 0 Safety (VT 자동)
+### 7.2 Phase 0 Safety (VirusTotal)
 
-| 플래그 | 점수 | 트리거 |
-|---|---|---|
-| `malware_detected` | **80** | 파일 VT 다중 엔진 malicious |
-| `phishing_url_confirmed` | **75** | URL VT 다중 엔진 malicious |
-| `suspicious_file_signal` | 25 | 일부 엔진만 의심 |
-| `suspicious_url_signal` | 25 | 일부 엔진만 의심 |
+| 플래그 | 트리거 |
+|---|---|
+| `malware_detected` | 파일에 대해 여러 엔진이 malicious 신호 검출 |
+| `phishing_url_confirmed` | URL에 대해 여러 엔진이 phishing/malicious 신호 검출 |
+| `suspicious_file_signal` | 일부 엔진만 의심 신호 검출 |
+| `suspicious_url_signal` | 일부 엔진만 의심 신호 검출 |
 
 ### 7.3 Phase 0.5 Sandbox (v3.5)
 
-| 플래그 | 점수 | 트리거 |
-|---|---|---|
-| `sandbox_password_form_detected` | **50** | 격리 Chromium navigate 결과 `<input type=password>` 발견 |
-| `sandbox_sensitive_form_detected` | 35 | 주민번호·OTP·CVC·계좌·카드 입력 필드 |
-| `sandbox_auto_download_attempt` | **60** | 페이지 진입만으로 다운로드 트리거 (drive-by) |
-| `sandbox_cloaking_detected` | 30 | target 도메인 ≠ 최종 도착지 |
-| `sandbox_excessive_redirects` | 15 | 리디렉션 >3회 |
+| 플래그 | 트리거 |
+|---|---|
+| `sandbox_password_form_detected` | 격리 Chromium navigate 결과 `<input type=password>` 발견 |
+| `sandbox_sensitive_form_detected` | 주민번호·OTP·CVC·계좌·카드 입력 필드 |
+| `sandbox_auto_download_attempt` | 페이지 진입만으로 다운로드 트리거 |
+| `sandbox_cloaking_detected` | target 도메인과 최종 도착 도메인 불일치 |
+| `sandbox_excessive_redirects` | 과도한 리디렉션 |
 
 ### 7.4 BERT 유사도 / 검색 패턴
 
-| 플래그 | 점수 | 의미 |
-|---|---|---|
-| `authority_context_mismatch` | 15 | 화자 직업 vs 발화 의미 불일치 (SBERT 코사인) |
-| `authority_context_uncertain` | 5 | 경계선 (보수적 가산) |
-| `query_a_confirmed` | **−20** | 신뢰 언론 동시 히트 → 신뢰도 ↑ |
-| `query_a_unconfirmed` | 20 | 신뢰 언론 확인 불가 |
-| `query_b_factcheck_found` | 25 | 팩트체크 의심 단서 |
-| `query_b_confirmed` | **−15** | 팩트체크 사실 확인 |
-| `query_c_scam_pattern_found` | 15 | 동일/유사 사기 패턴 후기·뉴스 발견 |
+| 플래그 | 의미 |
+|---|---|
+| `authority_context_mismatch` | 화자 직업과 발화 의미 불일치 |
+| `authority_context_uncertain` | 의미 일치 여부가 경계선 |
+| `query_a_confirmed` | 신뢰 출처 확인 신호 |
+| `query_a_unconfirmed` | 신뢰 출처 확인 불가 |
+| `query_b_factcheck_found` | 팩트체크 의심 단서 |
+| `query_b_confirmed` | 팩트체크 사실 확인 |
+| `query_c_scam_pattern_found` | 동일/유사 사기 패턴 후기·뉴스 발견 |
 
-각 플래그에 대해 `pipeline/config.py:FLAG_RATIONALE` 가 *왜 이 점수* + *학술/제도 출처* 매핑. 결과 페이지에 표시.
+각 플래그에 대해 `FLAG_RATIONALE` 이 학술·제도 근거를 제공하며, 결과 페이지와
+`/api/methodology` 에서 확인할 수 있다.
 
 ---
 
@@ -638,9 +640,9 @@ CREATE TABLE analysis_runs (
     classification_confidence REAL,
     is_uncertain INTEGER,
     entities_predicted TEXT,              -- JSON
-    triggered_flags_predicted TEXT,       -- JSON
-    total_score_predicted INTEGER NOT NULL,
-    risk_level_predicted TEXT NOT NULL,
+    triggered_flags_predicted TEXT,       -- JSON, legacy column name. 현재는 detected_signals 저장
+    total_score_predicted INTEGER NOT NULL, -- legacy column name. 현재 의미는 검출 신호 개수
+    risk_level_predicted TEXT NOT NULL,   -- deprecated. 외부/API/UI 표면 노출 금지
     llm_assessment TEXT,                  -- JSON
     metadata TEXT,                        -- JSON: steps[], rag_context, user_context, chat_history, refined_llm_assessment, media{}
     claimed_by TEXT,                      -- 어드민 라벨링 클레임 (TTL 30분)
@@ -653,8 +655,8 @@ CREATE TABLE human_annotations (
     labeler TEXT,
     scam_type_truth TEXT,
     entities_truth TEXT,                  -- JSON
-    triggered_flags_truth TEXT,           -- JSON
-    is_scam INTEGER,
+    triggered_flags_truth TEXT,           -- JSON, legacy column name. 검수된 신호 목록
+    is_scam INTEGER,                      -- deprecated/internal. 외부 판정 필드로 사용 금지
     notes TEXT,
     updated_at TEXT
 );
@@ -1093,8 +1095,8 @@ scamguardian-v2/
 │   ├── classifier.py                  # Phase 2
 │   ├── extractor.py / llm_assessor.py / rag.py    # Phase 3
 │   ├── verifier.py                    # Phase 4
-│   ├── scorer.py                      # Phase 5
-│   ├── config.py                      # 스캠 유형·플래그·점수·rationale
+│   ├── signal_detector.py             # Phase 5 — detected_signals 보고서 조립
+│   ├── config.py                      # 스캠 유형·검출 신호·rationale facade
 │   ├── kakao_formatter.py             # 카카오 응답 포맷터
 │   ├── context_chat.py                # 멀티턴 컨텍스트 수집 + 의도 분류
 │   ├── claude_labeler.py              # 라벨 초안 생성

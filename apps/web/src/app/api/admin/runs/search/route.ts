@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const params = new URLSearchParams();
-  ["q", "scam_type", "risk_level", "labeled", "limit", "offset"].forEach((key) => {
+  ["q", "scam_type", "labeled", "limit", "offset"].forEach((key) => {
     const val = searchParams.get(key);
     if (val !== null) params.set(key, val);
   });

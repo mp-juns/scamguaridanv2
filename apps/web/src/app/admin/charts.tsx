@@ -19,7 +19,7 @@ import {
 // recharts 는 ~400KB raw 의 무거운 클라이언트 라이브러리다. admin 차트들을 이 단일
 // 모듈에 모아 각 페이지에서 next/dynamic(ssr:false) 으로 lazy-load 하면, recharts 가
 // "하나의" async 청크로만 번들되어 (1) 초기 admin 진입 JS 에서 제외되고 (2) 페이지별
-// 중복(stats/platform/training/augment 4중복)이 제거된다.
+// 중복(platform/training/augment)이 제거된다.
 
 const usdTick = (v: number) => (v < 1 ? `$${v.toFixed(2)}` : `$${v.toFixed(0)}`);
 const darkTooltip = {
@@ -35,60 +35,6 @@ const darkTooltipBox = {
 
 function pct(value: unknown): string {
   return typeof value === "number" ? `${Math.round(value * 1000) / 10}%` : "-";
-}
-
-// ── stats ─────────────────────────────────────────────────────────────
-
-export function DailyRunsChart({
-  data,
-}: {
-  data: { date: string; count: number }[];
-}) {
-  return (
-    <ResponsiveContainer width="100%" height={200}>
-      <LineChart data={data}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-        <XAxis
-          dataKey="date"
-          tick={{ fontSize: 11 }}
-          tickFormatter={(v: string) => v.slice(5)}
-        />
-        <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-        <Tooltip />
-        <Line
-          type="monotone"
-          dataKey="count"
-          stroke="#3b82f6"
-          strokeWidth={2}
-          dot={false}
-          name="분석 수"
-        />
-      </LineChart>
-    </ResponsiveContainer>
-  );
-}
-
-export function HBarChart({
-  data,
-  height,
-  fill,
-  name,
-}: {
-  data: { name: string; count: number }[];
-  height: number;
-  fill: string;
-  name: string;
-}) {
-  return (
-    <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={data} layout="vertical" margin={{ left: 10, right: 20 }}>
-        <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
-        <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={100} />
-        <Tooltip />
-        <Bar dataKey="count" fill={fill} radius={[0, 4, 4, 0]} name={name} />
-      </BarChart>
-    </ResponsiveContainer>
-  );
 }
 
 // ── platform ──────────────────────────────────────────────────────────

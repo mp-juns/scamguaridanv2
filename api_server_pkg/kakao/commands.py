@@ -96,7 +96,7 @@ def _classify_error(exc: Exception) -> kakao_formatter.ErrorCode:
         return EC.STT_FAIL
     if "timeout" in msg or "timed out" in msg:
         return EC.TIMEOUT
-    if "memory" in msg or "ollama" in msg:
+    if "memory" in msg or "llm" in msg or "anthropic" in msg:
         return EC.LLM_UNAVAILABLE
     if "empty" in msg or "비어" in msg:
         return EC.EMPTY_INPUT

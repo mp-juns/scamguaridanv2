@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import json
+import re
 
 from transformers import (
     AutoModelForSequenceClassification,
@@ -62,11 +63,13 @@ def _get_classifier():
             model_source,
             local_files_only=model_source != MODELS["classifier"],
         )
+        from pipeline.inference_device import get_inference_device
+
         _classifier = hf_pipeline(
             "zero-shot-classification",
             model=model,
             tokenizer=tokenizer,
-            device="cpu",
+            device=get_inference_device(),
         )
     return _classifier
 
@@ -92,13 +95,15 @@ def _get_finetuned() -> dict | None:
         return _finetuned
 
     try:
+        from pipeline.inference_device import get_inference_device
+
         tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True)
         model = _load_finetuned_model(path)
         pipe = hf_pipeline(
             "text-classification",
             model=model,
             tokenizer=tokenizer,
-            device="cpu",
+            device=get_inference_device(),
             top_k=None,        # 모든 라벨 점수 반환
             truncation=True,
             max_length=512,
@@ -129,11 +134,18 @@ def _label_maps_from_checkpoint(path: str) -> tuple[dict[str, int], dict[int, st
 
 
 def _load_finetuned_model(path: str):
-    """Load either a full HF sequence classifier or a PEFT/LoRA adapter checkpoint."""
+    """Load either a full HF sequence classifier or a PEFT/LoRA adapter checkpoint.
+
+    반환 전 `.float()` 강제 — transformers 5.x 는 base config 의 torch_dtype(fp16)을 따라
+    로드하는데, fp32 로 학습된 어댑터·헤드와 섞이면 CPU 추론에서
+    "mat1 and mat2 must have the same dtype (Float vs Half)" 로 죽는다.
+    """
     label2id, id2label = _label_maps_from_checkpoint(path)
     adapter_config = Path(path) / "adapter_config.json"
     if not adapter_config.exists():
-        return AutoModelForSequenceClassification.from_pretrained(path, local_files_only=True)
+        return AutoModelForSequenceClassification.from_pretrained(
+            path, local_files_only=True
+        ).float()
 
     from peft import PeftModel
 
@@ -155,7 +167,29 @@ def _load_finetuned_model(path: str):
     if label2id:
         model.config.label2id = label2id
         model.config.id2label = id2label
-    return model
+    return model.float()
+
+
+# ──────────────────────────────────────────────
+# 스미싱 후처리 검증 — 요구 3
+# NLI zero-shot 이 "사기", "스미싱" 단어만 보고 스미싱으로 과분류하는 것을 방지.
+# 진짜 스미싱 지시자가 2개 이상 있어야만 스미싱으로 확정한다.
+# ──────────────────────────────────────────────
+_SMISHING_INDICATORS: list[re.Pattern] = [
+    re.compile(r"https?://|bit\.ly|tinyurl|t\.co|단축\s*url", re.IGNORECASE),
+    re.compile(r"계정\s*(확인|인증|정지|비활성)|본인\s*인증|로그인"),
+    re.compile(r"결제|입금|수수\s*료|이체|납부|지불"),
+    re.compile(r"OTP|인증\s*번호|비밀\s*번호"),
+    re.compile(r"앱\s*(을\s*)?(설치|다운로드)|\.apk\b", re.IGNORECASE),
+    re.compile(r"지금\s*바로|즉시|긴급|즉각|당장|마감|24시간|정지\s*(됩니다|예정)"),
+    re.compile(r"검찰|경찰|금감원|은행|대한통운|한진|쿠팡|국민\s*은행|보건복지부"),
+    re.compile(r"클릭\s*(하세요|해\s*주세요)|링크\s*(를\s*)?(누르|클릭)|확인\s*하세요"),
+]
+
+
+def _has_smishing_indicators(text: str, min_count: int = 2) -> bool:
+    """스미싱 지시자가 min_count 개 이상 있으면 True."""
+    return sum(1 for p in _SMISHING_INDICATORS if p.search(text)) >= min_count
 
 
 def _compute_keyword_boost(text: str) -> dict[str, float]:
@@ -227,11 +261,15 @@ def classify(text: str) -> ClassificationResult:
     else:
         all_scores = {k: v / shifted_total for k, v in shifted.items()}
 
+    is_uncertain = all_scores[top_type] < CLASSIFICATION_THRESHOLD
+    # 스미싱 후처리 — 지시자 2개 미만이면 사기 관련 메타 토론 오분류로 간주
+    if top_type == "스미싱" and not is_uncertain and not _has_smishing_indicators(text):
+        is_uncertain = True
     return ClassificationResult(
         scam_type=top_type,
         confidence=all_scores[top_type],
         all_scores=all_scores,
-        is_uncertain=all_scores[top_type] < CLASSIFICATION_THRESHOLD,
+        is_uncertain=is_uncertain,
     )
 
 
@@ -259,11 +297,14 @@ def _classify_finetuned(text: str, finetuned: dict) -> ClassificationResult:
         return ClassificationResult(scam_type="", confidence=0.0, is_uncertain=True)
 
     top = max(all_scores.items(), key=lambda x: x[1])
+    is_uncertain = top[1] < CLASSIFICATION_THRESHOLD
+    if top[0] == "스미싱" and not is_uncertain and not _has_smishing_indicators(text):
+        is_uncertain = True
     return ClassificationResult(
         scam_type=top[0],
         confidence=top[1],
         all_scores=all_scores,
-        is_uncertain=top[1] < CLASSIFICATION_THRESHOLD,
+        is_uncertain=is_uncertain,
     )
 
 

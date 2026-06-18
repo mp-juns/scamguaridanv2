@@ -167,6 +167,15 @@ def run_eval(records: list[dict], val_groups: set, out_dir: Path, epochs: int) -
                  callbacks=[EarlyStoppingCallback(early_stopping_patience=2)])
     tr.train()
 
+    # 활성화 가능한 체크포인트 — out_dir 루트에 어댑터+토크나이저+라벨맵 저장.
+    # pipeline/classifier._load_finetuned_model 과 동일 포맷(adapter_config.json + label2id.json)
+    # 이라 /admin/models 의 "파이프라인 적용"으로 게이트에 swap 가능.
+    tr.save_model(str(out_dir))
+    tok.save_pretrained(str(out_dir))
+    (out_dir / "label2id.json").write_text(
+        json.dumps(label2id, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
     pred = tr.predict(val_ds)
     y_pred = np.argmax(pred.predictions, axis=-1)
     y_true = pred.label_ids

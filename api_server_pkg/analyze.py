@@ -36,7 +36,9 @@ router = APIRouter()
         "- `whisper_model` — `tiny|base|small|medium|large` (음성 입력 시에만 영향)\n"
         "- `skip_verification` — true 면 Phase 4 (Serper) 건너뜀, 응답 빨라짐\n"
         "- `use_llm` — 무시됨 (서버에서 강제 true)\n"
-        "- `use_rag` — 과거 라벨 사례 RAG 검색 여부\n\n"
+        "- `use_rag` — 과거 라벨 사례 RAG 검색 여부\n"
+        "- `deep` — true 면 심층 분석: 내부 게이트 라우팅 무시, "
+        "풀 파이프라인(분류·추출·LLM·Serper 교차검증) 무조건 실행. 느리지만 검출 누락 최소화\n\n"
         "**응답 핵심 필드** (`DetectionReport`):\n"
         "- `scam_type` — 분류된 스캠 유형 (검출 컨텍스트, 판정 X)\n"
         "- `detected_signals` — `[{flag, label_ko, rationale, source, evidence, description, detection_source}]` "
@@ -148,7 +150,8 @@ async def analyze(payload: AnalyzeRequest, request: Request) -> dict:
         "- `whisper_model` — `tiny|base|small|medium|large` (기본 medium)\n"
         "- `skip_verification` — 기본 true\n"
         "- `use_llm` — 무시됨 (강제 true)\n"
-        "- `use_rag` — 기본 false\n\n"
+        "- `use_rag` — 기본 false\n"
+        "- `deep` — 기본 false. true 면 심층 분석 (게이트 라우팅 무시, 풀 파이프라인)\n\n"
         "**응답**: `/api/analyze` 와 동일한 `DetectionReport` JSON (`detected_signals[]` + `summary` + `disclaimer`). "
         "업로드 원본은 라벨링용으로 `.scamguardian/uploads/{run_id}/source.{ext}` 에 보존된다.\n\n"
         "**인증**: API key 필수.\n\n"
@@ -176,6 +179,7 @@ async def analyze_upload(
     skip_verification: bool = Form(True),
     use_llm: bool = Form(True),
     use_rag: bool = Form(False),
+    deep: bool = Form(False),
 ) -> dict:
     """영상/음성 파일을 업로드 받아 로컬 파일로 저장한 뒤 파이프라인을 수행한다."""
     if not file.filename:
@@ -214,6 +218,7 @@ async def analyze_upload(
                 skip_verification=skip_verification,
                 use_llm=True,
                 use_rag=use_rag,
+                deep=deep,
             )
         else:
             extract = subprocess.run(
@@ -250,6 +255,7 @@ async def analyze_upload(
                 skip_verification=skip_verification,
                 use_llm=True,
                 use_rag=use_rag,
+                deep=deep,
             )
         result = await asyncio.to_thread(run_pipeline, payload)
 

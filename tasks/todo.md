@@ -1,3 +1,270 @@
+# TODO — 게이트 저신뢰 오판 안전망 보강 (2026-06-13)
+
+## 목표
+needs_review 안전망 확장: ① 기존 normal+신호 ② scam_news_edu+신호 ③ normal/news_edu
+저신뢰(<0.70) — 셋 다 "추가 확인 필요" + deep_recommended. 간단 분석에서 풀 파이프라인
+강제는 안 함 (표시만 보수적으로). deep=true 동작 불변.
+
+- [x] `config_gate.py` 에 GATE_LOW_CONFIDENCE_THRESHOLD=0.70 (facade export)
+- [x] `common.py` — 안전망을 `_apply_gate_safety_net()` 헬퍼로 분리, news_edu·저신뢰 병합
+- [x] 모달 — 신호 0개여도 deep_recommended 면 상태 카드 amber "추가 확인이 필요해요"
+- [x] tests 8건 + pytest 426 / eslint 0 / build 0
+- [x] E2E 4종: ①검찰사칭(news_edu 0.51)→추가확인+저신뢰 문구 ②진짜 예방뉴스→news_edu 유지
+      ③normal+룰신호→기존 needs_review ④deep=true→풀 파이프라인(신호 4, 기관 사칭)
+- [x] 제약 준수: active_models 변경 X / 학습 X / push X
+
+## Review (완료 2026-06-13)
+- 안전망을 순수 헬퍼 `_apply_gate_safety_net(report_dict, gate_result)` 로 분리 — 단위 테스트
+  가능해짐 (이전엔 run_pipeline 인라인). 적용 조건: 안전 버킷(normal/news_edu) ∧ ¬deep ∧
+  (신호≥1 ∨ confidence<0.70). 문구 3종: 저신뢰만 / 신호만 / 병합.
+- 뉴스 fast-path heuristic 의 고정 confidence 0.7 은 경계값(0.7<0.70=False)이라 안전망
+  미발동 — 의도된 동작, 경계 테스트로 고정.
+- 관찰: deep 결과에서 content_type 이 게이트 metadata(news_edu) 그대로인데 신호 4개 —
+  deep 은 안전망 비대상(요구사항)이라 유지. 어색하면 후속에서 deep 도 신호 충돌 시
+  content_type 교체 검토.
+
+---
+
+# TODO — scam_category 결정적 매핑 표시 레이어 (2026-06-13)
+
+## 목표
+12-class scam_type 내부 라우팅은 그대로, 결과 표시용 scam_category 를
+SCAM_CATEGORY_MAP(12→6) 결정적 매핑으로 추가. 5-class 모델 미적용 (OOD 오분류 확인됨).
+
+- [x] `config_taxonomy.py` 에 SCAM_CATEGORY_MAP + `scam_category_for()` (facade export, make_category_dataset.py 재사용)
+- [x] `signal_detector.DetectionReport` 에 scam_category / scam_category_source="mapping" 추가 (scam_type 비면 빈 값 → normal/news_edu 자동 충족)
+- [x] 모달: 대표 유형 = scam_category, scam_type 은 "세부 유형" 행으로
+- [x] tests 6건 + pytest 418 / eslint 0 / build 0 + E2E 3건 (코인→투자·가상자산형, 스미싱→링크·문자 유도형, 검찰사칭은 게이트 news_edu 오판으로 분류 skip — 매핑 스펙대로 빈 값)
+- [x] 제약 준수: active_models 변경 X (mtime 6/12 18:12 유지) / 5-class 미적용 / 학습 X / push X
+
+## Review (완료 2026-06-13)
+- 매핑은 표시 전용 — 내부 라우팅(label_sets·Serper·LLM)은 scam_type 그대로. 12종 전수 커버리지 가드 테스트로 향후 유형 추가 시 매핑 누락이 pytest 에서 잡힘.
+- 후속 과제 후보: 게이트 scam_news_edu 오판(1인칭 검찰 사칭 0.51)은 needs_review 안전망(gate=normal 한정) 밖 — news_edu 저신뢰 시 보수적 처리 검토.
+
+---
+
+# TODO — 게이트 무관 텍스트 룰 고위험 신호 + "정상 단정" 방지 (2026-06-13)
+
+## 목표
+게이트가 normal 이어도 고정 룰 기반 고위험 신호는 항상 검사. 신호가 잡히면
+"정상 콘텐츠" 단정 대신 "추가 확인 필요" + 원인 표시 + 심층 분석 강한 권장.
+(제약: active_models.json 변경 X, 학습 X, push X — 룰 로직과 결과 표시만)
+
+## Part A — 텍스트 룰 모듈 (게이트·추출과 무관, 항상 실행)
+- [x] `pipeline/text_rules.py` 신설 — 원문 텍스트 정규식 룰 8종:
+      비공식 URL/유사 도메인, 택배사명+{주소 불일치|배송 보류|주소 재확인},
+      금융기관+본인아니면연락, 카드발급+콜백, 납부/체납+비공식링크, 안전결제/에스크로+외부링크
+- [x] `config_flags.py` — 신규 플래그 4종 (courier_impersonation_pattern, financial_callback_lure,
+      payment_demand_unofficial_link, safe_payment_external_link) + 라벨 + rationale.
+      비공식 URL 은 기존 `smishing_link_detected` 재사용
+- [x] `runner.py` Phase 4 — `detect_text_risk_signals(text)` 게이트 bucket 무관 항상 실행
+
+## Part B — 결과 표시 (정상 단정 방지)
+- [x] `common.py run_pipeline` — 게이트 normal + 신호 ≥1 이면 content_type 을
+      `{bucket: "needs_review", label_ko: "추가 확인 필요"}` 로 교체 + `deep_recommended` +
+      `deep_recommended_reason`
+- [x] 프론트 — `contentTypeBadge` needs_review(⚠️), 모달 displayType "추가 확인 필요" + amber
+      강조 심층 분석 카드(원인 문구 포함), `AnalysisReport` 타입 확장
+
+## 검증
+- [x] tests/test_text_rules.py 14건 (CJ 케이스·주석 포함 케이스·룰별·무탐 4건)
+- [x] pytest 412 passed / eslint 0 / build 0 error
+- [x] E2E ①: CJ 본문만 → 게이트 scam_attempt → 신호 4개 (스미싱 링크·택배 사칭·의심 URL·LLM)
+- [x] E2E ②: CJ 본문+감별포인트 (게이트 normal 오판 케이스) → 텍스트 룰 신호 2개 +
+      content_type=추가 확인 필요 + deep_recommended=True + 원인 문구 정상
+- [x] 제약 준수: active_models.json 변경 X / 학습 X / push X
+
+## Review (완료 2026-06-13)
+- 텍스트 룰은 순수 정규식 (<1ms, 모델·네트워크 X) — 게이트·추출 skip 의 영향권 밖.
+  Phase 4 에서 엔티티 룰 앞에 합류, signal_detector 의 기존 rule 경로로 신호화.
+- financial_callback_lure 는 정상 카드사 안내문도 걸릴 수 있는 의도된 보수성 —
+  Identity Boundary 상 "의심/추가 확인" 신호이지 판정이 아님 (모듈 docstring 에 명시).
+- needs_review 는 게이트 normal 일 때만 — scam_attempt 등 비안전 버킷은 기존대로
+  content_type 비노출 (Identity Boundary 유지).
+- 카카오 결과 카드·/result/[token] 페이지는 이번 scope 외 (웹 간단 분석 표시만).
+
+---
+
+# TODO — 간단 분석 → 심층 분석 2단계 전략 (2026-06-12)
+
+## 목표
+1차는 게이트 라우팅 기반 간단 분석 그대로, 결과 모달에서 심층 분석을 제안.
+심층 분석 선택 시 게이트 skip 정책을 무시하고 풀 파이프라인 무조건 실행.
+(배경: fine-tuned 게이트가 "본문+감별 포인트 주석" 입력을 normal 0.97 로 오판 →
+분류·추출·검증 전부 skip 되어 명백한 스미싱이 0개 검출로 끝난 사례)
+
+## Part A — 백엔드 deep 모드
+- [x] `runner.analyze(deep=False)` — deep 이면 게이트 결과는 metadata 로만 쓰고 실행 프로파일을 풀 강도로 강제 (분류·추출·LLM 모두 실행), `skip_verification=False` 강제
+- [x] `AnalyzeRequest.deep` 추가 + `common.run_pipeline` 전달 + `/api/analyze-upload` Form 파라미터
+- [x] OpenAPI description 갱신
+
+## Part B — 웹 프론트 2단계 UX
+- [x] `homeApi.submitAnalysis` 에 `deep` 전달 (JSON + FormData)
+- [x] `HomeClient` — `handleDeepAnalyze()` (같은 입력 deep 재실행, 게스트 한도 반영), `isDeepResult`/`deepLoading` 상태
+- [x] `ResultSummaryModal` — 간단 분석 결과일 때 "🔬 심층 분석" 카드 + 실행 버튼, 헤더에 간단/심층 배지
+
+## 검증
+- [x] pytest 398 passed / eslint 0 / next build 0 error
+- [x] "본문+감별 포인트" 입력 → 간단 분석 0.2s 0개 → 심층 분석 ~7s 에서 신호 3개 검출 (smishing_link_detected, phishing_url_confirmed, personal_info_request)
+
+## Review (완료 2026-06-12)
+- deep 모드는 게이트를 *돌리되* 결과를 metadata 로만 보존 (라벨링·정확도 측정 가치 유지), 실행 프로파일만 GATE_SCAM_ATTEMPT 풀 강도로 고정. Serper 도 `skip_verification=False` 강제.
+- 검증 중 부수 버그 발견·수정: `analyze_unified` 의 Claude 호출이 max_tokens=512 에 정확히 걸려 JSON 이 잘림 → 파싱 실패가 "플래그 0개"로 조용히 끝나던 문제. 1024 로 상향 + stop_reason=max_tokens 경고 로그 추가. (deep 모드 신호 0개의 마지막 원인이 이것이었음)
+- 카카오 webhook 은 이번 scope 외 — 카카오는 컨텍스트 수집 + refine 흐름이 따로 있어 deep 제안 UX 는 별도 설계 필요.
+
+---
+
+---
+
+# TODO — 어드민 모델 관리 섹션 신설 + 대시보드 제거 (2026-06-12)
+
+## 목표
+게이트·일반분석(분류기/추출기) fine-tuned 모델을 한 곳에서 "파이프라인 적용"할 수 있는
+`/admin/models` 섹션을 어드민에 신설하고, `/admin/stats` 대시보드 섹션을 제거한다.
+
+## Part A — 게이트 모델 적용 가능화 (백엔드)
+- [x] `scripts/content_label_gate.py`: 학습 후 output 루트에 어댑터+토크나이저+`label2id.json` 저장 (활성화 가능한 체크포인트)
+- [x] `training/sessions.py`: `_has_model_artifacts("gate", ...)` 지원 (루트 또는 `checkpoint-*/`)
+- [x] `training/sessions.py`: `activate_session` 의 kind=gate 거부 제거 → `active_models.json["gate"]` 기록. 과거 세션은 최신 `checkpoint-*` 로 resolve + `label2id.json` 보충
+- [x] `pipeline/gate.py`: `active_models.get_active_path("gate")` 있으면 fine-tuned 로컬 분류 (source="finetuned"), 실패/없으면 기존 Haiku 흐름
+
+## Part B — `/admin/models` 신설 (프론트)
+- [x] `/admin/training/models` → `/admin/models` 이동, Gate 섹션 + active gate 카드 추가 (kind==="gate" 세션, macro_f1/accuracy 표시)
+- [x] 어드민 홈 네비에 "🧠 모델" 링크 추가, `training/page.tsx`·`training/compare/page.tsx` 링크 갱신 + TrainingClient 의 "평가 전용 (적용 불가)" 문구·버튼 숨김 제거
+
+## Part C — 대시보드 제거
+- [x] `admin/stats/page.tsx`·`api/admin/stats/route.ts` 삭제, `admin/page.tsx`·`admin/browse/page.tsx` 의 대시보드 링크 제거
+- [x] `admin/charts.tsx` 에서 stats 전용 `DailyRunsChart`/`HBarChart` 제거 (FastAPI `/api/admin/stats` 는 API-first 설계상 유지)
+
+## 검증
+- [x] `pytest` 398 passed
+- [x] `npm run lint` 0 / `npm run build` 0 error — `/admin/models` 라우트 생성, `stats`·`training/models` 제거 확인
+- [x] gate activate → `active_models.json` 에 gate 키 기록 + `classify_gate` 가 fine-tuned 경로 사용 확인 (격리 cwd 기능 테스트 + 실 체크포인트 추론)
+
+## Review (완료 2026-06-12)
+- **게이트 적용 흐름**: `/admin/models` 의 적용 버튼 → `activate_session` (kind=gate 허용) → `active_models.json["gate"]` → `pipeline/gate.py` 가 fast-path 2개 통과 후 fine-tuned 로컬 분류. 로드·추론·라벨 무효 어느 실패든 Haiku 로 자동 fallback (게이트는 죽으면 안 됨 원칙 유지).
+- **구버전 세션 호환**: content_label_gate_20260609/0610 처럼 가중치가 `checkpoint-N/` 에만 있는 세션은 활성화 시점에 최신 체크포인트 resolve + `label2id.json` 보충 (세션 params 의 labels 순서 사용, 없으면 canonical 3종).
+- **체크포인트 로더 공유**: gate 는 `classifier._load_finetuned_model` 재사용 (full HF / PEFT 어댑터 + label2id.json 동일 포맷) — 중복 구현 없음.
+- **실 추론 검증**: gate 파이프라인 출력 == 직접 모델 호출 (3개 텍스트 일치), 라벨 매핑 정상. 단 20260610 체크포인트는 OOD 갭 있음 — 일상 잡담→scam_attempt 1.00, 1인칭 검찰 사칭→scam_news_edu. **적용은 씨앗 데이터 보강 재학습 후 권장** (changes.md 2026-06-12 메모).
+- **대시보드**: 프론트 표면만 제거. `/api/admin/stats` FastAPI 엔드포인트·`get_dashboard_stats` 는 API-first 설계상 유지 (외부 SDK 호출 가능).
+
+---
+
+---
+
+# TODO — 프로젝트 완성도 감사 + 구조/청소 릴리스 정리 (2026-06-11)
+
+## 현재 상태
+- [x] main push 선행 확인: `git push origin main` → `Everything up-to-date`.
+- [x] 작업트리 확인: 일반 변경 없음, 현재 `refactor/cleanup-and-split` == `main` == `mp-admin/main` (`b1206e6`).
+- [x] 루트 `README.md`, 기존 `tasks/todo.md`, `.scamguardian/README.md`, `.scamguardian/EVIDENCE.md` 1차 검토.
+- [x] 병렬 read-only 감사 3건 완료: 디렉터리/런타임 산출물, legacy/identity-boundary, 긴 파일 분해 후보.
+- [x] 사용자 확인 후 구현 시작. 단, `.scamguardian/training_sessions/` 는 보존 대상으로 고정.
+
+## 결론 요약
+프로젝트는 기능 축으로는 상당히 완성 단계에 가깝지만, 릴리스 전 정리 기준으로는 아직 완료가 아니다.
+특히 다음 항목은 “완성도”에 직접 영향을 준다.
+
+1. `.scamguardian/README.md`, `/methodology`, admin browse 일부가 과거 점수·등급 모델을 아직 노출한다.
+2. `v4_stream.py` 같은 501 stub 라우터가 production app/OpenAPI에 연결되어 있다.
+3. Ollama legacy 설정/문구/로그 tail 이 남아 있다.
+4. `.scamguardian/scamguardian.db` 같은 런타임 DB가 git tracked 상태다.
+5. 로컬 워크스페이스에는 `.scamguardian/training_sessions` 11GB 등 ignored runtime/generated 파일이 과도하게 쌓였다.
+6. `HomeClient.tsx`, `LiveVoiceUpload.tsx`, `pipeline/runner.py`, `db/repository.py` 등은 아직 너무 길다.
+
+## Stage 0 — 구현 전 안전선
+- [x] 삭제/분해 전 baseline 검증 실행: `pytest` 398 passed, `cd apps/web && npm run lint` OK, `cd apps/web && npm run build` OK.
+- [x] 서버 현재 기동 경로 확인: `scripts/start_stack.sh` / `scripts/restart_stack.sh` 모두 확인, Ollama 자동 기동 제거 방향으로 정리.
+- [x] 중요한 ignored 산출물 목록 저장: `.scamguardian/training_sessions`, `.scamguardian/phh_training`, `data/generated/*.bak-*`, `data/androzoo`.
+- [x] `.scamguardian/active_models.json` 확인: 현재 classifier 활성 경로 없음, 사용자 요청에 따라 training session 산출물은 보존.
+
+## Stage 1 — Git에 들어간 오염 제거
+- [x] `.scamguardian/scamguardian.db` 추적 제거. DB는 런타임 산출물이므로 git에서 삭제하고 `.gitignore` 정책으로 유지.
+- [x] `.claude/scheduled_tasks.lock` 추적 필요성 확인 후 제거 후보 처리.
+- [x] `docs/openapi.json`이 generated snapshot이면 재생성하거나 tracking 정책 결정.
+- [x] `.scamguardian`의 문서와 런타임 데이터를 분리할지 결정:
+  - 후보 A: 문서는 `docs/`로 이동, `.scamguardian/`은 runtime-only.
+  - 후보 B: `.scamguardian/README.md`/`EVIDENCE.md`만 예외로 유지하고 DB/모델/로그는 전부 ignored.
+  - 결정: 후보 B. `.scamguardian/README.md`/`EVIDENCE.md`는 정본 문서로 유지, DB/모델/로그/cache는 runtime 산출물로 취급.
+
+## Stage 2 — Identity Boundary 정리
+- [x] `.scamguardian/README.md`의 과거 `total_score`, `risk_level`, “매우 위험 | 80점”, “위험 점수/등급” 예시 제거.
+- [x] `apps/web/src/app/methodology/page.tsx`를 점수 산정 페이지에서 “검출 신호 카탈로그 + 근거 + 검출 임계값” 페이지로 교체.
+- [x] `apps/web/src/app/admin/browse/page.tsx`의 위험도 필터/등급 배지 제거, `total_score_predicted`는 “검출 신호 수”로만 표시.
+- [x] `api_server_pkg/admin_runs.py`, `db/sqlite_runs.py`의 deprecated risk-level 검색/통계 표면을 숨기거나 호환용 내부 필드로만 유지.
+- [x] `pipeline/llm_assessor.py`의 “판정기/사기 여부/직접 판정” 문구를 “신호 검출 보조/유형 추정/근거 제안”으로 교체.
+- [x] `apps/web/src/app/result/[token]/page.tsx`, `pipeline/kakao_result.py`의 “위험 판정/사기 여부 판단” 표현을 “검출 신호/사용자 제공 맥락” 표현으로 수정.
+
+## Stage 3 — Legacy/Ollama/Stub 제거
+- [x] `.env.example`의 Ollama 섹션 제거 또는 legacy 비활성 주석으로 축소.
+- [x] `run_analysis.py` 도움말의 Ollama 표현 제거.
+- [x] `scripts/restart_stack.sh`, `scripts/watch_logs.sh`에서 Ollama 자동 기동/log tail 제거. 필요한 경우 별도 legacy script로 격리.
+- [x] `pipeline/config.py`의 `OLLAMA_MAX_*` 류 provider-specific 이름을 `LLM_MAX_*`로 rename 하고 Ollama env/alias 제거.
+- [x] `api_server_pkg/v4_stream.py` production include 제거 또는 `ENABLE_V4_DRAFT_DOCS=1`일 때만 include.
+- [x] APK dynamic 문서/코드 상태 표현 통일: “experimental VM-backed implementation” vs “future interface only” 중 하나로 정리.
+
+## Stage 4 — 로컬 디렉터리 청소
+- [x] 안전 삭제: `__pycache__/`, `.pytest_cache/`, `*.apk.idsig`, `apps/web/tsconfig.tsbuildinfo`.
+- [x] 재생성 가능 캐시 삭제: `__pycache__/`, `.pytest_cache/`, `apps/web/tsconfig.tsbuildinfo`, `.scamguardian/ollama_models`.
+- [ ] 대형 의존성/빌드 캐시: `apps/web/.next/`, `.cache/huggingface/`, `apps/web/node_modules/`는 검증/서버 재기동에 필요하고 재다운로드 비용이 커서 보존.
+- [ ] 개인정보/런타임 보존 정책에 따라 `.scamguardian/uploads/`, `.scamguardian/logs/` 정리.
+- [ ] `.scamguardian/training_sessions/`는 사용자 요청으로 보존. `.scamguardian/phh_training/`은 활성 모델/논문 증거 가능성이 있어 보존.
+- [x] `data/generated/*.bak-*`, `data/generated/rag_index/`, `scamguardian_synthetic_*.jsonl` 정리. 단 tracked `user_samples_augmented.jsonl`은 유지.
+- [x] `scripts/.git/` 중첩 repo 여부 확인 후 불필요하면 제거.
+
+## Stage 5 — 코드 분해
+- [x] 1차: `apps/web/src/app/methodology/page.tsx`, `admin/browse/page.tsx`는 identity 수정과 함께 작게 정리.
+- [x] 2차: `apps/web/src/app/HomeClient.tsx`를 API client/types/utils/result modal/simple modals로 분리.
+- [x] 3차: `apps/web/src/app/live/LiveVoiceUpload.tsx`를 live types/signals/UI components로 분리.
+- [x] 4차: `pipeline/runner.py`는 facade 유지, input phase helpers로 분리 — 711줄 → 521줄.
+- [ ] 5차: `db/repository.py`/`db/sqlite_runs.py`, `training/sessions.py`는 검증 단위별로 순차 분해.
+- [x] 5차-a: `api_server_pkg/admin_training.py` helper 분리 — 라우터 842줄 → 322줄, 비교/summary helper를 별도 모듈로 이동.
+- [x] 5차-b: `training/sessions.py` file-store helper 분리 — 세션 파일 읽기/쓰기/로그 tail/metrics reader를 `training/session_files.py`로 이동.
+- [x] 5차-c: `db/repository.py` platform facade 분리 — API key/cost/request-log facade를 `db/platform_facade.py`로 이동.
+
+## Stage 6 — 검증
+- [x] `pytest` — 398 passed.
+- [x] `python test_pipeline.py` — DetectionReport schema / LLM signal contract / eval metrics PASS.
+- [x] `cd apps/web && npm run lint` — OK.
+- [x] `cd apps/web && npm run build` — OK. `/evidence` 파일 trace warning 제거 완료.
+- [x] FastAPI import/smoke: `create_app()` 72 routes, `/api/v4/stream` 연결 없음.
+- [x] 서버 재기동: `ENABLE_FUNNEL=false ENABLE_NGROK=false ./scripts/start_stack.sh` — backend/frontend ready.
+- [x] API smoke: `/health`, `/api/methodology`, `/api/analyze` 텍스트 샘플.
+- [x] UI smoke: 홈, methodology, admin browse 보호 redirect 확인. 인앱 브라우저로 methodology “검출 신호 방법론” 렌더 확인.
+- [x] 분리 후 재검증: `py_compile` OK, FastAPI `create_app()` 68 routes, `/api/evidence` 연결 있음, `/api/v4/stream` 연결 없음.
+- [x] 최종 서버 smoke: `/health`, `/api/evidence`, `/`, `/live`, `/methodology`, `/evidence` 모두 200.
+- [x] runner input phase 분리 후 재검증: `py_compile` OK, 텍스트 분석 `DetectionReport` smoke OK, `pytest` 398 passed.
+
+## Review
+
+완료:
+- main push 선행 확인 후 `refactor/cleanup-and-split`에서 정리 진행.
+- score/risk-level 외부 표면 정리: `.scamguardian/README.md`, `/methodology`, admin browse/search proxy, Kakao/result 문구, LLM assessor prompt.
+- Ollama 제거: `.env.example`, stack scripts, log watcher, run_analysis help, config env alias.
+- `.scamguardian/ollama_models` 로컬 runtime 잔재 삭제.
+- 미구현 stub 제거: `api_server_pkg/v4_stream.py` 삭제 및 app/router/OpenAPI 연결 제거.
+- runtime 오염 제거: tracked `.scamguardian/scamguardian.db`, `.claude/scheduled_tasks.lock` 제거. generated data backup/rag index/id signature/중첩 `scripts/.git` 제거.
+- README 수동 명령 `python test_pipeline.py`를 현재 DetectionReport schema 기반 스모크 테스트로 갱신.
+- `127.0.0.1` dev origin 허용으로 로컬 브라우저 검증 시 Next HMR 경고 제거.
+- `docs/openapi.json` 재생성: 65 endpoints, `/api/evidence` 포함.
+- `/evidence`는 Next 파일시스템 직접 읽기 대신 FastAPI `/api/evidence` runtime fetch로 변경해 Turbopack NFT warning 제거.
+- `HomeClient.tsx` 1354줄 → 959줄 + `homeApi/homeTypes/homeUtils/homeSimpleModals/homeResultModal`로 분리.
+- `LiveVoiceUpload.tsx` 1468줄 → 1018줄 + `liveTypes/liveSignals/liveComponents`로 분리.
+- `api_server_pkg/admin_training.py` 842줄 → 322줄, `admin_training_compare.py` 394줄 / `admin_training_summary.py` 145줄로 분리.
+- `pipeline/runner.py` 711줄 → 521줄, `runner_input_phases.py` 263줄로 Safety/Sandbox/APK/STT 입력 단계를 분리.
+- `training/sessions.py` 734줄 → 652줄, `session_files.py` 102줄로 세션 파일 I/O helper 분리.
+- `db/repository.py` 836줄 → 780줄, `platform_facade.py` 85줄로 API key/cost/request-log facade 분리.
+- 재검증: `pytest` 398 passed, runner 텍스트 분석 smoke OK, `py_compile` OK, FastAPI `create_app()` training/platform/evidence endpoints 연결 확인, `npm run lint` OK, `npm run build` OK, 서버 재기동 및 `/health`, `/api/evidence`, `/`, `/live`, `/methodology`, `/evidence` 200 확인.
+
+보존:
+- 사용자 요청에 따라 `.scamguardian/training_sessions/` 보존.
+- `.scamguardian/training_sessions/`, `.scamguardian/phh_training/`, `.cache/huggingface/`, `apps/web/node_modules/`, `.next/`, logs/uploads는 서버 재기동/검증·학습 산출물 보존·재다운로드 비용 때문에 삭제하지 않음.
+
+잔여:
+- 백엔드 큰 파일(`db/repository.py`, `db/sqlite_runs.py`)은 여전히 700줄대. 다음 패스에서는 sqlite run-store 쿼리 묶음과 repository facade를 추가 분리 권장.
+
+---
+
 # TODO — 게이트(content_label) 학습·증강·시각화 웹 연결 (2026-06-10)
 
 ## 목표
@@ -1487,3 +1754,42 @@ fallback 경로로 end-to-end 스모크 — 게이트 fallback→분류→추출
 
 - 작업 항목 + Review: [tasks/todo-phh.md](tasks/todo-phh.md) 의 2026-05-28 섹션
 - 학습 패턴: [tasks/lessons.md](tasks/lessons.md) 의 2026-05-28 패턴
+
+---
+
+## 2026-06-19 — Live v4 WebSocket STT + 메인 시연모드
+
+- [x] `pipeline/live_stt.py` — PCMBuffer + Whisper chunk + LiveSessionState
+- [x] `api_server_pkg/live_ws.py` — `/ws/live-transcribe` WebSocket
+- [x] middleware `/ws/` + `/api/demo/` skip, app router 등록
+- [x] `live-pcm-processor.js` + `useLiveWebSocket.ts` + LiveVoiceUpload WS/fallback
+- [x] `GET /api/demo/ml-snapshot` + `DemoArchitectureSection` on HomeClient hub
+- [x] tests: `test_live_stt_buffer.py`, `test_live_ws.py` — pytest **434 passed**
+
+### Review
+
+Live v4: AudioWorklet 16kHz PCM → WebSocket → 5s Whisper chunk → `_scan_text` 즉시 push. HTTP `/api/live-analyze` fallback 유지. 메인 허브 시연모드: 런타임 Phase 0~5 + Gate/Classifier/GLiNER 각각 데이터·증강·파인튜닝 세션 상태(10s poll, admin 링크만).
+
+---
+
+## 2026-06-19 — 콘텐츠 시연 ML 학습 맵 개선
+
+- [x] `ContentTrainingMap.tsx` 신설 — 데이터 증강→Gate→Classifier→GLiNER→런타임 적용 흐름을 클릭형 카드/상세 패널로 시각화
+- [x] 증강 기록 반영 — `augmentation_time_comparison.md` 기준 병렬 c=4 3.1× 단축, 전체 5.6–6.2× 단축, 6-class macro F1 +0.063
+- [x] 학습 기록 반영 — active gate/classifier/gliner 세션 status/metrics 기반으로 학습 대상·입력 데이터·체크포인트·개선 수치 표기
+- [x] `DemoImplementationSection.tsx`에서 콘텐츠 모드는 기존 단순 7-Phase/막대그래프 대신 콘텐츠 학습 맵 표시
+- [x] Gate/Classifier raw 대비 비교 추가 — Gate 초기 eval→최종, Classifier raw zero-shot smoke 10/12→fine-tuned 11/12
+
+### Review
+
+콘텐츠 시연 하단을 단순 파이프라인 그림에서 “어떤 데이터로 무엇을 학습했고 어디에 적용되며 무엇이 개선됐는지”를 한 화면에서 설명하는 구조로 교체했다. Gate는 학습 로그의 초기 eval(accuracy 74.6%, macro F1 36.8%) 대비 최종 checkpoint(accuracy 97.9%, macro F1 96.0%)를 표시하고, Classifier는 `admin_training_compare.py` helper로 산출한 raw zero-shot 10/12(83.3%) 대비 fine-tuned 11/12(91.7%)를 표시한다. 근거 파일 경로와 역할을 함께 보여주며, 외부 노출 문구는 판정/점수 대신 `detected_signals[]` 중심 표현을 유지했다.
+
+### 추가 증강 실행
+
+- [x] `data/processed/pending_seeds.jsonl` 앞 3개 seed × 2 variants 실제 Claude 증강 실행
+- [x] `data/generated/user_samples_augmented.jsonl` append: 4362 → 4368 rows (`+6`)
+- [x] 마지막 6개 레코드 schema 검증 통과, text 중복 없음, source_ref 3종 모두 `코인 사기`
+- [x] demo snapshot 확인: gate 385 / classifier 25 / gliner 20 / label_queue 26 annotated, 180 pending
+- [x] Gate raw vs latest fine-tuned smoke 비교 추가: raw 3/9(33.3%) → fine-tuned 6/9(66.7%), 개선 5 / 악화 2
+- [x] `ContentTrainingMap.tsx` Raw/Base 대비 섹션을 Gate 최신 비교 기준으로 갱신
+- [x] `/demo/content` 구현 구조 영역 빈 박스 수정 — `ml-snapshot` API 실패/지연 시에도 fallback snapshot 으로 `ContentTrainingMap` 렌더

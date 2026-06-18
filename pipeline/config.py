@@ -22,12 +22,15 @@ from pipeline.config_taxonomy import (  # noqa: F401
     DEFAULT_SCAM_TYPE_DESCRIPTIONS,
     LABEL_DEFINITIONS,
     LABEL_SETS,
+    SCAM_CATEGORY_FALLBACK,
+    SCAM_CATEGORY_MAP,
     SCAM_TYPES,
     SCAM_TYPE_DESCRIPTIONS,
     STAGE2_CANDIDATE_TOP_N,
     STAGE2_DOMINANCE_GAP,
     build_scam_taxonomy,
     get_runtime_scam_taxonomy,
+    scam_category_for,
 )
 from pipeline.config_gate import (  # noqa: F401
     CONTENT_LABELS,
@@ -38,6 +41,7 @@ from pipeline.config_gate import (  # noqa: F401
     GATE_EXECUTION_PROFILE,
     GATE_FALLBACK_BUCKET,
     GATE_LABELS_KO,
+    GATE_LOW_CONFIDENCE_THRESHOLD,
     GATE_MIN_CHARS,
     GATE_NORMAL,
     GATE_SCAM_ATTEMPT,
@@ -96,7 +100,7 @@ KEYWORD_BOOST: dict[str, list[str]] = {
     "취업·알바 사기": ["재택", "알바", "채용", "일당", "시급", "교육비", "등록금", "선입금", "합격", "취업", "스마트폰"],
     "납치·협박형": ["납치", "잡혀있어", "다쳐", "죽여", "협박", "빨리", "경찰 부르면", "가족", "자녀", "보내지 않으면"],
     "스미싱": ["택배", "결제", "링크", "클릭", "확인하세요", "앱 설치", "본인인증", "보안", "업데이트", "URL"],
-    "중고거래 사기": ["중고나라", "당근마켓", "번개장터", "직거래", "운송장", "택배", "에스크로", "안전결제", "선입금"],
+    "중고거래 사기": ["중고나라", "당근마켓", "번개장터", "직거래", "운송장", "에스크로", "안전결제", "선입금", "판매자", "구매자"],
 }
 KEYWORD_BOOST_WEIGHT: float = 0.25  # 키워드 매칭 시 가산할 최대 스코어
 KEYWORD_NO_MATCH_PENALTY: float = 0.05  # 키워드가 하나도 없을 때 감점
@@ -115,16 +119,17 @@ SERPER_BATCH_DELAY: float = float(os.getenv("SERPER_BATCH_DELAY", "0.2"))
 STT_BACKEND: str = os.getenv("STT_BACKEND", "whisper")  # "whisper" | "claude"
 
 # ──────────────────────────────────────────────
-# Ollama / LLM 보조 판정 설정
+# LLM 보조 검출 설정
 # ──────────────────────────────────────────────
-OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
-OLLAMA_TIMEOUT_SECONDS: int = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
-OLLAMA_KEEP_ALIVE: str = os.getenv("OLLAMA_KEEP_ALIVE", "15m")
-OLLAMA_MAX_TRANSCRIPT_CHARS: int = int(os.getenv("OLLAMA_MAX_TRANSCRIPT_CHARS", "1200"))
-OLLAMA_MAX_ENTITY_COUNT: int = int(os.getenv("OLLAMA_MAX_ENTITY_COUNT", "12"))
-OLLAMA_MAX_TRIGGERED_FLAG_COUNT: int = int(os.getenv("OLLAMA_MAX_TRIGGERED_FLAG_COUNT", "6"))
-OLLAMA_NUM_PREDICT: int = int(os.getenv("OLLAMA_NUM_PREDICT", "384"))
+LLM_MAX_TRANSCRIPT_CHARS: int = int(
+    os.getenv("LLM_MAX_TRANSCRIPT_CHARS", "1200")
+)
+LLM_MAX_ENTITY_COUNT: int = int(
+    os.getenv("LLM_MAX_ENTITY_COUNT", "12")
+)
+LLM_MAX_TRIGGERED_FLAG_COUNT: int = int(
+    os.getenv("LLM_MAX_TRIGGERED_FLAG_COUNT", "6")
+)
 RAG_TOP_K: int = int(os.getenv("SCAMGUARDIAN_RAG_TOP_K", "3"))
 RAG_MAX_CASES_IN_PROMPT: int = int(os.getenv("SCAMGUARDIAN_RAG_MAX_CASES_IN_PROMPT", "3"))
 

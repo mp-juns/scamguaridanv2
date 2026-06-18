@@ -1,11 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { signIn } from "next-auth/react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
-
 import {
-  GUEST_DAILY_LIMIT,
   bumpGuestDaily,
   guestOverDailyLimit,
 } from "./guestLimit";
@@ -14,190 +12,46 @@ import {
   injectionBlockRemainingMs,
   looksLikeInjection,
 } from "./injectionGuard";
+import { submitAnalysis } from "./homeApi";
+import type { AnalysisReport, TranscriptSpan } from "./homeTypes";
+import {
+  InjectionBlockedModal,
+  LimitBlockModal,
+  LoginPromptModal,
+} from "./homeSimpleModals";
+import { ResultSummaryModal } from "./homeResultModal";
+import {
+  contentTypeBadge,
+  entityKey,
+  formatPercent,
+  renderTranscriptWithHighlights,
+  sourceBadgeClass,
+} from "./homeUtils";
 
 // 비회원 분석 횟수 누적 키 + 로그인 권유 임계치 (이 횟수 이상부터 권유 모달)
 const GUEST_COUNT_KEY = "sg_guest_analysis_count";
 const GUEST_PROMPT_THRESHOLD = 3;
-
-type Entity = {
-  label: string;
-  text: string;
-  score: number;
-  start?: number;
-  end?: number;
-  source?: string;
-};
-
-// DetectionReport.detected_signals[] schema (Stage 2 reframe — total_score / risk_level 폐기)
-type DetectedSignal = {
-  flag: string;
-  label_ko: string;
-  rationale?: string;
-  source?: string;             // 출처 기관·논문
-  detection_source?: string;   // rule | llm | safety | sandbox | static_lv1 | static_lv2 | dynamic_lv3
-  evidence?: string[];
-  description?: string;
-};
-
-type LlmSuggestedEntity = {
-  text: string;
-  label: string;
-  reason: string;
-  confidence: number;
-};
-
-type LlmSuggestedFlag = {
-  flag: string;
-  reason: string;
-  evidence: string;
-  confidence: number;
-};
-
-type LlmAssessment = {
-  model: string;
-  summary: string;
-  reasoning?: string[];
-  suggested_entities: LlmSuggestedEntity[];
-  suggested_flags: LlmSuggestedFlag[];
-  error: string;
-};
-
-type RagSimilarCase = {
-  run_id: string;
-  scam_type_gt: string;
-  distance: number;
-  transcript_excerpt: string;
-};
-
-type RagContext = {
-  enabled: boolean;
-  similar_cases: RagSimilarCase[];
-};
-
-// Stage 1 게이트 안전 버킷만 노출 (Identity Boundary).
-// scam_attempt / suspicious_insufficient 는 백엔드에서 절대 전달되지 않음.
-type ContentType = {
-  bucket?: string;        // normal | scam_news_edu | undetermined
-  label_ko?: string;
-};
-
-type AnalysisReport = {
-  scam_type: string;
-  classification_confidence: number;
-  is_uncertain: boolean;
-  transcript_preview: string;
-  transcript_text?: string;
-  // DetectionReport (Stage 2 reframe) — 점수·등급 X, 검출 신호 list 만
-  detected_signals: DetectedSignal[];
-  summary?: string;
-  disclaimer?: string;
-  entities: Entity[];
-  verification_count: number;
-  llm_assessment?: LlmAssessment | null;
-  rag_context?: RagContext | null;
-  analysis_run_id?: string;
-  // Stage 1 안전 버킷 — 없으면 기존 scam_type 표시로 자연 fallback.
-  content_type?: ContentType | null;
-};
-
-function contentTypeBadge(
-  ct: ContentType | null | undefined,
-): { icon: string; label: string; chip: string } | null {
-  const bucket = (ct?.bucket ?? "").trim();
-  if (bucket === "scam_news_edu") {
-    return {
-      icon: "🗞️",
-      label: "사기 보도·교육 콘텐츠",
-      chip: "border-sky-500/40 bg-sky-700/20 text-sky-700",
-    };
-  }
-  if (bucket === "normal") {
-    return {
-      icon: "✅",
-      label: "정상 콘텐츠",
-      chip: "border-emerald-500/40 bg-emerald-700/20 text-emerald-700",
-    };
-  }
-  // undetermined 는 Phase 2 (scam_type 분류) 가 실행된 버킷이라
-  // scam_type 카드를 대체하지 않고 기존 결과 그대로 보여준다.
-  return null;
-}
 
 const EXAMPLE_INPUT =
   "일론 머스크가 화성 이민 프로젝트에 300만원 투자하면 연 30% 수익을 보장한다고 합니다. 문의는 010-1234-5678로 하라고 합니다.";
 
 const EXAMPLE_VIDEO_URL = "https://youtube.com/watch?v=dQw4w9WgXcQ";
 
-function formatPercent(value: number) {
-  return new Intl.NumberFormat("ko-KR", {
-    style: "percent",
-    maximumFractionDigits: 1,
-  }).format(value);
-}
-
-function entityKey(entity: Entity, index: number) {
-  return `${entity.label}-${entity.text}-${entity.start ?? "na"}-${entity.end ?? "na"}-${index}`;
-}
-
-function sourceBadgeClass(source?: string) {
-  return source === "llm"
-    ? "bg-fuchsia-500/15 text-fuchsia-700 ring-1 ring-fuchsia-500/30"
-    : "bg-[#e8f3ff] text-[#3182f6] ring-1 ring-[#3182f6]/30";
-}
-
-type TranscriptSpan = {
-  start: number;
-  end: number;
-  kind: "entity" | "evidence";
-  label?: string;
-};
-
-function renderTranscriptWithHighlights(
-  transcript: string,
-  spans: TranscriptSpan[],
-) {
-  if (!transcript) return null;
-
-  const sorted = [...spans]
-    .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
-    .sort((a, b) => a.start - b.start || a.end - b.end);
-
-  const nonOverlapping: TranscriptSpan[] = [];
-  for (const s of sorted) {
-    const last = nonOverlapping[nonOverlapping.length - 1];
-    if (!last || s.start >= last.end) nonOverlapping.push(s);
-  }
-
-  const parts: ReactNode[] = [];
-  let idx = 0;
-  nonOverlapping.forEach((s, i) => {
-    if (s.start > idx) {
-      parts.push(<span key={`p-${i}`}>{transcript.slice(idx, s.start)}</span>);
-    }
-    const className =
-      s.kind === "entity"
-        ? "rounded-sm bg-[#dbeafe] px-0.5 text-[#1b64da]"
-        : "rounded-sm bg-amber-500/20 px-0.5 text-amber-700";
-    parts.push(
-      <mark
-        key={`m-${i}`}
-        title={s.label ? `${s.kind}: ${s.label}` : s.kind}
-        className={className}
-      >
-        {transcript.slice(s.start, s.end)}
-      </mark>,
-    );
-    idx = s.end;
-  });
-
-  if (idx < transcript.length) {
-    parts.push(<span key="tail">{transcript.slice(idx)}</span>);
-  }
-
-  return <>{parts}</>;
-}
-
-export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
+export default function HomeClient({
+  isGuest = false,
+  demoMode = false,
+  initialMode = null,
+  hubHref = "/",
+  architectureFooter,
+}: {
+  isGuest?: boolean;
+  demoMode?: boolean;
+  initialMode?: "content" | null;
+  hubHref?: string;
+  architectureFooter?: ReactNode;
+}) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [source, setSource] = useState(EXAMPLE_INPUT);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [skipVerification, setSkipVerification] = useState(true);
@@ -205,6 +59,9 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [report, setReport] = useState<AnalysisReport | null>(null);
+  // 2단계 분석 전략 — 1차 간단 분석 후 모달에서 심층 분석(게이트 무시, 풀 파이프라인) 제안
+  const [isDeepResult, setIsDeepResult] = useState(false);
+  const [deepLoading, setDeepLoading] = useState(false);
   const [sttBackend, setSttBackend] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -213,7 +70,21 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
   const [injectionBlocked, setInjectionBlocked] = useState(false);
   // 진입 후 분석 방식 선택 허브: null = 허브 화면, 'content' = 콘텐츠 입력 폼
   // (통화는 /live, APK는 /apk 별도 페이지 → 허브에서 Link 이동)
-  const [mode, setMode] = useState<"content" | null>(null);
+  const [mode, setMode] = useState<"content" | null>(initialMode);
+
+  useEffect(() => {
+    if (demoMode && initialMode === "content") {
+      setSource(EXAMPLE_INPUT);
+      setUploadFile(null);
+      setMode("content");
+      return;
+    }
+    if (searchParams.get("demo") === "content") {
+      setSource(EXAMPLE_INPUT);
+      setUploadFile(null);
+      setMode("content");
+    }
+  }, [searchParams, demoMode, initialMode]);
 
   // 허브에서 "콘텐츠 분석" 선택 → 입력 폼으로 전환 (텍스트·유튜브 URL·파일 한 폼)
   function pickContent() {
@@ -223,6 +94,10 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
     setMode("content");
   }
   function backToHub() {
+    if (demoMode) {
+      router.push(hubHref);
+      return;
+    }
     setMode(null);
     setError("");
   }
@@ -305,41 +180,14 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
     setReport(null);
 
     try {
-      const response = uploadFile
-        ? await (async () => {
-            const formData = new FormData();
-            formData.set("file", uploadFile);
-            formData.set("skip_verification", String(skipVerification));
-            formData.set("use_llm", "true");
-            formData.set("use_rag", String(useRag));
-            return await fetch("/api/analyze-upload", {
-              method: "POST",
-              body: formData,
-            });
-          })()
-        : await fetch("/api/analyze", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              source: trimmedSource,
-              skip_verification: skipVerification,
-              use_llm: true,
-              use_rag: useRag,
-            }),
-          });
-
-      const data = (await response.json()) as AnalysisReport | { detail?: string };
-      if (!response.ok) {
-        const message =
-          "detail" in data && typeof data.detail === "string"
-            ? data.detail
-            : "분석 중 오류가 발생했습니다.";
-        throw new Error(message);
-      }
-
-      setReport(data as AnalysisReport);
+      const data = await submitAnalysis({
+        source: trimmedSource,
+        uploadFile,
+        skipVerification,
+        useRag,
+      });
+      setReport(data);
+      setIsDeepResult(false);
       setShowDetails(false);
 
       // 비회원이면 분석 횟수 누적 → 임계 이상이면 결과 대신 로그인 권유 먼저
@@ -377,20 +225,63 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
     }
   }
 
+  // 심층 분석 — 같은 입력으로 deep=true 재실행 (게이트 라우팅 무시, 풀 파이프라인)
+  async function handleDeepAnalyze() {
+    if (deepLoading) return;
+    if (isGuest && guestOverDailyLimit()) {
+      setModalOpen(false);
+      setLimitBlockOpen(true);
+      return;
+    }
+    setDeepLoading(true);
+    setError("");
+    try {
+      const data = await submitAnalysis({
+        source: source.trim(),
+        uploadFile,
+        skipVerification: false, // 심층은 Serper 교차검증 포함 (백엔드에서도 강제)
+        useRag,
+        deep: true,
+      });
+      setReport(data);
+      setIsDeepResult(true);
+      setShowDetails(false);
+      if (isGuest) bumpGuestDaily();
+    } catch (submitError) {
+      const message =
+        submitError instanceof Error
+          ? submitError.message
+          : "심층 분석 중 오류가 발생했습니다.";
+      setError(message);
+      setModalOpen(false); // 메인 화면 에러 배너로 노출
+    } finally {
+      setDeepLoading(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-[#f2f4f6] px-6 py-10 text-[#191f28]">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-8">
         <section className="rounded-3xl border border-[#e5e8eb] bg-white p-8 shadow-[0_2px_12px_rgba(0,0,0,0.05)]">
           <div className="mb-7 flex flex-wrap items-center gap-2">
             <span className="rounded-full bg-[#e8f3ff] px-3 py-1 text-xs font-bold tracking-[0.08em] text-[#3182f6]">
-              ScamGuardian
+              {demoMode ? "시연 모드" : "ScamGuardian"}
             </span>
-            <Link
-              className="rounded-full border border-[#e5e8eb] px-3 py-1 text-xs text-[#4e5968] transition hover:bg-[#f2f4f6]"
-              href="/evidence"
-            >
-              📚 근거
-            </Link>
+            {!demoMode ? (
+              <Link
+                className="rounded-full border border-[#e5e8eb] px-3 py-1 text-xs text-[#4e5968] transition hover:bg-[#f2f4f6]"
+                href="/evidence"
+              >
+                📚 근거
+              </Link>
+            ) : (
+              <Link
+                className="rounded-full border border-[#e5e8eb] px-3 py-1 text-xs text-[#4e5968] transition hover:bg-[#f2f4f6]"
+                href="/demo"
+              >
+                ← 시연 허브
+              </Link>
+            )}
           </div>
 
           {mode === null ? (
@@ -404,7 +295,7 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
 
               {/* 통화 분석 — 실시간이 핵심 */}
               <Link
-                href="/live"
+                href={demoMode ? "/demo/live" : "/live"}
                 className="group flex items-center gap-5 rounded-2xl border border-[#e5e8eb] bg-white p-6 shadow-[0_2px_12px_rgba(0,0,0,0.05)] transition hover:border-[#3182f6] hover:shadow-[0_6px_20px_rgba(49,130,246,0.12)]"
               >
                 <span className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-2xl bg-[#e8f3ff] text-3xl">🎙️</span>
@@ -439,7 +330,7 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
 
               {/* APK 분석 — 안드로이드 설치 파일 */}
               <Link
-                href="/apk"
+                href={demoMode ? "/demo/apk" : "/apk"}
                 className="group flex items-center gap-5 rounded-2xl border border-[#e5e8eb] bg-white p-6 shadow-[0_2px_12px_rgba(0,0,0,0.05)] transition hover:border-[#3182f6] hover:shadow-[0_6px_20px_rgba(49,130,246,0.12)]"
               >
                 <span className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-2xl bg-[#e8f3ff] text-3xl">📱</span>
@@ -453,6 +344,22 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
                   분석 시작 <span aria-hidden>→</span>
                 </span>
               </Link>
+
+              {!demoMode ? (
+                <Link
+                  href="/demo"
+                  className="flex items-center gap-4 rounded-2xl border border-dashed border-[#3182f6]/40 bg-[#e8f3ff]/30 p-5 transition hover:border-[#3182f6] hover:bg-[#e8f3ff]/50"
+                >
+                  <span className="text-2xl">🔬</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-bold text-[#191f28]">시연 모드</span>
+                    <span className="mt-0.5 block text-xs leading-5 text-[#4e5968]">
+                      분석과 함께 파이프라인·ML 구현 구조를 자세히 볼 수 있어요.
+                    </span>
+                  </span>
+                  <span className="text-sm font-semibold text-[#3182f6]">→</span>
+                </Link>
+              ) : null}
             </div>
           ) : (
           <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
@@ -462,7 +369,7 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
                 onClick={backToHub}
                 className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#4e5968] transition hover:text-[#191f28]"
               >
-                <span aria-hidden>←</span> 분석 방식 선택으로
+                <span aria-hidden>←</span> {demoMode ? "시연 허브로" : "분석 방식 선택으로"}
               </button>
               <h1 className="text-3xl font-bold leading-snug tracking-tight text-[#191f28] sm:text-[2.6rem]">
                 💬 콘텐츠 분석
@@ -636,236 +543,32 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
           )}
         </section>
 
-        {injectionBlocked ? (
-          <div
-            className="fixed inset-0 z-[90] flex items-center justify-center overflow-y-auto bg-[#191f28]/60 p-4 sm:p-6"
-            onClick={() => setInjectionBlocked(false)}
-            role="dialog"
-            aria-modal="true"
-          >
-            <div
-              className="my-auto flex w-full max-w-sm flex-col"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <section className="relative rounded-3xl border border-[#fecaca] bg-white p-7 text-center shadow-[0_8px_30px_rgba(0,0,0,0.12)]">
-                <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-[#fff1f0] text-3xl">
-                  🚫
-                </span>
-                <h2 className="mt-4 text-lg font-bold text-[#191f28]">
-                  접근이 제한되었습니다
-                </h2>
-                <p className="mt-2 text-sm leading-6 text-[#4e5968]">
-                  프롬프트 우회(인젝션) 시도가 감지되어 분석 이용이 일시 제한되었습니다.
-                  정상적인 분석 요청만 이용해 주세요.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setInjectionBlocked(false)}
-                  className="mt-6 inline-flex w-full items-center justify-center rounded-2xl bg-[#191f28] px-5 py-3 text-sm font-semibold text-white transition hover:bg-black"
-                >
-                  확인
-                </button>
-              </section>
-            </div>
-          </div>
-        ) : null}
+        <InjectionBlockedModal
+          open={injectionBlocked}
+          onClose={() => setInjectionBlocked(false)}
+        />
+        <LimitBlockModal
+          open={limitBlockOpen}
+          onClose={() => setLimitBlockOpen(false)}
+        />
+        <LoginPromptModal
+          open={loginPromptOpen}
+          onClose={() => setLoginPromptOpen(false)}
+          onContinueAsGuest={() => {
+            setLoginPromptOpen(false);
+            setModalOpen(true);
+          }}
+        />
 
-        {limitBlockOpen ? (
-          <div
-            className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-[#191f28]/50 p-4 sm:p-6"
-            onClick={() => setLimitBlockOpen(false)}
-            role="dialog"
-            aria-modal="true"
-          >
-            <div
-              className="my-auto flex w-full max-w-sm flex-col"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <section className="relative rounded-3xl border border-[#e5e8eb] bg-white p-7 text-center shadow-[0_8px_30px_rgba(0,0,0,0.12)]">
-                <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-[#fff1f0] text-3xl">
-                  ⛔
-                </span>
-                <h2 className="mt-4 text-lg font-bold text-[#191f28]">
-                  오늘 비회원 분석 한도를 모두 썼어요
-                </h2>
-                <p className="mt-2 text-sm leading-6 text-[#4e5968]">
-                  비회원은 하루 {GUEST_DAILY_LIMIT}회까지 분석할 수 있어요(라이브 음성 포함).
-                  로그인하면 이어서 계속 이용할 수 있어요.
-                </p>
-
-                <div className="mt-6 space-y-2">
-                  <button
-                    type="button"
-                    onClick={() => signIn("google", { callbackUrl: "/" })}
-                    className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#3182f6] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#1b64da]"
-                  >
-                    <svg className="h-4 w-4" viewBox="0 0 48 48" aria-hidden>
-                      <path fill="#fff" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
-                    </svg>
-                    Google 로 로그인
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLimitBlockOpen(false)}
-                    className="inline-flex w-full items-center justify-center rounded-2xl px-5 py-3 text-sm font-semibold text-[#8b95a1] transition hover:bg-[#f2f4f6]"
-                  >
-                    닫기
-                  </button>
-                </div>
-              </section>
-            </div>
-          </div>
-        ) : null}
-
-        {loginPromptOpen ? (
-          <div
-            className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-[#191f28]/40 p-4 sm:p-6"
-            onClick={() => {
-              setLoginPromptOpen(false);
-              setModalOpen(true);
-            }}
-            role="dialog"
-            aria-modal="true"
-          >
-            <div
-              className="my-auto flex w-full max-w-sm flex-col"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <section className="relative rounded-3xl border border-[#e5e8eb] bg-white p-7 text-center shadow-[0_8px_30px_rgba(0,0,0,0.12)]">
-                <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-[#e8f3ff] text-3xl">
-                  🔒
-                </span>
-                <h2 className="mt-4 text-lg font-bold text-[#191f28]">
-                  로그인하고 계속 이용해 보세요
-                </h2>
-                <p className="mt-2 text-sm leading-6 text-[#4e5968]">
-                  비회원으로 여러 번 분석하셨어요. 로그인하면 분석 결과를 안전하게
-                  이어서 이용할 수 있어요.
-                </p>
-
-                <div className="mt-6 space-y-2">
-                  <button
-                    type="button"
-                    onClick={() => signIn("google", { callbackUrl: "/" })}
-                    className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#3182f6] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#1b64da]"
-                  >
-                    <svg className="h-4 w-4" viewBox="0 0 48 48" aria-hidden>
-                      <path fill="#fff" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
-                    </svg>
-                    Google 로 로그인
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setLoginPromptOpen(false);
-                      setModalOpen(true);
-                    }}
-                    className="inline-flex w-full items-center justify-center rounded-2xl px-5 py-3 text-sm font-semibold text-[#8b95a1] transition hover:bg-[#f2f4f6]"
-                  >
-                    비회원으로 결과 보기
-                  </button>
-                </div>
-              </section>
-            </div>
-          </div>
-        ) : null}
-
-        {report && modalOpen ? (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-[#191f28]/40 p-4 sm:p-6"
-            onClick={() => setModalOpen(false)}
-            role="dialog"
-            aria-modal="true"
-          >
-            <div
-              className="my-auto flex w-full max-w-md flex-col"
-              onClick={(event) => event.stopPropagation()}
-            >
-          <section className="relative rounded-3xl border border-[#e5e8eb] bg-white p-6 shadow-[0_8px_30px_rgba(0,0,0,0.12)]">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-[#191f28]">분석 결과</h2>
-              <button
-                type="button"
-                onClick={() => setModalOpen(false)}
-                aria-label="닫기"
-                className="flex h-8 w-8 items-center justify-center rounded-full text-lg text-[#8b95a1] transition hover:bg-[#f2f4f6]"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div
-              className={`mt-5 flex items-center gap-4 rounded-2xl border px-4 py-4 ${
-                (report.detected_signals ?? []).length === 0
-                  ? "border-emerald-200 bg-emerald-50"
-                  : "border-amber-200 bg-amber-50"
-              }`}
-            >
-              <span
-                className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-2xl font-bold ${
-                  (report.detected_signals ?? []).length === 0
-                    ? "bg-emerald-100 text-emerald-600"
-                    : "bg-amber-100 text-amber-600"
-                }`}
-              >
-                {(report.detected_signals ?? []).length === 0 ? "✓" : "!"}
-              </span>
-              <div className="min-w-0">
-                <div className="text-base font-bold text-[#191f28]">
-                  {(report.detected_signals ?? []).length === 0
-                    ? "위험 신호가 검출되지 않았어요"
-                    : `위험 신호 ${(report.detected_signals ?? []).length}개 검출`}
-                </div>
-                <div className="mt-0.5 text-sm text-[#8b95a1]">
-                  유형 ·{" "}
-                  {report.is_uncertain || (report.classification_confidence ?? 0) < 0.3
-                    ? "정상"
-                    : (report.scam_type ?? "").trim() || "미분류"}
-                </div>
-              </div>
-            </div>
-
-            {(() => {
-              const ct = contentTypeBadge(report.content_type);
-              const label = ct?.label ?? report.content_type?.label_ko?.trim();
-              if (!label) return null;
-              return (
-                <div className="mt-3 flex items-center justify-between gap-4 rounded-2xl bg-[#f2f4f6] px-4 py-3">
-                  <span className="text-sm text-[#8b95a1]">콘텐츠 분류</span>
-                  <span className="text-right text-sm font-semibold text-[#191f28]">
-                    {ct?.icon ? `${ct.icon} ` : ""}
-                    {label}
-                  </span>
-                </div>
-              );
-            })()}
-
-            {report.summary ? (
-              <p className="mt-4 text-sm leading-6 text-[#4e5968]">
-                {report.summary}
-              </p>
-            ) : null}
-
-            <div className="mt-6 space-y-2">
-              <button
-                type="button"
-                onClick={() => setShowDetails(true)}
-                className="inline-flex w-full items-center justify-center rounded-2xl bg-[#3182f6] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#1b64da]"
-              >
-                세부사항 보기
-              </button>
-              <button
-                type="button"
-                onClick={() => setModalOpen(false)}
-                className="inline-flex w-full items-center justify-center rounded-2xl px-5 py-3 text-sm font-semibold text-[#8b95a1] transition hover:bg-[#f2f4f6]"
-              >
-                닫기
-              </button>
-            </div>
-          </section>
-            </div>
-          </div>
-        ) : null}
+        <ResultSummaryModal
+          report={report}
+          open={modalOpen}
+          onClose={() => setModalOpen(false)}
+          onShowDetails={() => setShowDetails(true)}
+          isDeep={isDeepResult}
+          deepLoading={deepLoading}
+          onDeepAnalyze={() => void handleDeepAnalyze()}
+        />
 
         {report && modalOpen && showDetails ? (
           <div
@@ -916,16 +619,26 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
               <div className="space-y-5">
                 <div className="grid gap-4 sm:grid-cols-2">
                   {ctBadge ? (
+                    (report.detected_signals ?? []).length > 0 && report.content_type?.bucket === "normal" ? (
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                        <div className="text-sm font-medium text-amber-700">위험 판단</div>
+                        <div className="mt-2 text-2xl font-semibold text-amber-800">⚠️ 주의 필요</div>
+                        <div className="mt-2 text-xs text-amber-600">
+                          게이트는 일반 메시지로 분류했으나 위험 신호가 감지되었습니다
+                        </div>
+                      </div>
+                    ) : (
                     <div className={`rounded-2xl border bg-white p-4 ${ctBadge.chip}`}>
-                      <div className="text-sm opacity-80">콘텐츠 분류 (사기 판정 X)</div>
+                      <div className="text-sm opacity-80">콘텐츠 유형</div>
                       <div className="mt-2 text-2xl font-semibold">
                         <span className="mr-2">{ctBadge.icon}</span>
                         {ctBadge.label}
                       </div>
                       <div className="mt-2 text-xs opacity-70">
-                        Stage 1 게이트 안전 버킷 — scam_type 분류·검증 단계 skip
+                        Stage 1 게이트 분류 — scam_type 분류·검증 단계 skip
                       </div>
                     </div>
+                    )
                   ) : (
                     <div className="rounded-2xl border border-[#e5e8eb] bg-white p-4">
                       <div className="text-sm text-[#8b95a1]">스캠 유형</div>
@@ -1349,6 +1062,10 @@ export default function HomeClient({ isGuest = false }: { isGuest?: boolean }) {
           </div>
         ) : null}
       </div>
+
+      {architectureFooter ? (
+        <div className="mx-auto w-full max-w-6xl">{architectureFooter}</div>
+      ) : null}
     </main>
   );
 }

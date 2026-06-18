@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 
 type SessionInfo = {
   session_id: string;
-  model: "classifier" | "gliner";
+  model: string;
+  kind?: string;
   status: string;
   started_at: number;
   ended_at?: number | null;
@@ -25,9 +26,31 @@ const badgeClass: Record<string, string> = {
   cancelled: "border-slate-400/30 bg-slate-500/10 text-slate-200",
 };
 
+const ROLES = [
+  { key: "gate", label: "Gate" },
+  { key: "classifier", label: "Classifier" },
+  { key: "gliner", label: "GLiNER" },
+] as const;
+
 function fmtTime(value?: number | null) {
   if (!value) return "-";
   return new Date(value * 1000).toLocaleString("ko-KR");
+}
+
+function metricSummary(metrics?: Record<string, unknown> | null): string | null {
+  if (!metrics) return null;
+  const parts: string[] = [];
+  const acc = metrics.accuracy ?? metrics.eval_accuracy;
+  const f1 = metrics.macro_f1 ?? metrics.eval_macro_f1 ?? metrics.eval_f1;
+  if (typeof acc === "number") parts.push(`acc ${(acc * 100).toFixed(1)}%`);
+  if (typeof f1 === "number") parts.push(`macro F1 ${(f1 * 100).toFixed(1)}%`);
+  return parts.length ? parts.join(" · ") : null;
+}
+
+// 게이트는 output 루트가 아닌 내부 checkpoint-N 디렉토리로 활성화될 수 있다
+function isActivePath(activePath: string | undefined, outputDir?: string) {
+  if (!activePath || !outputDir) return false;
+  return activePath === outputDir || activePath.startsWith(`${outputDir}/`);
 }
 
 export default function ModelsClient() {
@@ -67,8 +90,11 @@ export default function ModelsClient() {
     () => sessions.filter((session) => session.status === "completed"),
     [sessions],
   );
-  const classifiers = completed.filter((session) => session.model === "classifier");
-  const gliners = completed.filter((session) => session.model === "gliner");
+  const byRole: Record<string, SessionInfo[]> = {
+    gate: completed.filter((session) => session.kind === "gate"),
+    classifier: completed.filter((session) => session.kind !== "gate" && session.model === "classifier"),
+    gliner: completed.filter((session) => session.kind !== "gate" && session.model === "gliner"),
+  };
 
   async function activate(sessionId: string) {
     setBusyId(sessionId);
@@ -93,27 +119,37 @@ export default function ModelsClient() {
         </div>
       )}
 
-      <section className="grid gap-3 md:grid-cols-2">
-        {(["classifier", "gliner"] as const).map((model) => (
-          <div key={model} className="rounded-2xl border border-white/10 bg-white/5 p-5">
-            <div className="text-xs uppercase tracking-widest text-slate-400">Active {model}</div>
+      <section className="grid gap-3 md:grid-cols-3">
+        {ROLES.map(({ key, label }) => (
+          <div key={key} className="rounded-2xl border border-white/10 bg-white/5 p-5">
+            <div className="text-xs uppercase tracking-widest text-slate-400">Active {label}</div>
             <div className="mt-2 break-all font-mono text-sm text-white">
-              {activeModels[model] || "base model"}
+              {activeModels[key] || (key === "gate" ? "Claude Haiku (기본)" : "base model")}
             </div>
           </div>
         ))}
       </section>
 
       <ModelSection
+        title="Gate Models"
+        description="Stage 1 콘텐츠 게이트 (content_label 3-class) — 적용하면 Haiku 호출 대신 로컬 모델로 라우팅합니다."
+        sessions={byRole.gate}
+        activePath={activeModels.gate}
+        busyId={busyId}
+        onActivate={activate}
+      />
+      <ModelSection
         title="Classifier Models"
-        sessions={classifiers}
+        description="일반분석 Phase 2 스캠 유형 분류기 (mDeBERTa)."
+        sessions={byRole.classifier}
         activePath={activeModels.classifier}
         busyId={busyId}
         onActivate={activate}
       />
       <ModelSection
         title="GLiNER Models"
-        sessions={gliners}
+        description="일반분석 Phase 3 엔티티 추출기 (GLiNER)."
+        sessions={byRole.gliner}
         activePath={activeModels.gliner}
         busyId={busyId}
         onActivate={activate}
@@ -130,12 +166,14 @@ export default function ModelsClient() {
 
 function ModelSection({
   title,
+  description,
   sessions,
   activePath,
   busyId,
   onActivate,
 }: {
   title: string;
+  description: string;
   sessions: SessionInfo[];
   activePath?: string;
   busyId: string;
@@ -144,14 +182,18 @@ function ModelSection({
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold text-white">{title}</h2>
+        <div>
+          <h2 className="text-lg font-semibold text-white">{title}</h2>
+          <p className="mt-1 text-xs text-slate-400">{description}</p>
+        </div>
         <span className="text-xs text-slate-500">{sessions.length} completed</span>
       </div>
 
       <div className="mt-4 grid gap-3">
         {sessions.length === 0 && <div className="text-sm text-slate-500">완료된 모델 세션이 없습니다.</div>}
         {sessions.map((session) => {
-          const isActive = Boolean(activePath && session.output_dir === activePath);
+          const isActive = isActivePath(activePath, session.output_dir);
+          const metrics = metricSummary(session.last_metrics);
           return (
             <div
               key={session.session_id}
@@ -163,6 +205,11 @@ function ModelSection({
                   <span className={`rounded-full border px-2 py-0.5 text-xs ${badgeClass[session.status] ?? badgeClass.completed}`}>
                     {isActive ? "active" : session.status}
                   </span>
+                  {metrics && (
+                    <span className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2 py-0.5 text-xs text-cyan-200">
+                      {metrics}
+                    </span>
+                  )}
                 </div>
                 <div className="mt-2 break-all font-mono text-xs text-slate-500">{session.output_dir}</div>
                 <div className="mt-2 text-xs text-slate-400">

@@ -1,13 +1,15 @@
-"""/health 와 /api/methodology — 정적·메타 응답."""
+"""/health 와 공개 정적·메타 응답."""
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter
 
 router = APIRouter()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @router.get(
@@ -38,12 +40,39 @@ def healthcheck() -> dict[str, str]:
     ),
 )
 def get_runtime_config() -> dict[str, Any]:
+    from pipeline.live_stt import live_chunk_sec
+
     backend = os.getenv("STT_BACKEND", "whisper").strip().lower()
+    ws_enabled = os.getenv("LIVE_WS_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+    api_base = (os.getenv("SCAMGUARDIAN_PUBLIC_URL") or os.getenv("SCAMGUARDIAN_API_URL") or "http://127.0.0.1:8000").rstrip("/")
+    live_ws_url = (os.getenv("NEXT_PUBLIC_LIVE_WS_URL") or os.getenv("LIVE_WS_URL") or "").strip()
+    if not live_ws_url and ws_enabled:
+        if api_base.startswith("https://"):
+            live_ws_url = api_base.replace("https://", "wss://", 1) + "/ws/live-transcribe"
+        elif api_base.startswith("http://"):
+            live_ws_url = api_base.replace("http://", "ws://", 1) + "/ws/live-transcribe"
     return {
-        "stt_backend": "claude" if backend == "claude" else "openai_whisper",
+        "stt_backend": "claude" if backend == "claude" else ("clova" if backend == "clova" else "openai_whisper"),
         "openai_key_present": bool(os.getenv("OPENAI_API_KEY")),
         "anthropic_key_present": bool(os.getenv("ANTHROPIC_API_KEY")),
+        "live_transport": "websocket" if ws_enabled else "http",
+        "live_ws_enabled": ws_enabled,
+        "live_ws_url": live_ws_url,
+        "live_chunk_sec": live_chunk_sec(),
     }
+
+
+@router.get(
+    "/api/live-ws-token",
+    tags=["Public"],
+    summary="Live WebSocket 세션 토큰 발급",
+    description="브라우저 Live v4 WebSocket 연결용 1시간 TTL 토큰. API key URL 노출 없이 사용.",
+)
+def get_live_ws_token() -> dict[str, Any]:
+    from api_server_pkg.live_ws_token import mint_live_ws_token
+
+    token, ttl = mint_live_ws_token()
+    return {"token": token, "ttl_sec": ttl}
 
 
 @router.get(
@@ -93,3 +122,30 @@ def get_methodology() -> dict[str, Any]:
         },
         "models": pcfg.MODELS,
     }
+
+
+@router.get(
+    "/api/evidence",
+    tags=["Public"],
+    summary="검출 신호 근거 문서 원문",
+    description=(
+        "`.scamguardian/EVIDENCE.md` 정본을 반환한다. 웹 `/evidence` 페이지가 이 endpoint를 "
+        "runtime fetch 하므로 Next.js 빌드가 repository 밖 파일을 trace하지 않는다.\n\n"
+        "**인증**: 불필요"
+    ),
+)
+def get_evidence() -> dict[str, Any]:
+    evidence_path = PROJECT_ROOT / ".scamguardian" / "EVIDENCE.md"
+    try:
+        markdown = evidence_path.read_text(encoding="utf-8")
+        return {
+            "markdown": markdown,
+            "source_path": ".scamguardian/EVIDENCE.md",
+            "found": True,
+        }
+    except FileNotFoundError:
+        return {
+            "markdown": "# EVIDENCE.md\n\n파일을 찾을 수 없습니다 (`.scamguardian/EVIDENCE.md`).",
+            "source_path": ".scamguardian/EVIDENCE.md",
+            "found": False,
+        }

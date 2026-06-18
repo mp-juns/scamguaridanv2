@@ -36,7 +36,7 @@ def _read_raw() -> dict[str, str]:
 
 
 def get_active_path(role: str) -> str | None:
-    """role 은 'classifier' | 'gliner' 중 하나. 없거나 경로 무효면 None."""
+    """role 은 'classifier' | 'gliner' | 'gate' 중 하나. 없거나 경로 무효면 None."""
     global _cache, _cache_at
     now = time.time()
     with _lock:

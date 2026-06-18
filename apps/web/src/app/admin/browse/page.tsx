@@ -11,7 +11,6 @@ interface RunItem {
   predicted_scam_type: string;
   predicted_confidence: number;
   total_score_predicted: number;
-  risk_level_predicted: string;
   transcript_preview: string;
   use_llm: boolean;
   labeled: boolean;
@@ -26,19 +25,11 @@ interface SearchResult {
   offset: number;
 }
 
-const RISK_LEVELS = ["안전", "주의", "위험", "매우 위험"];
 const SCAM_TYPES = [
   "투자 사기", "보이스피싱", "대출 사기", "메신저 피싱",
   "로맨스 스캠", "취업·알바 사기", "납치·협박형", "스미싱",
   "중고거래 사기", "정상",
 ];
-
-const RISK_BADGE: Record<string, string> = {
-  안전: "bg-green-100 text-green-800",
-  주의: "bg-yellow-100 text-yellow-800",
-  위험: "bg-orange-100 text-orange-800",
-  "매우 위험": "bg-red-100 text-red-800",
-};
 
 const PAGE_SIZE = 30;
 
@@ -46,7 +37,6 @@ export default function BrowsePage() {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [scamType, setScamType] = useState("");
-  const [riskLevel, setRiskLevel] = useState("");
   const [labeled, setLabeled] = useState("");
   const [offset, setOffset] = useState(0);
   const [result, setResult] = useState<SearchResult | null>(null);
@@ -58,7 +48,6 @@ export default function BrowsePage() {
       const params = new URLSearchParams();
       if (query) params.set("q", query);
       if (scamType) params.set("scam_type", scamType);
-      if (riskLevel) params.set("risk_level", riskLevel);
       if (labeled) params.set("labeled", labeled);
       params.set("limit", String(PAGE_SIZE));
       params.set("offset", String(currentOffset));
@@ -73,13 +62,13 @@ export default function BrowsePage() {
         setLoading(false);
       }
     },
-    [query, scamType, riskLevel, labeled]
+    [query, scamType, labeled]
   );
 
   useEffect(() => {
     setOffset(0);
     fetchRuns(0);
-  }, [scamType, riskLevel, labeled, fetchRuns]);
+  }, [scamType, labeled, fetchRuns]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,12 +94,6 @@ export default function BrowsePage() {
             <p className="text-sm text-gray-500 mt-1">분석 기록 검색 및 탐색</p>
           </div>
           <div className="flex gap-3">
-            <Link
-              href="/admin/stats"
-              className="px-4 py-2 text-sm bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-            >
-              대시보드
-            </Link>
             <Link
               href="/admin"
               className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -143,19 +126,6 @@ export default function BrowsePage() {
                 <option value="">전체</option>
                 {SCAM_TYPES.map((t) => (
                   <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">위험도</label>
-              <select
-                value={riskLevel}
-                onChange={(e) => setRiskLevel(e.target.value)}
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">전체</option>
-                {RISK_LEVELS.map((r) => (
-                  <option key={r} value={r}>{r}</option>
                 ))}
               </select>
             </div>
@@ -194,8 +164,7 @@ export default function BrowsePage() {
                   <tr>
                     <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase">생성일</th>
                     <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase">사기 유형</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase">위험도</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase">점수</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase">검출 신호 수</th>
                     <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase">라벨</th>
                     <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase">미리보기</th>
                   </tr>
@@ -220,16 +189,9 @@ export default function BrowsePage() {
                         <td className="px-4 py-3 font-medium text-gray-800">
                           {item.predicted_scam_type || "—"}
                         </td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                              RISK_BADGE[item.risk_level_predicted] ?? "bg-gray-100 text-gray-600"
-                            }`}
-                          >
-                            {item.risk_level_predicted}
-                          </span>
+                        <td className="px-4 py-3 text-gray-700">
+                          {item.total_score_predicted}개
                         </td>
-                        <td className="px-4 py-3 text-gray-700">{item.total_score_predicted}</td>
                         <td className="px-4 py-3">
                           {item.labeled ? (
                             <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">

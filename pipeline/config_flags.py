@@ -40,6 +40,12 @@ DETECTED_FLAGS: list[str] = [
     "smishing_link_detected",           # 스미싱 링크 포함
     "fake_escrow_bypass",               # 직거래·가짜 에스크로 유도
 
+    # ── 텍스트 룰 고위험 신호 (게이트·모델과 무관, 원문 정규식으로 상시 검사) ──
+    "courier_impersonation_pattern",    # 택배사명 + 주소 불일치/배송 보류/주소 재확인
+    "financial_callback_lure",          # 금융기관·카드 발급 사칭 + 콜백(전화 회신) 유도
+    "payment_demand_unofficial_link",   # 납부·체납 빙자 + 비공식 링크
+    "safe_payment_external_link",       # 안전결제·에스크로 빙자 + 외부 링크
+
     # ── v3 Phase 0: VirusTotal 안전성 필터 ──
     "malware_detected",                 # 파일이 VT 에서 다중 엔진 악성 판정
     "phishing_url_confirmed",           # URL 이 VT 에서 다중 엔진 피싱·악성 판정
@@ -109,6 +115,10 @@ FLAG_LABELS_KO: dict[str, str] = {
     "job_deposit_requested": "취업·알바 선입금 요구",
     "smishing_link_detected": "스미싱 의심 링크",
     "fake_escrow_bypass": "에스크로 회피 유도",
+    "courier_impersonation_pattern": "택배 사칭 의심 패턴",
+    "financial_callback_lure": "금융 사칭·콜백 유도 의심",
+    "payment_demand_unofficial_link": "납부 빙자 비공식 링크",
+    "safe_payment_external_link": "안전결제 빙자 외부 링크",
     "malware_detected": "악성코드 탐지",
     "phishing_url_confirmed": "피싱 URL 확인",
     "suspicious_file_signal": "의심 파일 신호",
@@ -167,7 +177,7 @@ def flag_label_ko(flag: str) -> str:
 # - 금융감독원 보이스피싱·유사수신 감독사례집 (연간) — 국내 통계
 FLAG_RATIONALE: dict[str, dict[str, str]] = {
     "business_not_registered": {
-        "rationale": "정상 사업자라면 국세청 사업자등록 조회에 노출됨. 미등록 = 비공식 거래 → 사기 위험 높음. 점수 20점은 단독으로는 위험 등급(41~70)에 못 미치지만 추가 신호와 결합 시 결정적 가산점.",
+        "rationale": "정상 사업자라면 국세청 사업자등록 조회에 노출됨. 미등록 = 비공식 거래 신호로 해석할 수 있으며, 다른 검출 신호와 함께 볼 때 근거가 강해집니다.",
         "source": "국세청 사업자등록상태조회 / 전자상거래법 제12조 / Stajano & Wilson (2011) Principle 1: Distraction (위장된 정상성)",
     },
     "phone_scam_reported": {
@@ -246,8 +256,24 @@ FLAG_RATIONALE: dict[str, dict[str, str]] = {
         "rationale": "공식 에스크로 회피 유도는 중고거래 사기 표준. 안전결제 우회 = 위험 신호. 가격 할인 명분으로 정상 절차 무력화 — Stajano & Wilson 의 'Distraction' 원칙.",
         "source": "경찰청 사이버범죄 통계 / 한국인터넷진흥원 중고거래 사기 동향 / Stajano & Wilson (2011) Principle 1: Distraction",
     },
+    "courier_impersonation_pattern": {
+        "rationale": "택배사명과 '주소 불일치·배송 보류·주소 재확인' 조합은 MoqHao 등 택배 사칭 스미싱의 표준 미끼 문구. 정상 택배사는 문자 링크로 주소 재입력을 요구하지 않음 (운송장 조회는 공식 앱·사이트).",
+        "source": "KISA·McAfee MoqHao 합동 추적 보고서 / 경찰청 스미싱 주의보 / CJ대한통운·한진택배 공식 공지 (문자 내 링크 미사용)",
+    },
+    "financial_callback_lure": {
+        "rationale": "'카드 발급 완료·본인 아니면 연락' 류 문자는 수신자가 회신 전화를 걸게 만드는 콜백 유도형 보이스피싱 1단계. 회신 전화는 사기범 콜센터로 연결됨. 정상 금융기관은 공식 대표번호 안내 외 회신 유도를 하지 않음.",
+        "source": "금융감독원 보이스피싱 경보 (카드 발급 사칭) / 경찰청 사이버수사국 콜백형 피싱 통계 / Cialdini (2021) — Authority",
+    },
+    "payment_demand_unofficial_link": {
+        "rationale": "과태료·범칙금·체납 등 납부 요구와 비공식 링크의 조합은 정부·공공기관 사칭 스미싱의 전형. 공공기관 고지는 공식 도메인(go.kr)과 등기·전자문서로만 전달됨.",
+        "source": "행정안전부 사칭 스미싱 주의보 / KISA 스미싱 차단 통계 / 경찰청 사이버수사국",
+    },
+    "safe_payment_external_link": {
+        "rationale": "'안전결제·에스크로' 명목으로 외부 링크 결제를 유도하는 패턴은 중고거래 가짜 안전결제 사기의 표준. 정상 플랫폼 안전결제는 앱·사이트 내부에서만 진행됨.",
+        "source": "경찰청 중고거래 사기 통계 / 한국인터넷진흥원 가짜 안전결제 사이트 차단 동향 / Stajano & Wilson (2011)",
+    },
     "malware_detected": {
-        "rationale": "VirusTotal 다중 안티바이러스 엔진(보통 70+개)이 첨부 파일을 악성코드로 탐지. 30점은 단독으로 '매우 위험' 등급 직행 — 메신저 피싱의 결정적 증거.",
+        "rationale": "VirusTotal 다중 안티바이러스 엔진(보통 70+개)이 첨부 파일을 악성코드로 탐지. 알려진 악성 파일과의 다중 출처 합의 신호로, 메신저 피싱 attack chain 에서 강한 검출 근거가 된다.",
         "source": "VirusTotal Public API v3 / NIST SP 800-83 Guide to Malware Incident Prevention",
     },
     "phishing_url_confirmed": {
@@ -255,7 +281,7 @@ FLAG_RATIONALE: dict[str, dict[str, str]] = {
         "source": "VirusTotal URL Scan / APWG Phishing Activity Trends Report / Google Safe Browsing Transparency Report",
     },
     "suspicious_file_signal": {
-        "rationale": "일부 엔진만 의심으로 판정 (false positive 가능성 잔존). 확정적 차단보단 사용자에게 주의 환기 목적의 보조 가산점.",
+        "rationale": "일부 엔진만 의심으로 분류한 파일 신호 (false positive 가능성 잔존). 단정 대신 추가 확인이 필요한 보조 검출 근거로 제시한다.",
         "source": "VirusTotal API / 자체 임계값 설계",
     },
     "suspicious_url_signal": {
@@ -287,7 +313,7 @@ FLAG_RATIONALE: dict[str, dict[str, str]] = {
         "source": "Reimers & Gurevych (2019) Sentence-BERT, EMNLP / Cer et al. (2017) STS Benchmark",
     },
     "authority_context_uncertain": {
-        "rationale": "유사도 경계선상 — 명확하지 않지만 낮은 가산 점수로 보수적 반영. 5점은 단독으론 등급 변화 없으며 다른 신호의 보조 가중치 역할.",
+        "rationale": "유사도 경계선상 — 명확하지 않지만 다른 신호와 함께 해석할 수 있는 보조 검출 근거. 단독 판정 근거로 쓰지 않는다.",
         "source": "자체 임계값 튜닝 / Reimers & Gurevych (2019) SBERT",
     },
     "query_a_confirmed": {

@@ -3,5 +3,5 @@ import { proxyGet } from "../../_lib/backend";
 export const runtime = "nodejs";
 
 export async function GET() {
-  return proxyGet("/api/admin/stats");
+  return proxyGet("/api/demo/ml-snapshot");
 }

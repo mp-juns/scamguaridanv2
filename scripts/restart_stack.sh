@@ -3,14 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT_DIR/.scamguardian/logs"
-OLLAMA_MODELS_DIR="$ROOT_DIR/.scamguardian/ollama_models"
 mkdir -p "$LOG_DIR"
-mkdir -p "$OLLAMA_MODELS_DIR"
 
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-3100}"
-OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1}"
-OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 ENABLE_FUNNEL="${ENABLE_FUNNEL:-true}"
 CONDA_ENV="${CONDA_ENV:-capstone}"
 
@@ -33,17 +29,9 @@ echo "[restart] stopping processes..."
 kill_matches "uvicorn api_server:app"
 kill_matches "next dev .*--port ${FRONTEND_PORT}"
 kill_matches "next-server"
-kill_matches "ollama serve"
 kill_port "$BACKEND_PORT"
 kill_port "$FRONTEND_PORT"
-kill_port "$OLLAMA_PORT"
 
-sleep 0.5
-
-echo "[restart] starting Ollama..."
-# NOTE: 환경에 따라 기본 ~/.ollama/models 권한 문제가 생길 수 있어서
-# workspace 내부 경로로 모델 디렉토리를 고정한다.
-OLLAMA_MODELS="$OLLAMA_MODELS_DIR" nohup ollama serve >"$LOG_DIR/ollama.log" 2>&1 &
 sleep 0.5
 
 echo "[restart] starting backend (uvicorn :$BACKEND_PORT) in conda env '$CONDA_ENV'..."
@@ -67,7 +55,5 @@ fi
 
 echo "[restart] done."
 echo "[restart] tail logs:"
-echo "  tail -f \"$LOG_DIR/ollama.log\""
 echo "  tail -f \"$LOG_DIR/backend.log\""
 echo "  tail -f \"$LOG_DIR/frontend.log\""
-

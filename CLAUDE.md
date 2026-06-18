@@ -313,6 +313,7 @@ python scripts/batch_ingest.py --dry-run
 | `SANDBOX_USE_DOCKER` | local 모드에서 Docker 격리 사용 (1) vs subprocess (0) | `0` |
 | `SANDBOX_DOCKER_IMAGE` | 디토네이션 컨테이너 이미지 | `scamguardian/sandbox:latest` |
 | `SANDBOX_TIMEOUT` | 디토네이션 timeout (초) | `30` |
+| `SCAMGUARDIAN_INFERENCE_DEVICE` | 로컬 모델(게이트·분류기·GLiNER) 추론 디바이스 — `auto`/`cpu`/`cuda` | `auto` (CUDA 있으면 cuda) |
 
 ## 아키텍처
 
@@ -690,8 +691,12 @@ VirusTotal API v3 클라이언트. URL/파일을 분석 전에 자동 검사.
 
 ### 모델 swap (`pipeline/active_models.py`)
 
-`/admin/training` 의 "파이프라인 적용" 버튼 → `.scamguardian/active_models.json` 갱신.
+`/admin/models` (모델 관리)의 "파이프라인 적용" 버튼 → `.scamguardian/active_models.json` 갱신.
+role 3종: `gate` / `classifier` / `gliner`.
 - 60초 TTL 캐시. 활성화 직후 `invalidate()` 호출되어 즉시 반영.
+- `gate.py` — 활성 경로 있으면 fine-tuned content_label 3-class 로컬 분류, 없으면 Claude Haiku.
+  구버전 게이트 세션(가중치가 `checkpoint-N/` 에만 있는 경우)은 활성화 시점에 최신 체크포인트로
+  resolve + `label2id.json` 자동 보충.
 - `classifier.py` — 활성 경로 있으면 task-specific multi-class pipeline, 없으면 zero-shot fallback.
 - `extractor.py` — GLiNER path swap. 활성 경로 변경되면 모델 재로드.
 - 경로 무효 시 base 모델로 자동 fallback (안전장치).

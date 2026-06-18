@@ -143,7 +143,11 @@ def _get_model() -> GLiNER | None:
         return None
 
     try:
-        _gliner_model = GLiNER.from_pretrained(desired)
+        from pipeline.inference_device import get_inference_device
+
+        # .float() 강제 — transformers 5.x 가 인코더를 config 의 torch_dtype(fp16)으로
+        # 로드해 fp32 fine-tuned 가중치와 섞이면 dtype mismatch 로 죽는다.
+        _gliner_model = GLiNER.from_pretrained(desired).float().to(get_inference_device())
         _gliner_loaded_path = desired
         if desired != MODELS["gliner"]:
             print(f"[추출] fine-tuned GLiNER 사용: {desired}")

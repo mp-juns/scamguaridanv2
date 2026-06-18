@@ -162,7 +162,7 @@ export default async function LiveVoicePage() {
         <section className="rounded-3xl border border-amber-400/20 bg-amber-500/5 p-6 text-sm text-amber-700">
           <strong className="text-amber-700">현재 상태:</strong> 디자인 확정 ·
           feasibility 실험 대기 중. 들어가기 전 검증해야 할 두 가지 — (1) 한국어
-          5초 chunk Whisper 스피커폰 환경 정확도 80%+, (2) iOS Safari 백그라운드
+          3초 chunk Whisper 스피커폰 환경 정확도 80%+, (2) iOS Safari 백그라운드
           마이크 제약. 둘 다 통과해야 v4.0 MVP 진입.
         </section>
       </div>

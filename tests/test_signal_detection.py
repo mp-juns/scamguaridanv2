@@ -149,7 +149,7 @@ def test_summary_text_zero_signals():
 
 
 def test_summary_text_with_signals_includes_count():
-    """검출 N>0 일 때 summary 에 N 포함, detected_signals 안내 포함."""
+    """검출 N>0 일 때 summary 에 개수와 사용자 안내 포함."""
     from pipeline import signal_detector
     report = signal_detector.detect(
         verification_results=[_vr("urgent_transfer_demand"), _vr("fake_government_agency")],
@@ -157,4 +157,4 @@ def test_summary_text_with_signals_includes_count():
         entities=[],
     )
     assert "위험 신호 2개" in report.summary
-    assert "detected_signals" in report.summary
+    assert "탐지된 위험 신호 목록" in report.summary

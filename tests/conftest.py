@@ -22,7 +22,13 @@ def _isolate_env(monkeypatch, tmp_path):
     for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "SERPER_API_KEY", "VIRUSTOTAL_API_KEY"):
         if not os.getenv(f"_KEEP_{var}"):
             monkeypatch.delenv(var, raising=False)
+    # active_models 격리 — 개발자가 레포에서 활성화해 둔 fine-tuned 모델(gate 등)이
+    # 테스트의 base/fallback 경로 검증을 오염시키지 않도록 빈 포인터로 교체
+    from pipeline import active_models
+    monkeypatch.setattr(active_models, "ACTIVE_POINTER", tmp_path / "active_models.json")
+    active_models.invalidate()
     yield
+    active_models.invalidate()
 
 
 @pytest.fixture

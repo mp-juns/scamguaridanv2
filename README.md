@@ -22,7 +22,7 @@ pip install pypdfium2                  # PDF 렌더 (필수)
 
 ScamGuardian v2는 제가 주도적으로 설계하고 구현한 팀 프로젝트입니다.
 
-전체 시스템 아키텍처, 백엔드 API, 프론트엔드, 데이터베이스 구조, 분석 파이프라인, 샌드박스 연동, 테스트 구조, 운영 관련 요소까지 직접 구현했습니다. 단순히 "사기/정상"을 판정하는 분류기가 아니라, 문자·URL·파일·이미지·PDF·APK 등 다양한 입력에서 의심 신호를 추출하고 근거 기반으로 위험도를 분석하는 멀티모달 사기 신호 탐지 플랫폼으로 설계했습니다.
+전체 시스템 아키텍처, 백엔드 API, 프론트엔드, 데이터베이스 구조, 분석 파이프라인, 샌드박스 연동, 테스트 구조, 운영 관련 요소까지 직접 구현했습니다. 단순히 "사기/정상"을 판정하는 분류기가 아니라, 문자·URL·파일·이미지·PDF·APK 등 다양한 입력에서 의심 신호를 추출하고 근거와 함께 보고하는 멀티모달 사기 신호 탐지 플랫폼으로 설계했습니다.
 
 ### 주요 기여
 
@@ -139,12 +139,14 @@ data/processed/      seed 데이터 — admin_seeds.jsonl + pending_*.jsonl (검
 
 ## 라이브 보이스 — 실시간 통화 중 사기 탐지 (`/live`)
 
-통화 *후* 분석이 아니라 통화 *중* 개입을 목표로 하는 v4 기능입니다.
+통화 *중* 개입을 목표로 하는 v4 기능입니다.
 
-- 브라우저 `MediaRecorder` 로 음성을 청크 단위로 `POST /api/live-analyze` 에 스트리밍 → STT(`pipeline/stt.py`) + 화자분리(`pipeline/diarize.py`, Claude 텍스트 기반) + 전사 교정(`pipeline/stt_correct.py`)
-- 누적 슬라이딩 윈도우로 위험 신호를 평가하고, 임계 초과 시 풀스크린 `danger-flash` 경보로 "전화 끊으세요" 트리거
-- 백엔드: `api_server_pkg/{live_stream,stream_analyze,transcribe}.py` / 프론트: `apps/web/src/app/live/`
-- STT 백엔드는 OpenAI Whisper 또는 Naver CLOVA Speech (`CLOVA_SPEECH_PER_MIN_USD` 비용추적) 선택 가능. 새 무거운 의존성 없음.
+- **Live v4 (기본)**: AudioWorklet 16kHz PCM → WebSocket `/ws/live-transcribe` → 3초 chunk OpenAI Whisper STT → 즉시 신호 스캔
+- **PCM HTTP fallback**: WebSocket 실패 시 `POST /api/live-pcm-chunk` 로 같은 16kHz PCM chunk 경로 사용 (최후 수단만 legacy `POST /api/live-analyze`)
+- 백엔드: `api_server_pkg/{live_ws,live_pcm_http,live_stream,stream_analyze}.py`, `pipeline/live_stt.py`
+- 프론트: `apps/web/src/app/live/` (`useLiveWebSocket.ts`, `useLivePcmHttp.ts`, `live-pcm-processor.js`)
+- 환경변수: `LIVE_WS_ENABLED=1`, `OPENAI_API_KEY`, `NEXT_PUBLIC_LIVE_WS_URL` (Tailscale/ngrok WSS)
+- 메인 허브 **시연 모드**: `/` 하단 — ML 3-tier + 증강·학습 세션 상태 (`GET /api/demo/ml-snapshot`)
 
 ## APK 검출 (4-tier — 정적 3 + 동적 1)
 

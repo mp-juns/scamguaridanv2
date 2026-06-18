@@ -1,5 +1,5 @@
 """
-ScamGuardian v2 — Claude API 기반 LLM 보조 판정 모듈
+ScamGuardian v2 — Claude API 기반 LLM 보조 검출 모듈
 
 기존 규칙 파이프라인을 대체하지 않고, 추가 엔티티/플래그 후보를 제안한다.
 """
@@ -15,10 +15,10 @@ from typing import Any
 from pipeline.config import (
     DETECTED_FLAGS,
     LLM_ENTITY_MERGE_THRESHOLD,
+    LLM_MAX_ENTITY_COUNT as _MAX_ENTITY_COUNT,
+    LLM_MAX_TRANSCRIPT_CHARS as _MAX_TRANSCRIPT_CHARS,
+    LLM_MAX_TRIGGERED_FLAG_COUNT as _MAX_FLAG_COUNT,
     LLM_SCAM_TYPE_OVERRIDE_THRESHOLD,
-    OLLAMA_MAX_ENTITY_COUNT as _MAX_ENTITY_COUNT,
-    OLLAMA_MAX_TRANSCRIPT_CHARS as _MAX_TRANSCRIPT_CHARS,
-    OLLAMA_MAX_TRIGGERED_FLAG_COUNT as _MAX_FLAG_COUNT,
     RAG_MAX_CASES_IN_PROMPT,
     get_runtime_scam_taxonomy,
 )
@@ -138,7 +138,7 @@ def _call_claude(prompt: str, max_tokens: int = 512) -> dict[str, Any]:
     message = client.messages.create(
         model=model,
         max_tokens=max_tokens,
-        system="당신은 한국어 스캠 탐지 보조 판정기입니다. JSON만 반환하세요. 마크다운 코드블록 없이 순수 JSON만 출력하세요.",
+        system="당신은 한국어 스캠 신호 검출 보조기입니다. JSON만 반환하세요. 마크다운 코드블록 없이 순수 JSON만 출력하세요.",
         messages=[{"role": "user", "content": prompt}],
     )
     elapsed = _time.time() - t0
@@ -160,6 +160,12 @@ def _call_claude(prompt: str, max_tokens: int = 512) -> dict[str, Any]:
     print(
         f"    [Claude API] ← 응답: {len(raw)}자 ({elapsed:.1f}s{usage_str})"
     )
+    if getattr(message, "stop_reason", "") == "max_tokens":
+        # 잘린 JSON 은 파싱 실패 → 엔티티/플래그 0개로 조용히 끝난다. 반드시 드러낸다.
+        print(
+            f"    [Claude API] ⚠️ 응답이 max_tokens={max_tokens} 에서 잘림 — "
+            "JSON 파싱 실패 가능 (제안 누락 위험)"
+        )
     parsed = _parse_json(raw)
     summary = parsed.get("summary", "")
     if summary:
@@ -200,7 +206,7 @@ def _build_prompt(
         }
         for entity in entities[:_MAX_ENTITY_COUNT]
     ]
-    triggered_flags = [
+    detected_signal_context = [
         {
             "flag": result.flag,
             "description": result.flag_description,
@@ -211,14 +217,14 @@ def _build_prompt(
     rag_cases = (similar_cases or [])[:RAG_MAX_CASES_IN_PROMPT]
 
     return f"""
-역할: 한국어 스캠 탐지 보조 판정기
+역할: 한국어 스캠 신호 검출 보조기
 출력: JSON만
 
 해야 할 일:
 1. 기존 추출에서 빠졌을 수 있는 엔티티 최대 2개
-2. 기존 검증과 별도로 점수 반영 후보 플래그 최대 2개
+2. 기존 검증과 별도로 검출 후보 플래그 최대 2개
 3. 짧은 한국어 요약 1문장
-4. 왜 사기/비사기라고 보는지 핵심 근거 최대 3개
+4. 어떤 위험 신호가 보이는지 핵심 근거 최대 3개
 
 규칙:
 - missing_entities[].label 은 허용 레이블 중 하나만 사용
@@ -238,7 +244,7 @@ def _build_prompt(
 {json.dumps(entity_lines, ensure_ascii=False)}
 
 이미 발동된 플래그:
-{json.dumps(triggered_flags, ensure_ascii=False)}
+{json.dumps(detected_signal_context, ensure_ascii=False)}
 
 유사 과거 사례(사람이 정답 확정):
 {json.dumps(rag_cases, ensure_ascii=False)}
@@ -478,11 +484,11 @@ def _build_unified_prompt(
     user_context_block = _format_user_context_block(user_context)
 
     return f"""
-역할: 한국어 스캠 탐지 통합 판정기
+역할: 한국어 스캠 신호 검출 통합 보조기
 출력: JSON만
 
 해야 할 일 (한 번에 모두 수행):
-1. 스캠 유형을 직접 판정하라. 분류기가 "{classifier_scam_type}"(으)로 판단했지만, 문맥상 더 적절한 유형이 있으면 교체.
+1. 스캠 유형을 추정하라. 분류기가 "{classifier_scam_type}"(으)로 추정했지만, 문맥상 더 적절한 유형이 있으면 제안하라.
 2. 전사에서 핵심 엔티티(이름, 금액, 기관 등) 최대 5개를 찾아라.
 3. 스캠 징후 플래그 최대 3개를 제안하라.
 4. 짧은 한국어 요약 1문장과 핵심 근거 최대 3개를 작성하라.
@@ -549,13 +555,15 @@ def analyze_unified(
     user_context: dict[str, Any] | None = None,
 ) -> UnifiedLLMResult:
     """
-    LLM 스캠 유형 재판정 + 엔티티/플래그 제안을 1회 API 호출로 처리.
+    LLM 스캠 유형 추정 보정 + 엔티티/플래그 제안을 1회 API 호출로 처리.
     verification_results 없이 동작하여 병렬 파이프라인에서 사용 가능.
 
     user_context: 챗봇 대화로 모은 사용자 제보. context_chat.summarize_for_pipeline() 결과.
     """
     prompt = _build_unified_prompt(transcript, classifier_scam_type, user_context=user_context)
-    raw = _call_claude(prompt, max_tokens=512)
+    # 1024 — 통합 응답(scam_type + missing_entities + suggested_flags + reason 들)이
+    # 512 에서 잘려 JSON 파싱 실패 → 플래그 0개로 조용히 끝나는 사례 확인 (2026-06-12)
+    raw = _call_claude(prompt, max_tokens=1024)
 
     # ── 스캠 유형 제안 파싱 ──
     scam_type_suggestion: ScamTypeSuggestion | None = None

@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { cookies } from "next/headers";
 
 import { auth } from "../auth";
@@ -17,5 +18,9 @@ export default async function Home() {
   }
 
   // 여기 도달 = 로그인 세션 또는 비회원 쿠키. 로그인 안 했으면 비회원.
-  return <HomeClient isGuest={!session?.user?.email} />;
+  return (
+    <Suspense fallback={null}>
+      <HomeClient isGuest={!session?.user?.email} />
+    </Suspense>
+  );
 }

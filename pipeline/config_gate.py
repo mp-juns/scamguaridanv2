@@ -60,6 +60,12 @@ GATE_FALLBACK_BUCKET = GATE_UNDETERMINED
 # 이 글자 수 미만이면 LLM 호출 없이 바로 UNDETERMINED (방향조차 못 정함)
 GATE_MIN_CHARS = 10
 
+# 안전 버킷(normal/scam_news_edu) 판단을 "확정"으로 취급하는 최소 신뢰도.
+# 미만이면 결과 표시를 "추가 확인 필요"로 보수화 + 심층 분석 권장 (파이프라인
+# 실행 강도는 그대로 — 표시 레이어만). 1인칭 검찰 사칭이 scam_news_edu 0.51 로
+# 오판되어 신호 0건으로 끝난 사례가 동기 (2026-06-13).
+GATE_LOW_CONFIDENCE_THRESHOLD = 0.70
+
 # ──────────────────────────────────────────────
 # 학습/라벨링 데이터 — content_label + sample_kind
 #

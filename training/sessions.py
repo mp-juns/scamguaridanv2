@@ -23,9 +23,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(".scamguardian") / "training_sessions"
+from training.session_files import (
+    ACTIVE_POINTER,
+    ROOT,
+    _ensure_root,
+    _log_path,
+    _metrics_path,
+    _read_status,
+    _session_dir,
+    _write_status,
+    read_log_tail,
+    read_loss_spikes,
+    read_metrics,
+)
+
 ALLOWED_MODELS = ("classifier", "gliner")
-ACTIVE_POINTER = Path(".scamguardian") / "active_models.json"
 
 _active_lock = threading.Lock()
 
@@ -86,26 +98,6 @@ class SessionInfo:
         }
 
 
-def _ensure_root() -> None:
-    ROOT.mkdir(parents=True, exist_ok=True)
-
-
-def _session_dir(session_id: str) -> Path:
-    return ROOT / session_id
-
-
-def _status_path(session_id: str) -> Path:
-    return _session_dir(session_id) / "status.json"
-
-
-def _metrics_path(session_id: str) -> Path:
-    return _session_dir(session_id) / "metrics.jsonl"
-
-
-def _log_path(session_id: str) -> Path:
-    return _session_dir(session_id) / "train.log"
-
-
 def _training_python_command() -> list[str]:
     explicit = (os.getenv("SCAMGUARDIAN_TRAIN_PYTHON") or "").strip()
     if explicit:
@@ -120,24 +112,6 @@ def _training_python_command() -> list[str]:
         return [str(capstone_python)]
 
     return [sys.executable]
-
-
-def _read_status(session_id: str) -> dict[str, Any] | None:
-    p = _status_path(session_id)
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def _write_status(session_id: str, data: dict[str, Any]) -> None:
-    p = _status_path(session_id)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(p)
 
 
 def _check_pid_alive(pid: int) -> bool:
@@ -222,15 +196,60 @@ def _refresh_status(session_id: str) -> dict[str, Any] | None:
     return data
 
 
+_WEIGHT_FILES = ("adapter_model.safetensors", "model.safetensors", "pytorch_model.bin")
+
+# 게이트(content_label 3-class) 라벨 — scripts/content_label_gate.py 의 CONTENT_LABELS 순서.
+# 구버전 체크포인트에 label2id.json 이 없을 때 활성화 시점에 보충하는 fallback.
+_GATE_DEFAULT_LABELS = ["normal", "scam_attempt", "scam_news_edu"]
+
+
+def _dir_has_weights(path: Path) -> bool:
+    return any((path / name).exists() for name in _WEIGHT_FILES)
+
+
+def _resolve_gate_checkpoint(output_dir: Path) -> Path | None:
+    """게이트 활성화 대상 디렉토리 — 루트에 가중치 있으면 루트, 없으면 최신 checkpoint-*.
+
+    구버전 게이트 세션은 Trainer 중간 체크포인트(checkpoint-N/)만 남겼다 — 그것도 허용.
+    """
+    if _dir_has_weights(output_dir):
+        return output_dir
+    candidates = [
+        child for child in output_dir.glob("checkpoint-*")
+        if child.is_dir() and _dir_has_weights(child)
+    ]
+    if not candidates:
+        return None
+
+    def _step(path: Path) -> int:
+        suffix = path.name.rsplit("-", 1)[-1]
+        return int(suffix) if suffix.isdigit() else -1
+
+    return max(candidates, key=_step)
+
+
+def _ensure_gate_label_map(checkpoint_dir: Path, data: dict[str, Any]) -> None:
+    """체크포인트에 label2id.json 이 없으면 세션 params 의 라벨 순서로 보충."""
+    label_path = checkpoint_dir / "label2id.json"
+    if label_path.exists():
+        return
+    params = data.get("params") or {}
+    labels = params.get("labels") if isinstance(params, dict) else None
+    if not isinstance(labels, list) or not all(isinstance(l, str) for l in labels):
+        labels = _GATE_DEFAULT_LABELS
+    label_path.write_text(
+        json.dumps({label: idx for idx, label in enumerate(labels)}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 def _has_model_artifacts(model: str | None, output_dir: Path) -> bool:
     if not output_dir.exists():
         return False
     if model == "classifier":
-        return (output_dir / "label2id.json").exists() and (
-            (output_dir / "adapter_model.safetensors").exists()
-            or (output_dir / "model.safetensors").exists()
-            or (output_dir / "pytorch_model.bin").exists()
-        )
+        return (output_dir / "label2id.json").exists() and _dir_has_weights(output_dir)
+    if model == "gate":
+        return _resolve_gate_checkpoint(output_dir) is not None
     if model == "gliner":
         weight_files = {
             "model.safetensors",
@@ -254,62 +273,6 @@ def _has_success_artifacts(session_id: str, data: dict[str, Any]) -> bool:
     output_dir = Path(str(data.get("output_dir") or ""))
     model = data.get("model")
     return _has_model_artifacts(model, output_dir)
-
-
-def read_metrics(session_id: str, max_rows: int = 500) -> list[dict[str, Any]]:
-    p = _metrics_path(session_id)
-    if not p.exists():
-        return []
-    rows: list[dict[str, Any]] = []
-    with p.open("r", encoding="utf-8") as fp:
-        for line in fp:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    if len(rows) > max_rows:
-        # 너무 많으면 균등 샘플링 + 끝쪽 우선 보존
-        step = max(1, len(rows) // max_rows)
-        sampled = rows[::step]
-        # 마지막 30개는 그대로
-        sampled = sampled[:-30] + rows[-30:]
-        return sampled
-    return rows
-
-
-def read_log_tail(session_id: str, max_bytes: int = 8000) -> str:
-    p = _log_path(session_id)
-    if not p.exists():
-        return ""
-    size = p.stat().st_size
-    with p.open("rb") as fp:
-        if size > max_bytes:
-            fp.seek(size - max_bytes)
-        chunk = fp.read()
-    try:
-        return chunk.decode("utf-8", errors="replace")
-    except Exception:
-        return ""
-
-
-def read_loss_spikes(session_id: str, max_rows: int = 80) -> list[dict[str, Any]]:
-    p = _session_dir(session_id) / "output" / "loss_spikes.jsonl"
-    if not p.exists():
-        return []
-    rows: list[dict[str, Any]] = []
-    with p.open("r", encoding="utf-8") as fp:
-        for line in fp:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return rows[-max_rows:]
 
 
 def list_sessions(limit: int = 50) -> list[dict[str, Any]]:
@@ -625,16 +588,23 @@ def activate_session(session_id: str) -> dict[str, Any]:
     data = _refresh_status(session_id)
     if data is None:
         raise FileNotFoundError("세션을 찾을 수 없습니다.")
-    if data.get("kind") == "gate":
-        raise ValueError("게이트(평가 전용) 세션은 파이프라인에 적용할 수 없습니다.")
     if data.get("status") != "completed":
         raise ValueError(f"완료된 세션만 활성화할 수 있습니다 (현재 status={data.get('status')}).")
     output_dir = data.get("output_dir") or ""
     output_path = Path(output_dir)
     if not output_dir or not output_path.exists():
         raise FileNotFoundError("체크포인트 디렉토리를 찾을 수 없습니다.")
-    model = data.get("model")
-    if not _has_model_artifacts(model, output_path):
+    # 게이트 세션의 model 필드는 표시용 라벨일 수 있어 kind 로 role 을 정한다.
+    model = "gate" if data.get("kind") == "gate" else data.get("model")
+    if model == "gate":
+        resolved = _resolve_gate_checkpoint(output_path)
+        if resolved is None:
+            raise ValueError(
+                "게이트 체크포인트(가중치)가 없는 세션입니다 — 평가 산출물만 남아 있습니다."
+            )
+        _ensure_gate_label_map(resolved, data)
+        output_dir = str(resolved)
+    elif not _has_model_artifacts(model, output_path):
         raise ValueError(
             "실제 모델 체크포인트가 없는 세션입니다. "
             "GLiNER 세션은 train.json/val.json/labels.json 만으로 활성화할 수 없습니다."
@@ -691,12 +661,12 @@ def record_gate_session(
     exit_code: int = 0,
     output_dir: str | None = None,
 ) -> dict[str, Any]:
-    """게이트(평가 전용) 실험을 학습 세션 목록에 등록.
+    """게이트 실험을 학습 세션 목록에 등록 (`kind="gate"`).
 
-    분류기/GLiNER 처럼 파이프라인에 '적용'하는 모델이 아니라 효과 측정용 세션이다
-    (`kind="gate"`). `activate_session` 은 kind=gate 를 거부하고, 프론트엔드는 적용 버튼을
-    숨긴다. status.json/metrics.jsonl/train.log 를 일반 세션과 같은 위치에 써서 목록·상세에
-    그대로 노출된다.
+    체크포인트(가중치)가 남아 있으면 `activate_session` 으로 파이프라인 게이트에 적용할 수
+    있다 — `active_models.json` 의 `gate` role 로 기록되고 pipeline/gate.py 가 Haiku 대신
+    로컬 모델을 사용한다. status.json/metrics.jsonl/train.log 를 일반 세션과 같은 위치에
+    써서 목록·상세에 그대로 노출된다.
     """
     _ensure_root()
     out_dir = output_dir if output_dir is not None else str(_session_dir(session_id) / "output")

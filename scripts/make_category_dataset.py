@@ -15,23 +15,13 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import sys
 from pathlib import Path
 
-# 12 scam_type → 6 scam_category
-SCAM_CATEGORY_MAP = {
-    "스미싱": "링크·문자 유도형",
-    "기관 사칭": "기관·금융 사칭형",
-    "대출 사기": "기관·금융 사칭형",
-    "투자 사기": "투자·가상자산형",
-    "코인 사기": "투자·가상자산형",
-    "로맨스 스캠": "관계·지인 사칭형",
-    "메신저 피싱": "관계·지인 사칭형",
-    "중고거래 사기": "거래·취업형",
-    "취업·알바 사기": "거래·취업형",
-    "부동산 사기": "기타·특수형",
-    "건강식품 사기": "기타·특수형",
-    "납치·협박형": "기타·특수형",
-}
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# 12 scam_type → 6 scam_category — 런타임 표시 레이어(config_taxonomy)와 단일 출처
+from pipeline.config import SCAM_CATEGORY_MAP  # noqa: E402
 
 
 def main() -> int:
