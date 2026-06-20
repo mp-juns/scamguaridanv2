@@ -148,6 +148,23 @@ data/processed/      seed 데이터 — admin_seeds.jsonl + pending_*.jsonl (검
 - 환경변수: `LIVE_WS_ENABLED=1`, `OPENAI_API_KEY`, `NEXT_PUBLIC_LIVE_WS_URL` (Tailscale/ngrok WSS)
 - 메인 허브 **시연 모드**: `/` 하단 — ML 3-tier + 증강·학습 세션 상태 (`GET /api/demo/ml-snapshot`)
 
+### 보이스피싱 파트 Claude 사용 현황
+
+| 단계 | 구현 | Claude 사용 |
+|---|---|---|
+| Phase 0 — VirusTotal 안전성 | VT API | 미사용 |
+| Phase 1 — Gate | 로컬 fine-tuned 모델 | 미사용 (실패 시만 Haiku fallback) |
+| Phase 1 — STT | Whisper (OpenAI/로컬) | 미사용 |
+| Phase 2 — 스캠 유형 분류기 | 로컬 fine-tuned 모델 → NLI fallback | 미사용 |
+| Phase 2 — GLiNER 추출 | 로컬 fine-tuned 모델 | 미사용 |
+| Phase 3 — LLM 보조 판정 | Claude Haiku | 사용 |
+| Phase 4 — Serper 교차검증 | Serper API | 미사용 |
+| Phase 5 — 스코어링 | 룰 기반 | 미사용 |
+| Kakao 컨텍스트 챗봇 | Claude Haiku | 사용 |
+
+즉 `gate=normal` 또는 `gate=scam_news_edu` 로 라우팅되면 Phase 3 LLM도 skip 되어 Claude를 호출하지 않습니다.
+`scam_attempt` 또는 deep 분석 시에만 Claude Haiku가 Phase 3에서 호출됩니다.
+
 ## APK 검출 (4-tier — 정적 3 + 동적 1)
 
 한국 보이스피싱은 사이드로딩을 통한 악성 APK 설치가 attack chain 의 핵심입니다.
