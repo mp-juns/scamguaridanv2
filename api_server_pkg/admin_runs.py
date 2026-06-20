@@ -95,7 +95,7 @@ async def admin_claim_run(run_id: str, payload: ClaimRunRequest) -> dict[str, An
     tags=["Admin — Labeling"],
     summary="run 검색 (필터 다중)",
     description=(
-        "transcript / scam_type / risk_level / 라벨 여부로 필터링. "
+        "transcript / scam_type / 라벨 여부로 필터링. "
         "`labeled=true` 면 사람 라벨 있는 것만, `false` 면 미라벨만."
     ),
     responses=_ADMIN_RESPONSES,
@@ -103,7 +103,6 @@ async def admin_claim_run(run_id: str, payload: ClaimRunRequest) -> dict[str, An
 async def admin_search_runs(
     q: str | None = None,
     scam_type: str | None = None,
-    risk_level: str | None = None,
     labeled: str | None = None,
     limit: int = 30,
     offset: int = 0,
@@ -119,7 +118,6 @@ async def admin_search_runs(
             repository.search_runs,
             query=q,
             scam_type=scam_type,
-            risk_level=risk_level,
             labeled=labeled_bool,
             limit=limit,
             offset=offset,
@@ -353,7 +351,7 @@ async def admin_ai_draft(run_id: str) -> dict[str, Any]:
     "/api/admin/stats",
     tags=["Admin — Labeling"],
     summary="대시보드 통계",
-    description="총 run 수 / 라벨 진행률 / scam_type 분포 / risk_level 분포 등 대시보드 카운터.",
+    description="총 run 수 / 라벨 진행률 / scam_type 분포 등 대시보드 카운터.",
     responses=_ADMIN_RESPONSES,
 )
 async def admin_stats() -> dict[str, Any]:

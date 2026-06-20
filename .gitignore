@@ -226,6 +226,7 @@ data/*.reviewed.jsonl
 # AI Hub 다운로드 (대용량 + 라이선스 — 커밋 금지)
 data/aihub/
 data/aihubshell
+.claude/scheduled_tasks.lock
 .scamguardian/uploads/
 .scamguardian/training_sessions/
 .scamguardian/active_models.json

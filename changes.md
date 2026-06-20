@@ -802,3 +802,102 @@ implementation" 으로 reframe. VirusTotal 모델 채택 — 검출 보고만, �
 **결과**: ✅ tsc 0 / eslint 0 / pytest 통과. 그 패킹 샘플 재분석 → verdict=incomplete, "동적 분석 미완료 — 이 앱이 격리 VM 에서 실행되지 않았어요 (packing·anti-emulator 가능). 연결은 정상".
 
 **메모**: 패킹/anti-emulator APK 가 에뮬에서 안 뜨는 건 정적 분석 영역 밖 자체 한계 — 시연엔 '🎬 시연용 샘플' 또는 실행되는 일반 샘플 권장.
+
+---
+
+## 2026-06-12 (1) — /admin/models 모델 관리 신설 + 게이트 적용 가능화 + 대시보드 제거
+
+**무엇**: 어드민에 `/admin/models` (🧠 모델 관리) 섹션 신설 — 게이트·분류기·추출기(GLiNER) fine-tuned 체크포인트를 한 곳에서 "파이프라인 적용". 기존 `/admin/training/models` 는 이 페이지로 이동, `/admin/stats` 대시보드는 제거 (네비 링크·페이지·프록시 라우트·전용 차트 2종 삭제, FastAPI `/api/admin/stats` 는 API-first 설계상 유지).
+
+**게이트 적용 경로 (신규)**: 지금까지 게이트(content_label 3-class) 세션은 "평가 전용 (적용 불가)"였음. 이제 `activate_session` 이 kind=gate 를 허용 — `active_models.json` 의 `gate` role 에 기록하고 `pipeline/gate.py` 가 활성 경로 있으면 Claude Haiku 대신 로컬 fine-tuned 모델로 분류 (source="finetuned", 비용·latency 0). 구버전 세션(가중치가 `checkpoint-N/` 에만 존재)은 활성화 시점에 최신 체크포인트로 resolve + `label2id.json` 자동 보충. `content_label_gate.py` 는 학습 후 output 루트에 어댑터+토크나이저+라벨맵을 저장하도록 수정 (신규 세션은 루트 활성화).
+
+**검증**: ✅ pytest 398 passed / eslint 0 / next build 0 error (`/admin/models` 라우트 생성, stats·training/models 제거 확인). ✅ 격리 cwd 기능 테스트 — 구버전(checkpoint-N만)·신버전(루트) resolve, label2id.json 보충, 가중치 없는 세션 거부. ✅ 실 체크포인트(content_label_gate_20260610) 추론 — gate 파이프라인 출력 == 직접 모델 호출, 라벨 매핑 정상 (뉴스→scam_news_edu, 스미싱→scam_attempt).
+
+**메모 (적용 전 주의)**: 20260610 체크포인트는 val macro_f1 0.96 이지만 OOD 커버리지 갭 확인 — 일상 잡담("엄마 야근해서 늦어")을 scam_attempt 1.00 으로, 1인칭 검찰 사칭 직접 사기를 scam_news_edu 로 오분류. 실물 씨앗 데이터 보강 학습 후 적용 권장 (normal→scam_attempt 오탐은 비용 낭비, scam_attempt→scam_news_edu 미탐은 분석 강도 하향이라 더 위험).
+
+---
+
+## 2026-06-12 (2) — dtype mismatch 핫픽스 (Float vs Half) + 로컬 모델 GPU 추론
+
+**증상**: /admin/models 에서 gate·classifier·GLiNER 활성화 후 첫 분석 요청에서 `mat1 and mat2 must have the same dtype, but got Float and Half` — 게이트는 Haiku 로 graceful fallback(설계대로), **fine-tuned GLiNER 는 /api/analyze 500** 으로 파이프라인 사망.
+
+**원인**: transformers 5.x 는 base 모델 config 의 `torch_dtype`(mDeBERTa-mnli-xnli = fp16)을 따라 가중치를 로드한다. fp32 로 학습된 LoRA 어댑터·분류 헤드·GLiNER fine-tuned 가중치와 한 모델 안에 fp16/fp32 가 섞임(게이트 기준 fp16 206개 + fp32 48개 파라미터) → forward 중 type promotion 경로에 따라 F.linear 에서 사망. 격리 단독 실행에선 promotion 경로가 달라 재현 안 되는 환경 의존적 버그.
+
+**수정**:
+- `classifier._load_finetuned_model` (gate 와 공유) — full/PEFT 양쪽 로드 후 `.float()` 강제 → dtype 단일화.
+- `extractor._get_model` — `GLiNER.from_pretrained(...).float()`.
+- `tests/conftest.py` — `active_models.ACTIVE_POINTER` 를 tmp 로 격리 (개발자가 레포에서 활성화해 둔 모델이 게이트 fallback 테스트 3건을 오염시키던 문제).
+
+**GPU 추론 (사용자 요청)**: `pipeline/inference_device.py` 신설 — `SCAMGUARDIAN_INFERENCE_DEVICE` env (기본 `auto` = CUDA 있으면 cuda, Render 등 GPU 없는 배포는 자동 cpu). 게이트·zero-shot/fine-tuned 분류기·GLiNER 추론에 적용. dtype 은 디바이스 무관 fp32 유지.
+
+**결과**: ✅ pytest 398 passed. ✅ RTX 5070 Ti 에서 3개 모델 모두 cuda:0 fp32 로드 — 워밍업 후 게이트 0.02s / GLiNER 추출 0.09s (CPU 대비 게이트 ~0.4s → 0.02s), VRAM 3.2 GiB. uvicorn `--reload` 라 서버 자동 반영.
+
+---
+
+## 2026-06-12 (3) — Funnel 외부 접속 간헐 단절 진단 + 자동 복구 워치독
+
+**증상**: `https://scamguardian.tail7e5dfc.ts.net/` 외부 접속이 반복적으로 끊김. 로컬 `tailscale funnel status` 는 "on", 서버 프로세스 전부 정상.
+
+**원인**: WSL ↔ derp-7(도쿄 릴레이) 연결이 flapping (journalctl: connGen 4→5 가 1분 내, 일시 `udp=false`). tailscaled 는 DERP 자동 재접속하지만 **Funnel ingress 세션은 stale 로 남음** — 공개 ingress(103.84.155.x)에서 TLS ClientHello 직후 EOF. 이 머신에서 그냥 curl 하면 MagicDNS 가 tailnet 내부 경로로 붙어 정상으로 보이는 함정 — `--doh-url` 로 공개 DNS 강제해야 진짜 공개 경로 테스트.
+
+**조치**: `scripts/funnel_watchdog.sh` 신설 — 120초마다 DoH 강제 공개 경로 probe, 2회 연속 실패 시 `funnel off → --bg on` 재기동. `start_stack.sh` 가 funnel 활성화 직후 nohup 으로 자동 실행 (kill_matches 정리 포함). 수동 복구: `tailscale funnel --https=443 off && tailscale funnel --bg http://127.0.0.1:3100`.
+
+**메모**: 근본 원인은 WSL/네트워크 레벨 DERP 불안정 — 재발 빈도 높으면 ngrok 상시 전환 또는 Windows 호스트 절전/방화벽 점검 필요. tailscaled 재시작은 sudo 필요해 워치독은 사용자 권한(funnel off/on)만 사용.
+
+---
+
+## 2026-06-12 (4) — 간단 분석 → 심층 분석 2단계 전략
+
+**배경**: fine-tuned 게이트가 "스미싱 본문 + 감별 포인트 주석" 입력을 normal 0.97 로 오판 → 분류·추출·LLM·Serper 전부 skip → 명백한 스미싱이 0개 검출 종료. 게이트 오판의 사용자 주도 escape hatch 필요.
+
+**전략**: 1차는 게이트 라우팅 기반 간단 분석(빠름·저비용) 그대로, 결과 모달에서 심층 분석 제안 → 선택 시 게이트 라우팅 무시하고 풀 파이프라인 무조건 실행.
+
+**구현**:
+- `runner.analyze(deep=False)` — deep 이면 게이트는 metadata 로만 보존, 실행 프로파일을 GATE_SCAM_ATTEMPT 풀 강도 고정 + normal 추출 skip 무시 + `skip_verification=False` 강제.
+- `AnalyzeRequest.deep` + `/api/analyze-upload` Form `deep` + OpenAPI 문서.
+- 웹: `ResultSummaryModal` 에 "🔬 심층 분석" 카드(간단 결과일 때) + 간단/심층 배지, `HomeClient.handleDeepAnalyze()` 같은 입력 deep 재실행.
+- **부수 버그 수정**: `analyze_unified` Claude 호출 max_tokens 512 → JSON 잘림 → 파싱 실패가 "플래그 0개"로 조용히 끝나던 문제. 1024 상향 + stop_reason 경고 로그.
+
+**결과**: ✅ pytest 398 / eslint 0 / build 0. ✅ 문제 입력 E2E — 간단 0.2s·0개 → 심층 ~7s·신호 3개 (smishing_link_detected, phishing_url_confirmed, personal_info_request).
+
+---
+
+## 2026-06-13 (1) — 게이트 무관 텍스트 룰 고위험 신호 + "정상 단정" 방지
+
+**배경**: 게이트가 normal 로 오판하면 분류·추출 skip → 엔티티 기반 룰까지 입력이 없어 0건 — 명백한 CJ 스미싱이 "정상 콘텐츠"로 표시. 심층 분석 버튼은 보완일 뿐, 간단 분석 자체가 최소한 의심 신호를 잡아야 함.
+
+**구현**:
+- `pipeline/text_rules.py` 신설 — 원문 정규식 룰 8종 (비공식 URL/유사 도메인·단축 URL·저평판 TLD, 택배사+{주소 불일치|배송 보류|주소 재확인}, 금융기관+본인아니면연락, 카드발급+콜백, 납부/체납+비공식링크, 안전결제+외부링크). 모델·네트워크 호출 없음, 게이트 bucket 무관 Phase 4 에서 상시 실행.
+- 신규 플래그 4종 + 라벨 + rationale (`courier_impersonation_pattern`, `financial_callback_lure`, `payment_demand_unofficial_link`, `safe_payment_external_link`). 비공식 URL 은 기존 `smishing_link_detected` 재사용.
+- `common.py` — 게이트 normal + 신호 ≥1 충돌 시 content_type 을 `needs_review`("추가 확인 필요")로 교체 + `deep_recommended`/`deep_recommended_reason` ("1차 게이트는 정상으로 판단했지만, X · Y 신호가 감지되어 심층 분석을 권장합니다").
+- 웹 — needs_review 배지(⚠️), 모달 유형 표시 "추가 확인 필요", amber 강조 심층 분석 카드(원인 문구 + 강한 버튼).
+
+**검증**: ✅ tests/test_text_rules.py 14건 (무탐 케이스 포함) / pytest 412 / eslint 0 / build 0. ✅ E2E — CJ 본문만: 신호 4개. CJ 본문+감별포인트(게이트 normal 오판): 텍스트 룰 신호 2개 + 추가 확인 필요 + 심층 권장 문구. ✅ 제약 준수 (active_models.json 변경 X, 학습 X, push X).
+
+---
+
+## 2026-06-13 (2) — scam_category 결정적 매핑 표시 레이어 (5-class 모델 미적용)
+
+**결정**: 5-class scam_category 학습 모델(cat6_exp_20260608)은 로드 가능하지만 OOD 오분류(코인 사기→관계·지인 사칭형 1.000) 확인 → 미적용. 대신 `SCAM_CATEGORY_MAP`(12→6) 결정적 매핑을 표시 전용 레이어로 추가 — 비용 0·오분류 0.
+
+**구현**:
+- `config_taxonomy.py` 에 `SCAM_CATEGORY_MAP` + `scam_category_for()` (facade export). `make_category_dataset.py` 는 이 단일 출처를 import 하도록 정리.
+- `signal_detector.DetectionReport` 에 `scam_category` / `scam_category_source="mapping"` 추가. scam_type 이 비면(게이트 normal/news_edu 로 분류 skip) 카테고리도 빈 값 — 간단/심층 모두 동일 적용.
+- 모달: 대표 유형 = scam_category, scam_type 은 "세부 유형" 행으로. 내부 라우팅(엔티티 라벨셋·Serper·LLM 프롬프트)은 scam_type 그대로.
+
+**검증**: ✅ pytest 418 (신규 6: 12종 전수 매핑 + 커버리지 가드 + report 통합) / eslint 0 / build 0. ✅ E2E — 코인 사기→투자·가상자산형, 스미싱→링크·문자 유도형 (source=mapping). ✅ active_models.json 미변경(mtime 6/12 18:12 유지).
+
+**관찰**: E2E 중 1인칭 검찰 사칭 텍스트를 게이트가 scam_news_edu 0.51 로 오판 → 분류 skip → 신호 0건. 매핑 동작은 스펙대로지만, needs_review 안전망이 gate=normal 만 커버 — scam_news_edu 오판은 빠져나감 (후속 과제 후보).
+
+---
+
+## 2026-06-13 (3) — 게이트 저신뢰 오판 안전망 보강
+
+**문제**: 1인칭 검찰 사칭이 게이트에서 scam_news_edu 0.51 로 분류 → 분류·추출 skip → 신호 0건. 기존 needs_review 안전망은 gate=normal 만 커버.
+
+**구현**:
+- `GATE_LOW_CONFIDENCE_THRESHOLD=0.70` (config_gate, facade export).
+- `common._apply_gate_safety_net()` 헬퍼 분리 — 안전 버킷(normal/scam_news_edu) ∧ ¬deep ∧ (신호≥1 ∨ confidence<0.70) 이면 content_type="추가 확인 필요" + deep_recommended + 사유 문구(저신뢰/신호/병합 3종). 간단 분석에서 풀 파이프라인 강제는 안 함 — 표시만 보수화. deep=true 동작 불변.
+- 모달: 신호 0개여도 deep_recommended 면 상태 카드 초록 ✓ → amber "추가 확인이 필요해요".
+
+**검증**: ✅ 단위 8건 (경계 0.7 포함) / pytest 426 / eslint 0 / build 0. ✅ E2E 4종 — ①검찰사칭(news_edu 0.51): 추가 확인 필요 + "게이트 판단 신뢰도가 낮아 심층 분석을 권장합니다" ②진짜 예방뉴스: 사기 뉴스·교육 유지 ③normal+텍스트룰: 기존 needs_review 유지 ④deep: 풀 파이프라인 신호 4건(기관 사칭). active_models 미변경.

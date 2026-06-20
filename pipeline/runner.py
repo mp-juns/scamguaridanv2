@@ -14,13 +14,21 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from pipeline import apk_analyzer, classifier, extractor, gate, llm_assessor, rag, safety, sandbox, signal_detector, stt, verifier
+from pipeline import apk_analyzer, classifier, extractor, gate, llm_assessor, rag, safety, sandbox, signal_detector, stt, text_rules, verifier
 from pipeline.config import (
     CLASSIFICATION_THRESHOLD,
     COMMON_RISK_LABELS,
     GATE_NORMAL,
+    GATE_SCAM_ATTEMPT,
+    GATE_SCAM_NEWS_EDU,
     RAG_TOP_K,
     get_runtime_scam_taxonomy,
+)
+from pipeline.runner_input_phases import (
+    resolve_transcript_phase,
+    run_apk_phase,
+    run_safety_phase,
+    run_sandbox_phase,
 )
 from pipeline.signal_detector import DetectionReport
 
@@ -206,6 +214,7 @@ class ScamGuardianPipeline:
         use_rag: bool = False,
         precomputed_transcript: stt.TranscriptResult | None = None,
         user_context: dict[str, Any] | None = None,
+        deep: bool = False,
     ) -> DetectionReport:
         """
         전체 검출 파이프라인을 실행한다. 점수·등급 산정 없음 — 검출 신호만.
@@ -216,6 +225,10 @@ class ScamGuardianPipeline:
             use_llm: True이면 Claude 기반 보조 검출을 추가 수행
             precomputed_transcript: 외부에서 미리 STT 한 결과. 있으면 Phase 1 스킵.
             user_context: 챗봇 대화로 모은 사용자 제보 dict (Phase 3 LLM 에 prior 로 주입)
+            deep: True이면 심층 분석 — 게이트는 metadata 용으로만 돌리고 실행 강도
+                  라우팅을 무시, 풀 파이프라인(분류·추출·LLM·Serper) 무조건 실행.
+                  게이트 오판(예: 주석 붙은 스미싱 → normal)으로 검출이 0개로 끝나는
+                  케이스의 사용자 주도 escape hatch.
 
         Returns:
             DetectionReport — detected_signals[] 형태로 검출 신호 list 만 보고.
@@ -242,232 +255,40 @@ class ScamGuardianPipeline:
         if use_llm and os.environ.get("SCAMGUARDIAN_LLM_ENABLED", "1") == "0":
             self._debug("LLM 보조 검출 비활성: SCAMGUARDIAN_LLM_ENABLED=0")
             use_llm = False
+        # 심층 분석 — Serper 교차검증까지 무조건 수행
+        if deep and skip_verification:
+            skip_verification = False
         # effective_use_llm / effective_use_rag 는 Phase 1.5 게이트 후 확정된다.
         self._debug(
             "analyze() 시작: "
-            f"skip_verification={skip_verification}, use_llm={use_llm}, use_rag={use_rag}"
+            f"skip_verification={skip_verification}, use_llm={use_llm}, use_rag={use_rag}, "
+            f"deep={deep}"
         )
 
-        # ════════════════════════════════
-        # Phase 0 (v3): 안전성 필터 — URL/파일이면 VirusTotal 스캔
-        # VT 는 source 자체(URL·바이너리)를 보는 것이지 transcript 와 무관하므로
-        # precomputed_transcript 유무와 관계없이 URL/파일 입력이면 항상 돈다.
-        # ════════════════════════════════
-        safety_result: safety.SafetyResult | None = None
-        phase0_start = time.time()
-        try:
-            if stt._is_youtube_url(source):
-                print("[Phase 0] YouTube URL — VirusTotal skip (신뢰 플랫폼)")
-            elif source.startswith(("http://", "https://")):
-                print("[Phase 0] URL 안전성 검사 중 (VirusTotal)...")
-                safety_result = safety.scan_url(source)
-            else:
-                src_path = source if source else None
-                if src_path and len(src_path) < 1024 and "/" in src_path:
-                    from pathlib import Path as _Path
-                    if _Path(src_path).exists() and _Path(src_path).is_file():
-                        print("[Phase 0] 파일 안전성 검사 중 (VirusTotal)...")
-                        safety_result = safety.scan_file(src_path)
-        except Exception as exc:  # noqa: BLE001 — 안전성은 죽으면 안 됨
-            print(f"[Phase 0] 검사 실패(무시): {exc}")
-            safety_result = None
-        if safety_result is not None:
-            self.last_safety_result = safety_result
-            self._log_step(
-                "Safety",
-                phase0_start,
-                {
-                    "threat_level": safety_result.threat_level.value,
-                    "detections": safety_result.detections,
-                    "total_engines": safety_result.total_engines,
-                },
-            )
-            level = safety_result.threat_level.value
-            icon = "🚨" if level == "malicious" else ("⚠️" if level == "suspicious" else "✅")
-            print(
-                f"      ← {icon} {level} | 탐지 {safety_result.detections}/{safety_result.total_engines} | "
-                f"카테고리: {', '.join(safety_result.threat_categories[:3]) or '없음'}"
-            )
-
-        # 악성 파일 확정 시 fast-path: STT/분류기가 바이너리에서 죽거나 노이즈 분류하지 않게
-        # 즉시 safety 결과만으로 보고서 생성. policy (b) 의 "분석은 진행" 은 텍스트
-        # 첨부가 같이 있을 때만 의미 있으므로 단독 악성 파일은 빠르게 막는다.
-        if (
-            safety_result is not None
-            and safety_result.is_malicious
-            and safety_result.target_kind == "file"
-            and precomputed_transcript is None
-        ):
-            print("[fast-path] 악성 파일 확정 — STT/분류 skip, safety 결과만으로 보고")
-            transcript = stt.TranscriptResult(text="", source_type="file")
-            self.last_transcript_result = transcript
-            empty_classification = classifier.ClassificationResult(
-                scam_type="메신저 피싱",
-                confidence=0.0,
-                all_scores={},
-                is_uncertain=True,
-            )
-            self.last_classification = empty_classification
-            report = signal_detector.detect(
-                verification_results=[],
-                classification=empty_classification,
-                entities=[],
-                source=source,
-                transcript="",
-                safety_result=safety_result,
-            )
-            self.last_report = report
-            self._log_step("전체", pipeline_start)
-            return report
-
-        # ════════════════════════════════
-        # Phase 0.5 (v3.5): URL 디토네이션 — 격리 Chromium 으로 의심 URL 직접 navigate
-        # 조건: 입력이 URL + Phase 0 fast-path 트리거 안 됨 + SANDBOX_ENABLED.
-        # 디토네이션도 source 자체를 보는 작업이라 precomputed_transcript 와 무관.
-        # ════════════════════════════════
-        sandbox_result: sandbox.SandboxResult | None = None
-        sandbox_enabled = (
-            os.getenv("SANDBOX_ENABLED", "0") == "1"
-            and source.startswith(("http://", "https://"))
+        safety_result, safety_fast_path = run_safety_phase(
+            self,
+            source,
+            precomputed_transcript,
+            pipeline_start,
         )
-        if sandbox_enabled:
-            phase05_start = time.time()
-            try:
-                print("[Phase 0.5] URL 디토네이션 (격리 Chromium)...")
-                sandbox_result = sandbox.detonate_url(source)
-            except Exception as exc:  # noqa: BLE001 — 샌드박스도 죽으면 안 됨
-                print(f"[Phase 0.5] 디토네이션 실패(무시): {exc}")
-                sandbox_result = None
-            if sandbox_result is not None:
-                self.last_sandbox_result = sandbox_result
-                self._log_step(
-                    "Sandbox",
-                    phase05_start,
-                    {
-                        "status": sandbox_result.status.value,
-                        "redirect_count": len(sandbox_result.redirect_chain),
-                        "has_password_field": sandbox_result.has_password_field,
-                        "downloads": len(sandbox_result.download_attempts),
-                        "duration_ms": sandbox_result.duration_ms,
-                    },
-                )
-                icon = "🚨" if sandbox_result.is_dangerous else "✅"
-                print(
-                    f"      ← {icon} status={sandbox_result.status.value} "
-                    f"final={sandbox_result.final_url[:60] if sandbox_result.final_url else '-'} "
-                    f"pwd_form={sandbox_result.has_password_field} "
-                    f"downloads={len(sandbox_result.download_attempts)} "
-                    f"cloaking={sandbox_result.cloaking_detected}"
-                )
+        if safety_fast_path is not None:
+            return safety_fast_path
 
-        # ════════════════════════════════
-        # Phase 0.6 (Stage 2/3): APK 정적 분석 (Lv 1 + Lv 2)
-        # 입력이 APK 파일일 때만. 코드 *읽기만*, 실행 X (정적 분석).
-        # 진짜 동적 분석 (에뮬레이터 behavior 모니터링) 은 future work.
-        # ════════════════════════════════
-        apk_static_result: apk_analyzer.APKStaticReport | None = None
-        apk_bytecode_result: apk_analyzer.APKBytecodeReport | None = None
-        apk_dynamic_result: apk_analyzer.APKDynamicReport | None = None
-        apk_input = False
-        if precomputed_transcript is None and apk_analyzer.is_apk_file(source):
-            apk_input = True
-            phase06_start = time.time()
-            print("[Phase 0.6] APK 정적 분석 (Lv 1 — manifest·권한·서명)...")
-            try:
-                apk_static_result = apk_analyzer.analyze_apk_static(source)
-                self.last_apk_static_result = apk_static_result
-                print(
-                    f"      ← Lv 1: 검출 {len(apk_static_result.detected_flags)}개, "
-                    f"package={apk_static_result.package_name[:40]}, "
-                    f"perms={len(apk_static_result.permissions)}, "
-                    f"self_signed={apk_static_result.is_self_signed}"
-                )
-            except Exception as exc:  # noqa: BLE001 — 분석은 죽으면 안 됨
-                print(f"[Phase 0.6] Lv 1 실패 (무시): {exc}")
-
-            print("[Phase 0.6] APK 심화 정적 분석 (Lv 2 — bytecode 패턴)...")
-            try:
-                apk_bytecode_result = apk_analyzer.analyze_apk_bytecode(source)
-                self.last_apk_bytecode_result = apk_bytecode_result
-                print(
-                    f"      ← Lv 2: 검출 {len(apk_bytecode_result.detected_flags)}개"
-                    + (f" — flags={apk_bytecode_result.detected_flags}"
-                       if apk_bytecode_result.detected_flags else "")
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"[Phase 0.6] Lv 2 실패 (무시): {exc}")
-
-            static_flags = set((apk_static_result.detected_flags if apk_static_result else []) or [])
-            static_flags.update((apk_bytecode_result.detected_flags if apk_bytecode_result else []) or [])
-            if static_flags:
-                apk_dynamic_result = apk_analyzer.APKDynamicReport(
-                    status=apk_analyzer.APKDynamicStatus.SKIPPED_STATIC,
-                    error="Lv1/Lv2 정적 분석에서 이미 신호가 검출되어 remote VM 동적 분석 생략.",
-                )
-                self.last_apk_dynamic_result = apk_dynamic_result
-                print(
-                    "[Phase 0.6] APK 동적 분석 생략 "
-                    f"(Lv 1/2 정적 신호 {len(static_flags)}개 검출 — VM 호출 불필요)"
-                )
-            else:
-                # Lv 3 — 동적 분석 (기본 비활성, 격리 VM 만 허용)
-                print("[Phase 0.6] APK 동적 분석 (Lv 3 — 격리 VM 에뮬레이터)...")
-                try:
-                    apk_dynamic_result = apk_analyzer.analyze_apk_dynamic(source)
-                    self.last_apk_dynamic_result = apk_dynamic_result
-                    status_val = apk_dynamic_result.status.value
-                    print(
-                        f"      ← Lv 3: status={status_val} "
-                        f"backend={apk_dynamic_result.backend or '-'} "
-                        f"flags={len(apk_dynamic_result.detected_flags)}"
-                        + (f" — {apk_dynamic_result.error[:60]}" if apk_dynamic_result.error else "")
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[Phase 0.6] Lv 3 실패 (무시): {exc}")
-
-            self._log_step(
-                "APK",
-                phase06_start,
-                {
-                    "lv1_flags": len((apk_static_result.detected_flags if apk_static_result else []) or []),
-                    "lv2_flags": len((apk_bytecode_result.detected_flags if apk_bytecode_result else []) or []),
-                    "lv3_status": apk_dynamic_result.status.value if apk_dynamic_result else "-",
-                    "lv3_flags": len((apk_dynamic_result.detected_flags if apk_dynamic_result else []) or []),
-                },
-            )
-
-        # ════════════════════════════════
-        # Phase 1: STT (precomputed_transcript 있으면 스킵)
-        # ════════════════════════════════
-        if precomputed_transcript is not None:
-            print("[Phase 1] STT 스킵 (precomputed_transcript 사용)")
-            transcript = precomputed_transcript
-            self.last_transcript_result = transcript
-            self._log_step(
-                "STT",
-                pipeline_start,  # 0 ms 로 기록되도 무방
-                {"source_type": transcript.source_type, "text_length": len(transcript.text), "precomputed": True},
-            )
-        elif apk_input:
-            # APK 는 전사할 음성이 없음 — STT 스킵. 빈 텍스트는 분류기(zero-shot)를 깨뜨리므로
-            # 정적 분석 요약(패키지명 + 검출 신호)을 분석 텍스트로 합성. APK 신호는 Phase 0.6 에서 옴.
-            pkg = apk_static_result.package_name if apk_static_result else ""
-            apk_flags = list((apk_static_result.detected_flags if apk_static_result else []) or [])
-            apk_flags += list((apk_bytecode_result.detected_flags if apk_bytecode_result else []) or [])
-            synth = f"안드로이드 APK 분석 대상. 패키지명 {pkg or '알 수 없음'}."
-            if apk_flags:
-                synth += " 정적 분석 검출 신호: " + ", ".join(apk_flags) + "."
-            print("[Phase 1] STT 스킵 (APK 입력 — 정적 분석 요약을 분석 텍스트로 사용)")
-            transcript = stt.TranscriptResult(text=synth, source_type="apk")
-            self.last_transcript_result = transcript
-            self._log_step(
-                "STT", pipeline_start,
-                {"source_type": "apk", "text_length": len(synth), "apk": True},
-            )
-        else:
-            print("[Phase 1] STT 처리 중...")
-            print(f"      → 입력: {source[:80]}{'…' if len(source) > 80 else ''}")
-            transcript = self.transcribe(source)
+        sandbox_result = run_sandbox_phase(self, source)
+        apk_input, apk_static_result, apk_bytecode_result, apk_dynamic_result = run_apk_phase(
+            self,
+            source,
+            precomputed_transcript,
+        )
+        transcript = resolve_transcript_phase(
+            self,
+            source,
+            precomputed_transcript,
+            apk_input,
+            apk_static_result,
+            apk_bytecode_result,
+            pipeline_start,
+        )
         text = transcript.text
         preview = text[:100] + "…" if len(text) > 100 else text
         print(f"      ← 결과: {transcript.source_type} | {len(text)}자")
@@ -511,13 +332,17 @@ class ScamGuardianPipeline:
             gate_result = future_gate.result()
             self.last_gate_result = gate_result
             gate_profile = gate_result.execution_profile()
+            if deep:
+                # 심층 분석 — 게이트 결과는 metadata 로만 보존, 라우팅은 풀 강도 고정
+                gate_profile = gate.execution_profile(GATE_SCAM_ATTEMPT)
             self._log_step(
                 "Gate", parallel_start,
-                {"bucket": gate_result.bucket, "source": gate_result.source},
+                {"bucket": gate_result.bucket, "source": gate_result.source, "deep": deep},
             )
             print(
                 f"      ← [Gate] {gate_result.label_ko} ({gate_result.bucket}) | "
-                f"scam_type={'O' if gate_profile['run_scam_type'] else 'skip'} "
+                + ("심층 분석 — 게이트 라우팅 무시, 풀 파이프라인 강제 | " if deep else "")
+                + f"scam_type={'O' if gate_profile['run_scam_type'] else 'skip'} "
                 f"serper≤{gate_profile['serper_max_entities']} "
                 f"llm={'O' if gate_profile['use_llm'] else 'skip'}"
             )
@@ -549,8 +374,8 @@ class ScamGuardianPipeline:
             if candidate_scam_types:
                 print(f"      ← Stage 2 추출 후보 유형: {', '.join(candidate_scam_types)}")
 
-            # 추출 — B 최적화: 게이트=normal 이면 엔티티 무의미 → skip
-            if gate_result.bucket == GATE_NORMAL:
+            # 추출 — B 최적화: 게이트=normal 이면 엔티티 무의미 → skip (심층 분석은 예외)
+            if gate_result.bucket == GATE_NORMAL and not deep:
                 entities = []
                 print(f"      ← [추출] skip (게이트: normal, 사기 무관 콘텐츠)")
             else:
@@ -619,7 +444,42 @@ class ScamGuardianPipeline:
         # ════════════════════════════════
         # 룰 기반 신호검출은 게이트 bucket·skip_verification 과 무관하게 *항상* 수행.
         # 게이트가 normal 로 오판해도 검출 누락이 없도록.
-        rule_results = verifier.detect_rule_signals(merged_entities)
+        # (1) 텍스트 패턴 룰 — 원문만 보므로 추출 skip(게이트 normal)에도 영향받지 않음
+        text_rule_results = text_rules.detect_text_risk_signals(text)
+        print(f"[Phase 4] 텍스트 룰 고위험 신호: {len(text_rule_results)}건 검출 (게이트 무관 상시)")
+
+        # 요구 1 안전장치: 게이트 고신뢰 정상 판정 + 텍스트 룰 0건 → 분류기 스캠 확정 차단
+        # deep 모드에서 gate=normal/scam_news_edu 70%+ 이고 텍스트 룰 신호가 전혀 없는데
+        # 분류기만 스캠 유형을 반환한 경우 — NLI 키워드 혼동으로 간주하고 scam_type 제거.
+        # LLM 이 명시적으로 스캠이라 판정했으면 유지 (scam_type_source == "llm" 예외).
+        # LLM 도 스미싱 지시자 없으면 같은 안전장치 적용 (요구 5)
+        _llm_also_no_signal = (
+            scam_type_source == "llm"
+            and classification.scam_type == "스미싱"
+            and not classifier._has_smishing_indicators(text)
+        )
+        if (
+            deep
+            and gate_result.bucket in {GATE_NORMAL, GATE_SCAM_NEWS_EDU}
+            and gate_result.confidence >= 0.70
+            and not text_rule_results
+            and classification.scam_type
+            and (scam_type_source != "llm" or _llm_also_no_signal)
+        ):
+            print(
+                f"      [안전장치] 게이트 고신뢰({gate_result.confidence:.0%}) "
+                f"{gate_result.label_ko} 판정 + 텍스트 룰 0건 — "
+                f"분류기 '{classification.scam_type}' 채택 보류"
+            )
+            classification = classifier.ClassificationResult(
+                scam_type="",
+                confidence=classification.confidence,
+                all_scores=classification.all_scores,
+                is_uncertain=True,
+            )
+
+        # (2) 엔티티 기반 룰
+        rule_results = text_rule_results + verifier.detect_rule_signals(merged_entities)
         rule_triggered = sum(1 for r in rule_results if r.triggered)
         print(f"[Phase 4] 룰 기반 신호검출: {len(rule_results)}건 중 {rule_triggered}건 검출")
 

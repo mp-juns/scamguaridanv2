@@ -4,188 +4,43 @@ import { signIn } from "next-auth/react";
 import { useEffect, useRef, useState } from "react";
 
 import { GUEST_DAILY_LIMIT, bumpGuestDaily, guestOverDailyLimit } from "../guestLimit";
+import type {
+  AnalysisResult,
+  Mode,
+  Phase,
+  StreamChunk,
+  StreamMatch,
+  TranscriptResult,
+  Turn,
+} from "./liveTypes";
+import {
+  computeTierFromMatches,
+  dedupMergeMatches,
+  fireDangerNotification,
+  flagLabel,
+  fmtTime,
+  scanTranscript,
+  speakerTag,
+} from "./liveSignals";
+import {
+  CautionBanner,
+  ChunkRow,
+  Conversation,
+  DangerOverlay,
+  PhaseBadge,
+} from "./liveComponents";
+import { useLivePcmHttp } from "./useLivePcmHttp";
+import { useLiveWebSocket } from "./useLiveWebSocket";
 
-type DetectedSignal = {
-  flag: string;
-  score_delta?: number;
-  label_ko?: string;
-  rationale?: string;
-  source?: string;
-  evidence?: Record<string, unknown>;
-};
-
-type AnalysisResult = {
-  scam_type?: string;
-  classification_confidence?: number;
-  detected_signals?: DetectedSignal[];
-  triggered_flags?: DetectedSignal[];
-  transcript_text?: string;
-  analysis_run_id?: string;
-  summary?: string;
-  disclaimer?: string;
-};
-
-type TurnEntity = {
-  label: string;
-  text: string;
-};
-
-type Turn = {
-  speaker: string; // "상대방" | "본인"
-  text: string;
-  entities?: TurnEntity[];
-  start_sec?: number; // CLOVA 가 준 segment 시작 (초) — 재생용
-  end_sec?: number;
-};
-
-type TranscriptResult = {
-  transcript_text: string;
-  turns?: Turn[];
-  language?: string;
-  source_type?: string;
-  latency_ms?: number;
-  stt_ms?: number;
-  diarize_ms?: number;
-  source_filename?: string;
-};
-
-const FLAG_LABELS_KO: Record<string, string> = {
-  abnormal_return_rate: "비정상 수익률 약속",
-  urgent_transfer_demand: "즉각 송금 요구",
-  fake_government_agency: "공공기관 사칭",
-  victim_personal_info_request: "민감정보 요구",
-  fake_call_center: "가짜 콜센터",
-  malware_detected: "악성코드 검출",
-  phishing_url_confirmed: "피싱 URL 확정",
-};
-
-function flagLabel(s: DetectedSignal) {
-  return s.label_ko ?? FLAG_LABELS_KO[s.flag] ?? s.flag;
-}
-
-type Phase = "idle" | "running" | "done" | "error";
-
-type StreamMatch = {
-  flag: string;
-  label_ko: string;
-  level: number;
-  snippet: string;
-  instant?: boolean; // 돌이킬 수 없는 결정적 신호 (민감정보·송금동의)
-  action?: string; // 안전 행동 안내
-  speaker?: string | null; // "본인"(피해자) / "상대방"(사기범) / null — 화자별 심각도
-};
-
-// 화자 태그 — 같은 신호라도 누가 말했나로 의미가 다름 (본인 발설 = 결정적).
-function speakerTag(speaker?: string | null): string {
-  if (speaker === "본인") return "🙋 본인";
-  if (speaker === "상대방") return "🗣️ 상대방";
-  return "";
-}
-
-// 라이브 슬라이딩 윈도우용 — 누적 match 를 (flag,snippet,speaker) 로 dedup 병합.
-// 같은 발화가 겹치는 윈도우에 중복 등장하는 것 + 동일 flag 반복 부풀림을 함께 방지.
-function dedupMergeMatches(
-  prev: StreamMatch[],
-  incoming: StreamMatch[],
-): StreamMatch[] {
-  const key = (m: StreamMatch) => `${m.flag}|${m.snippet}|${m.speaker ?? ""}`;
-  const seen = new Set(prev.map(key));
-  const fresh = incoming.filter((m) => !seen.has(key(m)));
-  return fresh.length ? [...prev, ...fresh] : prev;
-}
-
-// 누적 dedup match → tier (백엔드 _compute_tier 와 동일 임계). 윈도우 분할로 backend tier
-// 가 윈도우 한정이 되므로, 누적 tier 는 프론트가 전체 match 로 계산한다.
-const TIER_CAUTION_SCORE = 3;
-const TIER_DANGER_SCORE = 6;
-function computeTierFromMatches(matches: StreamMatch[]): number {
-  if (matches.some((m) => m.instant)) return 3; // 본인 발설·송금동의 = 즉시 danger
-  const cum = matches
-    .filter((m) => !m.instant)
-    .reduce((s, m) => s + m.level, 0);
-  if (cum >= TIER_DANGER_SCORE) return 3;
-  if (cum >= TIER_CAUTION_SCORE) return 2;
-  return matches.length ? 1 : 0;
-}
-
-// 🔔 OS 시스템 알림 (크롬 등) — 탭을 안 보고 있을 때 화면 위로 경보. 서버·PII 불필요.
-// danger 진입 시 1회. 일부 모바일 브라우저는 SW 없이 생성자를 막으므로 try/catch.
-function fireDangerNotification(matches: StreamMatch[]) {
-  if (typeof window === "undefined" || !("Notification" in window)) return;
-  if (Notification.permission !== "granted") return;
-  try {
-    const action = pickAlertAction(matches)?.action ?? "지금 통화를 끊으세요.";
-    const noti = new Notification("🚨 위험 신호 감지", {
-      body: action,
-      tag: "scam-danger", // 같은 tag → 중복 알림 안 쌓임
-      requireInteraction: true, // 사용자가 닫을 때까지 유지
-    });
-    noti.onclick = () => {
-      window.focus(); // 클릭하면 우리 탭으로 → 풀스크린 경보 노출
-      noti.close();
-    };
-  } catch {
-    /* SW 필요 브라우저 등 — 무시 (풀스크린 경보는 그대로 동작) */
-  }
-}
-
-type StreamChunk = {
-  chunk_index: number;
-  start_sec: number;
-  end_sec: number;
-  transcript: string;
-  turns?: Turn[];
-  alert_level: number;
-  matches: StreamMatch[];
-  tier?: number; // 0 watch / 1 / 2 caution / 3 danger (단조 증가)
-  tier_changed?: boolean; // 이 window 에서 tier 가 올라갔는가
-  latency_ms: number;
-};
-
-type Mode = "single" | "stream" | "live";
-
-function fmtTime(sec: number) {
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
-// stream_analyze.py 의 regex 패턴과 동기화. pipeline classifier/LLM 이 놓쳤을 때
-// 클라이언트 측 backup 검출로 보완 — 명백한 보이스피싱 신호는 무조건 surface.
-const SIGNAL_PATTERNS: Array<{
-  flag: string;
-  regex: RegExp;
-  level: number;
-  label_ko: string;
-}> = [
-  { flag: "urgent_transfer_demand", regex: /(즉시|지금|당장|빨리|얼른)[\s\S]{0,12}(송금|이체|보내|입금)/g, level: 3, label_ko: "즉각 송금 요구" },
-  { flag: "safe_account_phrase", regex: /안전\s*(계좌|입금|보관)/g, level: 3, label_ko: "안전계좌 사기 키워드" },
-  { flag: "fake_government_agency", regex: /(중앙지검|검찰청|금융감독원|경찰청|국정원|금감원|검사|수사관|합동수사본부)/g, level: 2, label_ko: "공공기관 사칭" },
-  { flag: "ssn_request", regex: /주민(등록)?\s*번호/g, level: 3, label_ko: "주민번호 요구" },
-  { flag: "otp_request", regex: /(OTP|일회용\s*비밀번호|보안카드|인증번호)/g, level: 3, label_ko: "OTP/보안카드/인증번호 요구" },
-  { flag: "transfer_agree", regex: /(보내드릴|이체할|송금할|입금할)[\s\S]{0,10}(요|게요|겠습니다|드릴)/g, level: 2, label_ko: "송금 동의 발화" },
-  { flag: "meta_aware", regex: /(사기[\s\S]{0,5}같|이상한데|진짜[\s\S]{0,3}인가|이거[\s\S]{0,3}사기)/g, level: 1, label_ko: "메타인식 의심" },
-  { flag: "password_request", regex: /비밀번호[\s\S]{0,5}(알려|입력|뭐|뭘|어떻)/g, level: 2, label_ko: "비밀번호 요구" },
-  { flag: "app_install_lure", regex: /(앱|어플|어플리케이션|보안[\s\S]{0,3}프로그램|업데이트)[\s\S]{0,8}(설치|다운로드)/g, level: 1, label_ko: "앱 설치 유도" },
-  { flag: "urgent_call_demand", regex: /(끊지\s*마|전화\s*끊지|통화\s*유지)/g, level: 2, label_ko: "통화 유지 압박" },
-  { flag: "court_summons_threat", regex: /(소환장|소환|조사를?\s*받|해명|출석)/g, level: 2, label_ko: "수사·소환 압박" },
-  { flag: "personal_info_leak", regex: /개인정보[\s\S]{0,5}(유출|도용|누출)/g, level: 2, label_ko: "개인정보 유출 협박" },
-  { flag: "central_investigation", regex: /(중앙수사|합동수사|특별수사)/g, level: 2, label_ko: "특별/중앙 수사 사칭" },
-];
-
-function scanTranscript(text: string) {
-  const matches: StreamMatch[] = [];
-  let maxLevel = 0;
-  for (const p of SIGNAL_PATTERNS) {
-    for (const m of text.matchAll(p.regex)) {
-      matches.push({ flag: p.flag, label_ko: p.label_ko, level: p.level, snippet: m[0] });
-      if (p.level > maxLevel) maxLevel = p.level;
-    }
-  }
-  return { matches, level: maxLevel };
-}
-
-export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean }) {
+export default function LiveVoiceUpload({
+  isGuest = false,
+  liveSessionToken,
+  liveOnly = false,
+}: {
+  isGuest?: boolean;
+  liveSessionToken?: string;
+  liveOnly?: boolean;
+}) {
   const [guestBlocked, setGuestBlocked] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   // 업로드한 파일의 blob URL — turn 별 ▶️ 재생용 (단일 모드)
@@ -226,15 +81,132 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
   const [liveLatency, setLiveLatency] = useState(0);
   const [liveError, setLiveError] = useState("");
   const [liveFinalizing, setLiveFinalizing] = useState(false); // 중지 후 full 분석 대기
+  const [liveStarting, setLiveStarting] = useState(false);
+  const [liveStartedAt, setLiveStartedAt] = useState<number | null>(null);
+  const [liveElapsedSec, setLiveElapsedSec] = useState(0);
+  const [liveFinalAnalysisPhase, setLiveFinalAnalysisPhase] = useState<Phase>("idle");
+  const [liveFinalAnalysis, setLiveFinalAnalysis] = useState<AnalysisResult | null>(null);
+  const [liveFinalAnalysisError, setLiveFinalAnalysisError] = useState("");
   const liveMatchesRef = useRef<StreamMatch[]>([]); // 누적 dedup match 소스 (tier 계산용)
   const notifiedDangerRef = useRef(false); // danger OS 알림 1회 발사 가드
+  const finalAnalyzeStartedRef = useRef(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const LIVE_WINDOW_SEC = 20; // 실시간 tick 윈도우 — CLOVA STT 가 처리할 최근 오디오 길이.
-  // 지연 지배 비용은 STT(~오디오 길이 비례) → 45→20 으로 절반. 신호 스캔은 최근 맥락만
-  // 필요하고 7초 tick + 프론트 누적 dedup 으로 과거 신호는 이미 잡혀 손실 없음.
+  const LIVE_WINDOW_SEC = 12; // legacy HTTP fallback — webm 재인코딩 경로
   const liveStreamRef = useRef<MediaStream | null>(null);
   const liveChunksRef = useRef<Blob[]>([]);
   const liveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const usingWsRef = useRef(false);
+  const usingPcmRef = useRef(false);
+  const liveWs = useLiveWebSocket();
+  const livePcm = useLivePcmHttp();
+  const [wsEnabled, setWsEnabled] = useState(true);
+  const [liveTransport, setLiveTransport] = useState<string>("websocket");
+  const [liveTransportMode, setLiveTransportMode] = useState<"ws" | "pcm" | "legacy" | null>(null);
+  const [liveChunkSec, setLiveChunkSec] = useState(3);
+
+  useEffect(() => {
+    if (!liveOnly) return;
+    setMode("live");
+  }, [liveOnly]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const configUrl = liveSessionToken
+      ? `/api/live-ws-config?session_token=${encodeURIComponent(liveSessionToken)}`
+      : "/api/live-ws-config";
+    fetch(configUrl)
+      .then(async (r) => {
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}));
+          throw new Error(
+            typeof body?.detail === "string"
+              ? body.detail
+              : "라이브 세션을 준비할 수 없습니다.",
+          );
+        }
+        return r.json();
+      })
+      .then((d) => {
+        if (cancelled || !d) return;
+        setWsEnabled(d.ws_enabled !== false);
+        setLiveTransport(d.transport ?? "websocket");
+        if (typeof d.chunk_sec === "number") setLiveChunkSec(d.chunk_sec);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setWsEnabled(false);
+        setLiveError(err instanceof Error ? err.message : "라이브 세션 설정 조회 실패");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [liveSessionToken]);
+
+  useEffect(() => {
+    if (!liveStarting && !liveActive) {
+      setLiveElapsedSec(0);
+      return;
+    }
+    const id = window.setInterval(() => {
+      if (!liveStartedAt) return;
+      setLiveElapsedSec(Math.max(0, Math.floor((Date.now() - liveStartedAt) / 1000)));
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [liveActive, liveStarting, liveStartedAt]);
+
+  useEffect(() => {
+    if (liveTransportMode !== "ws") return;
+    setLiveTranscript(liveWs.transcript);
+    liveMatchesRef.current = liveWs.matches;
+    setCumulativeMatches(liveWs.matches);
+    setLiveLatency(liveWs.latencyMs);
+    setTier((prev) => Math.max(prev, liveWs.tier));
+    if (liveWs.tier >= 3) setDangerDismissed(false);
+    if (
+      liveTransportMode === "ws" &&
+      liveFinalizing &&
+      liveWs.phase === "idle" &&
+      liveWs.transcript.trim() &&
+      !finalAnalyzeStartedRef.current
+    ) {
+      finalAnalyzeStartedRef.current = true;
+      void analyzeLiveFinalTranscript(liveWs.transcript);
+    }
+    setLiveError(liveWs.error); // always sync — clears automatically when reconnect succeeds
+    if (liveWs.phase === "live" || liveWs.phase === "connecting") setLiveActive(true);
+    if (liveWs.phase === "idle" || liveWs.phase === "error") setLiveActive(false);
+  }, [
+    liveTransportMode,
+    liveWs.transcript,
+    liveWs.matches,
+    liveWs.tier,
+    liveWs.latencyMs,
+    liveWs.phase,
+    liveWs.error,
+    liveFinalizing,
+    liveTransportMode,
+  ]);
+
+  useEffect(() => {
+    if (liveTransportMode !== "pcm") return;
+    setLiveTranscript(livePcm.transcript);
+    liveMatchesRef.current = livePcm.matches;
+    setCumulativeMatches(livePcm.matches);
+    setLiveLatency(livePcm.latencyMs);
+    setTier((prev) => Math.max(prev, livePcm.tier));
+    if (livePcm.tier >= 3) setDangerDismissed(false);
+    if (livePcm.error) setLiveError(livePcm.error);
+    if (livePcm.phase === "live" || livePcm.phase === "connecting") setLiveActive(true);
+    if (livePcm.phase === "idle" || livePcm.phase === "error") setLiveActive(false);
+  }, [
+    liveTransportMode,
+    livePcm.transcript,
+    livePcm.matches,
+    livePcm.tier,
+    livePcm.latencyMs,
+    livePcm.phase,
+    livePcm.error,
+  ]);
 
   function stopLiveCapture() {
     if (liveTimerRef.current) {
@@ -280,8 +252,20 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
     setLiveLatency(0);
     setLiveError("");
     setLiveFinalizing(false);
+    setLiveStarting(false);
+    setLiveStartedAt(null);
+    setLiveElapsedSec(0);
+    setLiveFinalAnalysisPhase("idle");
+    setLiveFinalAnalysis(null);
+    setLiveFinalAnalysisError("");
     liveMatchesRef.current = [];
     notifiedDangerRef.current = false;
+    finalAnalyzeStartedRef.current = false;
+    usingWsRef.current = false;
+    usingPcmRef.current = false;
+    setLiveTransportMode(null);
+    liveWs.cleanup();
+    livePcm.cleanup();
   }
 
   async function postFile<T>(endpoint: string, payload: File): Promise<T> {
@@ -302,6 +286,49 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
       throw new Error(msg);
     }
     return data as T;
+  }
+
+  async function analyzeLiveFinalTranscript(text: string) {
+    const source = text.trim();
+    if (!source) {
+      setLiveFinalAnalysisError("전체 전사 텍스트가 비어 있어 최종 분석을 건너뜁니다.");
+      setLiveFinalAnalysisPhase("error");
+      setLiveFinalizing(false);
+      return;
+    }
+
+    setLiveFinalAnalysisPhase("running");
+    setLiveFinalAnalysisError("");
+    try {
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source,
+          skip_verification: true,
+          use_llm: true,
+          use_rag: false,
+          deep: true,
+        }),
+      });
+      const data = (await response.json()) as AnalysisResult | { detail?: string };
+      if (!response.ok) {
+        throw new Error(
+          "detail" in data && typeof data.detail === "string"
+            ? data.detail
+            : "최종 분석 중 오류가 발생했습니다.",
+        );
+      }
+      setLiveFinalAnalysis(data as AnalysisResult);
+      setLiveFinalAnalysisPhase("done");
+    } catch (err) {
+      setLiveFinalAnalysisError(
+        err instanceof Error ? err.message : "최종 분석 중 알 수 없는 오류가 발생했습니다.",
+      );
+      setLiveFinalAnalysisPhase("error");
+    } finally {
+      setLiveFinalizing(false);
+    }
   }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -442,9 +469,9 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
     mimeType: string,
     windowSec: number,
     isFinal: boolean,
-  ) {
+  ): Promise<string | undefined> {
     const chunks = liveChunksRef.current;
-    if (!chunks.length) return;
+    if (!chunks.length) return undefined;
     const type = mimeType || "audio/webm";
     const blob = new Blob(chunks, { type });
     const ext = type.includes("ogg") ? "ogg" : type.includes("mp4") ? "mp4" : "webm";
@@ -486,8 +513,10 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
       }
       setTier((prev) => Math.max(prev, newTier));
       if (newTier >= 3) setDangerDismissed(false);
+      return j.transcript_text ?? "";
     } catch {
       /* 일시적 네트워크 오류 무시 — 다음 tick 에 재시도 */
+      return undefined;
     }
   }
 
@@ -498,8 +527,11 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
       return;
     }
     reset();
+    setLiveStarting(true);
+    setLiveStartedAt(Date.now());
+    setLiveTransportMode(wsEnabled ? "ws" : "pcm");
+    setLiveTransport(wsEnabled ? "websocket" : "http-pcm");
     setLiveError("");
-    // 🔔 크롬 알림 권한 요청 — 시작 버튼 제스처 안에서. 탭 안 볼 때 OS 토스트로 경보.
     try {
       if ("Notification" in window && Notification.permission === "default") {
         void Notification.requestPermission();
@@ -507,8 +539,47 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
     } catch {
       /* 미지원 브라우저 무시 */
     }
+
+    if (wsEnabled) {
+      const ok = await liveWs.start();
+      if (ok) {
+        if (isGuest) bumpGuestDaily();
+        usingWsRef.current = true;
+        setLiveTransportMode("ws");
+        setLiveTransport("websocket");
+        setLiveActive(true);
+        setLiveStarting(false);
+        setLiveError("");
+        return;
+      }
+    }
+
+    setLiveTransportMode("pcm");
+    setLiveTransport("http-pcm");
+    const pcmOk = await livePcm.start();
+    if (pcmOk) {
+      if (isGuest) bumpGuestDaily();
+      usingPcmRef.current = true;
+      setLiveTransportMode("pcm");
+      setLiveTransport("http-pcm");
+      setLiveActive(true);
+      setLiveStarting(false);
+      setLiveError("");
+      return;
+    }
+
+    setLiveError(
+      liveWs.error || livePcm.error || "실시간 연결 실패 — 구형 HTTP 모드로 시도합니다",
+    );
+
+    usingWsRef.current = false;
+    usingPcmRef.current = false;
+    setLiveTransportMode("legacy");
+    setLiveTransport("http-legacy");
     if (!navigator.mediaDevices?.getUserMedia) {
       setLiveError("이 브라우저는 마이크 캡처를 지원하지 않습니다.");
+      setLiveStarting(false);
+      setLiveStartedAt(null);
       return;
     }
     try {
@@ -525,7 +596,6 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
         },
       });
       liveStreamRef.current = stream;
-      if (isGuest) bumpGuestDaily(); // 실시간 세션 시작 = 오늘 1회 소진
       // Opus 압축 손실 줄이려 비트레이트 ↑ (미지원 브라우저는 기본값 fallback)
       let mr: MediaRecorder;
       try {
@@ -539,12 +609,14 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
         if (e.data.size > 0) liveChunksRef.current.push(e.data);
       };
       mr.start(1000); // 1초마다 누적 chunk 확보
+      if (isGuest) bumpGuestDaily(); // 실시간 세션 시작 = 오늘 1회 소진
       setLiveActive(true);
+      setLiveStarting(false);
       const mime = mr.mimeType;
-      // ~7초마다 전송 — 백엔드가 최근 LIVE_WINDOW_SEC 초만 STT (비용·지연 bound)
+      // legacy fallback: 5초마다 최근 LIVE_WINDOW_SEC 초만 STT (비용·지연 bound)
       liveTimerRef.current = setInterval(() => {
         void sendLiveCumulative(mime, LIVE_WINDOW_SEC, false);
-      }, 7000);
+      }, 5000);
     } catch (err) {
       setLiveError(
         err instanceof Error
@@ -552,18 +624,49 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
           : "마이크 권한이 필요합니다.",
       );
       stopLiveCapture();
+      setLiveStarting(false);
+      setLiveStartedAt(null);
       setLiveActive(false);
     }
   }
 
-  function stopLive() {
+  async function stopLive() {
+    if (usingWsRef.current) {
+      setLiveFinalizing(true);
+      setLiveFinalAnalysisPhase("running");
+      setLiveFinalAnalysis(null);
+      setLiveFinalAnalysisError("");
+      finalAnalyzeStartedRef.current = false;
+      liveWs.stop();
+      usingWsRef.current = false;
+      setLiveActive(false);
+      return;
+    }
+    if (usingPcmRef.current) {
+      setLiveFinalizing(true);
+      setLiveFinalAnalysisPhase("running");
+      setLiveFinalAnalysis(null);
+      setLiveFinalAnalysisError("");
+      const transcriptBeforeStop = livePcm.transcript || liveTranscript;
+      await livePcm.stop();
+      usingPcmRef.current = false;
+      setLiveTransportMode(null);
+      setLiveActive(false);
+      await analyzeLiveFinalTranscript(livePcm.transcript || transcriptBeforeStop);
+      return;
+    }
     const mr = mediaRecorderRef.current;
     const mime = mr?.mimeType ?? "audio/webm";
     // 중지 = full 분석 1회 (window_sec=0) → 전체 전사·화자분리(타임스탬프 full 오디오 정합).
     // 윈도우 turn 은 타임스탬프가 윈도우 기준이라, full 분석 올 때까지 말풍선 숨김(finalizing).
     setLiveFinalizing(true);
+    setLiveFinalAnalysisPhase("running");
+    setLiveFinalAnalysis(null);
+    setLiveFinalAnalysisError("");
     setLiveTurns([]);
-    void sendLiveCumulative(mime, 0, true);
+    void sendLiveCumulative(mime, 0, true).then((text) => {
+      void analyzeLiveFinalTranscript(text || liveTranscript);
+    });
     // 캡처한 누적 오디오로 재생용 blob URL 생성 (cleanup 이 chunks 를 비우기 전에).
     const chunks = liveChunksRef.current;
     if (chunks.length) {
@@ -591,6 +694,8 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
   })();
 
   const signals = analysis?.detected_signals ?? analysis?.triggered_flags ?? [];
+  const liveFinalSignals =
+    liveFinalAnalysis?.detected_signals ?? liveFinalAnalysis?.triggered_flags ?? [];
 
   return (
     <section className="rounded-3xl border border-[#bbf7d0] bg-white p-8 shadow-[0_2px_12px_rgba(0,0,0,0.05)]">
@@ -644,42 +749,48 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
           🎙️ 통화 중 실시간 분석
         </h2>
         <span className="rounded-full border border-amber-300/40 bg-amber-400/10 px-2.5 py-0.5 text-[10px] font-medium tracking-wide text-amber-700 uppercase">
-          Preview · 시뮬레이션
+          Live v4 · {liveTransport === "websocket" ? "WebSocket" : liveTransport === "http-pcm" ? "PCM HTTP" : "HTTP"}
         </span>
       </div>
       <p className="mt-2 text-xs leading-6 text-[#8b95a1]">
-        핵심은 <strong>통화 중 실시간 감지</strong> — 의심 통화를 받는 중이라면 <strong>실시간 마이크</strong>로 바로 시작하세요.{" "}
-        녹음 파일은 <strong>1분씩 스트리밍</strong> 또는 <strong>전체 분석</strong>으로 미리 테스트해볼 수 있어요 (v4 시뮬).
+        핵심은 <strong>통화 중 실시간 감지</strong> — Live v4는 <strong>3초 chunk WebSocket STT</strong>로 더 빠르게 전사합니다.{" "}
+        {liveOnly ? (
+          <>이 전용 세션에서는 <strong>실시간 마이크</strong>만 활성화됩니다.</>
+        ) : (
+          <>녹음 파일은 <strong>1분씩 스트리밍</strong> 또는 <strong>전체 분석</strong>으로 테스트할 수 있어요.</>
+        )}
       </p>
 
-      <div className="mt-4 inline-flex flex-wrap rounded-full border border-[#bbf7d0] bg-white p-1 text-xs">
-        {(
-          [
-            { v: "live" as Mode, label: "🎤 실시간 마이크" },
-            { v: "stream" as Mode, label: "🔴 1분씩 스트리밍 + 화면 경고" },
-            { v: "single" as Mode, label: "🔍 전체 분석" },
-          ] as const
-        ).map((opt) => (
-          <button
-            key={opt.v}
-            type="button"
-            disabled={submitting}
-            onClick={() => {
-              setMode(opt.v);
-              reset();
-            }}
-            className={`rounded-full px-4 py-1.5 transition ${
-              mode === opt.v
-                ? "bg-[#16a34a] text-white shadow"
-                : "text-[#4e5968] hover:text-[#191f28]"
-            } disabled:cursor-not-allowed disabled:opacity-50`}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
+      {!liveOnly && (
+        <div className="mt-4 inline-flex flex-wrap rounded-full border border-[#bbf7d0] bg-white p-1 text-xs">
+          {(
+            [
+              { v: "live" as Mode, label: "🎤 실시간 마이크" },
+              { v: "stream" as Mode, label: "🔴 1분씩 스트리밍 + 화면 경고" },
+              { v: "single" as Mode, label: "🔍 전체 분석" },
+            ] as const
+          ).map((opt) => (
+            <button
+              key={opt.v}
+              type="button"
+              disabled={submitting}
+              onClick={() => {
+                setMode(opt.v);
+                reset();
+              }}
+              className={`rounded-full px-4 py-1.5 transition ${
+                mode === opt.v
+                  ? "bg-[#16a34a] text-white shadow"
+                  : "text-[#4e5968] hover:text-[#191f28]"
+              } disabled:cursor-not-allowed disabled:opacity-50`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {mode !== "live" && (
+      {!liveOnly && mode !== "live" && (
       <form onSubmit={handleSubmit} className="mt-5 space-y-4">
         <label className="flex flex-col gap-2 text-sm text-[#333d4b]">
           <span className="font-medium text-[#15803d]">
@@ -730,9 +841,9 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
             )}
           </div>
           <p className="mt-2 text-xs leading-5 text-[#8b95a1]">
-            통화를 <strong>스피커폰</strong>으로 두고 시작하세요. ~7초마다 최근 음성을 분석해
-            화자별 위험 신호를 표시하고, 결정적 신호(본인 민감정보 발설·송금 동의) 시 🔴 경보합니다.
-            시작 시 <strong>알림 권한</strong>을 허용하면, 다른 화면을 보고 있어도 🔔 OS 알림으로 경보가 떠요.
+            통화를 <strong>스피커폰</strong>으로 두고 시작하세요. WebSocket 또는 PCM HTTP로 16kHz 스트림 →
+            <strong> 3초마다 Whisper 전사</strong> 후 위험 신호를 표시합니다.
+            시작 시 <strong>알림 권한</strong>을 허용하면 OS 알림으로도 경보가 떠요.
           </p>
 
           {liveError && (
@@ -742,13 +853,21 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
           )}
 
           <div className="mt-4 flex items-center gap-3">
-            {!liveActive ? (
+            {!liveActive && !liveStarting ? (
               <button
                 type="button"
                 onClick={() => void startLive()}
                 className="rounded-2xl bg-[#16a34a] px-5 py-2.5 text-sm font-semibold text-white shadow-lg transition hover:bg-[#15803d]"
               >
                 🎤 실시간 분석 시작
+              </button>
+            ) : liveStarting ? (
+              <button
+                type="button"
+                disabled
+                className="rounded-2xl bg-[#d1d5db] px-5 py-2.5 text-sm font-semibold text-white"
+              >
+                마이크 연결 중...
               </button>
             ) : (
               <button
@@ -760,6 +879,46 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
               </button>
             )}
           </div>
+
+          {(liveStarting || liveActive) && (
+            <div className="mt-4 overflow-hidden rounded-2xl border border-[#bbf7d0] bg-[#f8fff9]">
+              <div className="grid gap-0 sm:grid-cols-4">
+                <div className="border-b border-[#e5e8eb] p-4 sm:border-b-0 sm:border-r">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#8b95a1]">상태</div>
+                  <div className="mt-1 flex items-center gap-2 text-sm font-bold text-[#191f28]">
+                    <span className={`h-2.5 w-2.5 rounded-full ${liveActive ? "animate-pulse bg-rose-500" : "bg-amber-400"}`} />
+                    {liveWs.reconnecting ? "재연결 중" : liveActive ? "듣는 중" : "연결 중"}
+                  </div>
+                </div>
+                <div className="border-b border-[#e5e8eb] p-4 sm:border-b-0 sm:border-r">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#8b95a1]">전송</div>
+                  <div className="mt-1 text-sm font-bold text-[#191f28]">
+                    {liveTransport === "websocket" ? "WebSocket" : liveTransport === "http-pcm" ? "PCM HTTP" : "Legacy HTTP"}
+                  </div>
+                </div>
+                <div className="border-b border-[#e5e8eb] p-4 sm:border-b-0 sm:border-r">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#8b95a1]">첫 전사</div>
+                  <div className="mt-1 text-sm font-bold text-[#191f28]">
+                    {liveTranscript
+                      ? "도착"
+                      : liveElapsedSec < liveChunkSec
+                        ? `약 ${liveChunkSec - liveElapsedSec}초`
+                        : "전사 처리 중"}
+                  </div>
+                </div>
+                <div className="p-4">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#8b95a1]">경과</div>
+                  <div className="mt-1 text-sm font-bold text-[#191f28]">{liveElapsedSec}초</div>
+                </div>
+              </div>
+              {!liveTranscript ? (
+                <div className="border-t border-[#e5e8eb] px-4 py-3 text-xs leading-5 text-[#4e5968]">
+                  지금 마이크 입력을 받고 있습니다. 짧게 “검찰청이라고 하는데 이상해요”처럼 말하면
+                  첫 chunk 전사 후 바로 아래에 텍스트와 검출 신호가 나타납니다.
+                </div>
+              ) : null}
+            </div>
+          )}
 
           {/* 🔴 dismiss 후 잔류 빨간 바 */}
           {tier >= 3 && (
@@ -803,6 +962,74 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
                 </p>
               </div>
             )
+          )}
+
+          {liveFinalAnalysisPhase !== "idle" && (
+            <div className="mt-4 rounded-2xl border border-[#bbf7d0] bg-white p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-sm font-semibold text-[#191f28]">
+                  🧠 중지 후 전체 전사 재분석
+                </h4>
+                <PhaseBadge phase={liveFinalAnalysisPhase} prefix="최종 분석" />
+              </div>
+
+              {liveFinalAnalysisPhase === "running" ? (
+                <p className="mt-3 text-sm leading-6 text-[#8b95a1]">
+                  지금까지 모인 전체 전사 텍스트를 다시 합쳐 분류 · 엔티티 추출 · LLM 보조 분석을 실행 중입니다.
+                </p>
+              ) : null}
+
+              {liveFinalAnalysisPhase === "error" ? (
+                <p className="mt-3 text-sm leading-6 text-rose-700">{liveFinalAnalysisError}</p>
+              ) : null}
+
+              {liveFinalAnalysis ? (
+                <div className="mt-3 space-y-3">
+                  <div className="rounded-xl bg-[#f8fafc] p-3">
+                    <div className="text-[11px] font-semibold text-[#8b95a1]">최종 요약</div>
+                    <p className="mt-1 text-sm leading-6 text-[#191f28]">
+                      {liveFinalAnalysis.summary ??
+                        `전체 통화 전사에서 위험 신호 ${liveFinalSignals.length}개가 검출되었습니다.`}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {liveFinalAnalysis.scam_type ? (
+                      <span className="rounded-full bg-[#f2f4f6] px-3 py-1 text-xs font-medium text-[#333d4b]">
+                        추정 유형: {liveFinalAnalysis.scam_type}
+                      </span>
+                    ) : null}
+                    {typeof liveFinalAnalysis.classification_confidence === "number" ? (
+                      <span className="rounded-full bg-[#f2f4f6] px-3 py-1 text-xs font-medium text-[#4e5968]">
+                        신뢰도 {Math.round(liveFinalAnalysis.classification_confidence * 100)}%
+                      </span>
+                    ) : null}
+                    <span className="rounded-full bg-[#dcfce7] px-3 py-1 text-xs font-bold text-[#15803d]">
+                      전체 전사 기준 {liveFinalSignals.length}개 신호
+                    </span>
+                  </div>
+
+                  {liveFinalSignals.length > 0 ? (
+                    <ul className="space-y-1.5">
+                      {liveFinalSignals.map((signal, index) => (
+                        <li
+                          key={`${signal.flag}-${index}`}
+                          className="rounded-xl border border-[#e5e8eb] bg-[#fafbfc] px-3 py-2 text-xs"
+                        >
+                          <div className="font-semibold text-rose-700">{flagLabel(signal)}</div>
+                          <div className="mt-0.5 text-[#8b95a1]">{signal.flag}</div>
+                          {signal.rationale ? (
+                            <p className="mt-1 leading-5 text-[#8b95a1]">{signal.rationale}</p>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-[#8b95a1]">전체 전사 기준으로 검출된 위험 신호가 없습니다.</p>
+                  )}
+                </div>
+              ) : null}
+            </div>
           )}
 
           {/* 누적 검출 신호 */}
@@ -1169,300 +1396,5 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
         </section>
       )}
     </section>
-  );
-}
-
-// 누적 match 중 가장 우선순위 높은(instant 먼저, 그다음 level 높은) 것의 행동 안내를 고른다.
-function pickAlertAction(
-  matches: StreamMatch[],
-): { action: string; label: string; speaker?: string | null } | null {
-  if (!matches.length) return null;
-  const sorted = [...matches].sort((a, b) => {
-    if (!!b.instant !== !!a.instant) return b.instant ? 1 : -1;
-    return b.level - a.level;
-  });
-  const top = sorted[0];
-  return {
-    action: top.action ?? "통화를 멈추고, 해당 기관 대표번호로 직접 확인하세요.",
-    label: top.label_ko,
-    speaker: top.speaker,
-  };
-}
-
-// 🟠 caution — 누적 주의 신호. 부드러운 pulse 로 시선 유도 (비차단).
-function CautionBanner({ matches }: { matches: StreamMatch[] }) {
-  const labels = Array.from(
-    new Set(matches.map((m) => m.label_ko)),
-  ).slice(0, 4);
-  return (
-    <div
-      role="alert"
-      className="mt-4 flex animate-pulse items-start gap-3 rounded-2xl border border-amber-400/50 bg-amber-500/15 px-5 py-4 text-amber-700"
-    >
-      <div className="text-2xl leading-none">⚠️</div>
-      <div>
-        <div className="text-base font-bold">주의 신호가 쌓이고 있어요</div>
-        <div className="mt-1 text-xs leading-5 opacity-90">
-          {labels.length ? labels.join(" · ") : "사기 의심 신호"} 감지됨 — 발화 맥락을 다시 확인하세요.
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// 🔴 danger — 풀스크린 takeover + flash. 행동 안내 + 근거, 확인 버튼으로 dismiss.
-function DangerOverlay({
-  matches,
-  onDismiss,
-}: {
-  matches: StreamMatch[];
-  onDismiss: () => void;
-}) {
-  const picked = pickAlertAction(matches);
-  return (
-    <div
-      role="alertdialog"
-      aria-modal="true"
-      className="animate-danger-flash fixed inset-0 z-50 flex flex-col items-center justify-center px-6 text-center"
-    >
-      <div className="mb-3 text-6xl">🚨</div>
-      <div className="text-3xl font-black text-white drop-shadow-lg">
-        지금 전화를 끊으세요
-      </div>
-      {picked && (
-        <div className="mt-4 inline-block rounded-full bg-white/15 px-3 py-1 text-sm font-semibold text-white">
-          {speakerTag(picked.speaker) ? speakerTag(picked.speaker) + " · " : ""}
-          {picked.label}
-        </div>
-      )}
-      {picked && (
-        <div className="mt-3 max-w-md text-lg font-semibold text-rose-50">
-          {picked.action}
-        </div>
-      )}
-      <div className="mt-3 max-w-md text-sm text-rose-50/90">
-        위험 신호가 감지되었습니다. ScamGuardian 은 신호만 알려드려요 — 최종 판단은 본인이 하세요.
-      </div>
-      <button
-        type="button"
-        onClick={onDismiss}
-        className="mt-8 rounded-full bg-white/95 px-7 py-3 text-base font-bold text-rose-700 shadow-lg hover:bg-white"
-      >
-        확인했어요
-      </button>
-    </div>
-  );
-}
-
-function ChunkRow({ chunk }: { chunk: StreamChunk }) {
-  const tone =
-    chunk.alert_level >= 3
-      ? "border-rose-400/60 bg-rose-500/10"
-      : chunk.alert_level === 2
-      ? "border-amber-400/40 bg-amber-500/10"
-      : chunk.alert_level === 1
-      ? "border-yellow-400/30 bg-yellow-500/5"
-      : "border-[#e5e8eb] bg-white";
-  const badge =
-    chunk.alert_level >= 3
-      ? { label: "DANGER", tone: "bg-rose-500/80 text-white" }
-      : chunk.alert_level === 2
-      ? { label: "WARN", tone: "bg-amber-500/80 text-white" }
-      : chunk.alert_level === 1
-      ? { label: "WATCH", tone: "bg-yellow-400/60 text-slate-900" }
-      : { label: "OK", tone: "bg-emerald-500/30 text-emerald-700" };
-  return (
-    <li className={`rounded-xl border px-4 py-3 ${tone}`}>
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-        <div className="flex items-center gap-2 text-[#333d4b]">
-          <span className="font-semibold">청크 {chunk.chunk_index + 1}</span>
-          <span className="text-[#8b95a1]">
-            {fmtTime(chunk.start_sec)} ~ {fmtTime(chunk.end_sec)}
-          </span>
-          <span className="text-[#8b95a1]">· {chunk.latency_ms} ms</span>
-        </div>
-        <span
-          className={`rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide ${badge.tone}`}
-        >
-          {badge.label}
-        </span>
-      </div>
-      {chunk.turns && chunk.turns.length > 0 ? (
-        <div className="mt-2">
-          <Conversation turns={chunk.turns} />
-        </div>
-      ) : chunk.transcript ? (
-        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#191f28]">
-          {chunk.transcript}
-        </p>
-      ) : (
-        <p className="mt-2 text-sm italic text-[#8b95a1]">(빈 전사)</p>
-      )}
-      {chunk.matches.length > 0 && (
-        <ul className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
-          {chunk.matches.map((m, i) => (
-            <li
-              key={`${m.flag}-${i}`}
-              className="rounded-full border border-rose-400/40 bg-rose-500/10 px-2 py-0.5 text-rose-700"
-            >
-              {speakerTag(m.speaker) ? speakerTag(m.speaker) + " · " : ""}{m.label_ko} · &ldquo;{m.snippet}&rdquo;
-            </li>
-          ))}
-        </ul>
-      )}
-    </li>
-  );
-}
-
-function PhaseBadge({ phase, prefix }: { phase: Phase; prefix: string }) {
-  const badge = (() => {
-    switch (phase) {
-      case "running":
-        return { label: "처리 중", tone: "border-amber-300/40 bg-amber-400/10 text-amber-700" };
-      case "done":
-        return { label: "완료", tone: "border-emerald-300/40 bg-emerald-400/10 text-emerald-700" };
-      case "error":
-        return { label: "오류", tone: "border-rose-400/50 bg-rose-500/15 text-rose-700" };
-      default:
-        return { label: "대기", tone: "border-[#e5e8eb] bg-white text-[#4e5968]" };
-    }
-  })();
-  return (
-    <span
-      className={`rounded-full border px-2 py-0.5 uppercase ${badge.tone}`}
-    >
-      {prefix} · {badge.label}
-    </span>
-  );
-}
-
-function Conversation({
-  turns,
-  audioUrl,
-}: {
-  turns: Turn[];
-  audioUrl?: string | null;
-}) {
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const pauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [playingIndex, setPlayingIndex] = useState<number | null>(null);
-
-  const playSegment = (index: number, turn: Turn) => {
-    if (!audioRef.current || turn.start_sec == null || turn.end_sec == null)
-      return;
-    if (pauseTimerRef.current) {
-      clearTimeout(pauseTimerRef.current);
-      pauseTimerRef.current = null;
-    }
-    audioRef.current.currentTime = turn.start_sec;
-    void audioRef.current.play().catch(() => {});
-    setPlayingIndex(index);
-    const durationMs = Math.max(200, (turn.end_sec - turn.start_sec) * 1000);
-    pauseTimerRef.current = setTimeout(() => {
-      audioRef.current?.pause();
-      setPlayingIndex(null);
-    }, durationMs);
-  };
-
-  const stopPlayback = () => {
-    if (pauseTimerRef.current) {
-      clearTimeout(pauseTimerRef.current);
-      pauseTimerRef.current = null;
-    }
-    audioRef.current?.pause();
-    setPlayingIndex(null);
-  };
-
-  return (
-    <div className="space-y-2">
-      {audioUrl && (
-        <audio
-          ref={audioRef}
-          src={audioUrl}
-          preload="metadata"
-          onEnded={stopPlayback}
-        />
-      )}
-      {turns.map((t, i) => {
-        const isOther = t.speaker === "상대방";
-        const canPlay = !!audioUrl && t.start_sec != null && t.end_sec != null;
-        const isPlaying = playingIndex === i;
-        return (
-          <div
-            key={i}
-            className={`flex ${isOther ? "justify-start" : "justify-end"}`}
-          >
-            <div
-              onClick={
-                canPlay
-                  ? () => (isPlaying ? stopPlayback() : playSegment(i, t))
-                  : undefined
-              }
-              title={canPlay ? "클릭하면 이 발화 음성 재생" : undefined}
-              className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-6 ${
-                canPlay ? "cursor-pointer" : ""
-              } ${
-                isOther
-                  ? "rounded-tl-sm bg-rose-500/15 text-[#191f28]"
-                  : "rounded-tr-sm bg-sky-500/15 text-[#191f28]"
-              }`}
-            >
-              <div
-                className={`mb-0.5 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider ${
-                  isOther ? "text-rose-600/70" : "text-sky-600/70"
-                }`}
-              >
-                <span>{t.speaker}</span>
-                {canPlay && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (isPlaying) stopPlayback();
-                      else playSegment(i, t);
-                    }}
-                    className={`rounded-full px-1.5 py-0.5 text-[10px] normal-case tracking-normal transition ${
-                      isPlaying
-                        ? isOther
-                          ? "bg-rose-400/40 text-rose-50"
-                          : "bg-sky-400/40 text-sky-50"
-                        : isOther
-                        ? "bg-rose-400/20 text-rose-700 hover:bg-rose-400/30"
-                        : "bg-sky-400/20 text-sky-700 hover:bg-sky-400/30"
-                    }`}
-                    title={`${t.start_sec?.toFixed(1)}s ~ ${t.end_sec?.toFixed(1)}s`}
-                  >
-                    {isPlaying ? "⏸️ 정지" : "▶️ 듣기"}
-                  </button>
-                )}
-                {t.start_sec != null && (
-                  <span className="opacity-60">{fmtTime(Math.floor(t.start_sec))}</span>
-                )}
-              </div>
-              <div className="whitespace-pre-wrap">{t.text}</div>
-              {t.entities && t.entities.length > 0 && (
-                <ul className="mt-1.5 flex flex-wrap gap-1 text-[10px]">
-                  {t.entities.map((e, j) => (
-                    <li
-                      key={`${e.label}-${j}`}
-                      className={`rounded-full border px-1.5 py-0.5 ${
-                        isOther
-                          ? "border-rose-300/40 bg-rose-500/10 text-rose-700"
-                          : "border-sky-300/40 bg-sky-500/10 text-sky-700"
-                      }`}
-                      title={e.label}
-                    >
-                      <span className="opacity-70">{e.label}</span>
-                      <span className="mx-1 opacity-50">:</span>
-                      {e.text}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-        );
-      })}
-    </div>
   );
 }

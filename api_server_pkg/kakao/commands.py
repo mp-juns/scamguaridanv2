@@ -46,7 +46,54 @@ def _is_result_request(text: str) -> bool:
 _SYSTEM_COMMAND_EXACT = {
     "사용법", "도움말", "help", "?",
     "분석 초기화", "초기화", "리셋", "reset",
+    "apk 분석", "apk분석", "앱 분석", "앱분석",
+    "보이스 분석", "보이스분석", "음성 분석", "음성분석",
+    "콘텐츠 분석", "콘텐츠분석", "컨텐츠 분석", "컨텐츠분석",
 }
+
+_MODE_GUIDE_COMMANDS: dict[str, tuple[str, ...]] = {
+    "apk": (
+        "apk분석", "apk 분석", "앱분석", "앱 분석",
+    ),
+    "voice": (
+        "보이스분석", "보이스 분석", "음성분석", "음성 분석",
+    ),
+    "content": (
+        "콘텐츠분석", "콘텐츠 분석", "컨텐츠분석", "컨텐츠 분석",
+    ),
+}
+
+_LIVE_SESSION_COMMANDS: tuple[str, ...] = (
+    "라이브보이스피싱",
+    "라이브 보이스피싱",
+    "실시간보이스피싱",
+    "실시간 보이스피싱",
+    "라이브피싱",
+    "라이브 피싱",
+)
+
+
+def _mode_guide_command(text: str) -> str | None:
+    """모드별 빠른 가이드 명령어인지 판별.
+
+    Returns:
+        "apk" | "voice" | "content" | None
+    """
+    s = (text or "").strip().lower().replace(" ", "")
+    if not s:
+        return None
+    for mode, variants in _MODE_GUIDE_COMMANDS.items():
+        if s in {v.lower().replace(" ", "") for v in variants}:
+            return mode
+    return None
+
+
+def _live_session_command(text: str) -> bool:
+    """라이브 보이스피싱 전용 세션 진입 명령인지 판별."""
+    s = (text or "").strip().lower().replace(" ", "")
+    if not s:
+        return False
+    return s in {v.lower().replace(" ", "") for v in _LIVE_SESSION_COMMANDS}
 
 
 def _is_system_command(text: str) -> bool:
@@ -57,6 +104,10 @@ def _is_system_command(text: str) -> bool:
     if s in _SYSTEM_COMMAND_EXACT:
         return True
     if s in _KAKAO_SKIP_PHRASES:
+        return True
+    if _mode_guide_command(s) is not None:
+        return True
+    if _live_session_command(s):
         return True
     return _is_result_request(s)
 
@@ -96,7 +147,7 @@ def _classify_error(exc: Exception) -> kakao_formatter.ErrorCode:
         return EC.STT_FAIL
     if "timeout" in msg or "timed out" in msg:
         return EC.TIMEOUT
-    if "memory" in msg or "ollama" in msg:
+    if "memory" in msg or "llm" in msg or "anthropic" in msg:
         return EC.LLM_UNAVAILABLE
     if "empty" in msg or "비어" in msg:
         return EC.EMPTY_INPUT

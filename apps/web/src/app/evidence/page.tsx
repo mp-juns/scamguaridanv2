@@ -1,8 +1,6 @@
-import { promises as fs } from "fs";
-import path from "path";
 import { marked } from "marked";
 
-export const dynamic = "force-static";
+export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "EVIDENCE — ScamGuardian 검출 신호 학술·법적 근거",
@@ -11,18 +9,15 @@ export const metadata = {
 };
 
 async function loadMarkdown(): Promise<string> {
-  // 프로젝트 루트의 .scamguardian/EVIDENCE.md 가 정본
-  // Next.js 서버 컴포넌트에서 process.cwd() 는 apps/web/ — 루트로 ../../
-  const candidates = [
-    path.join(process.cwd(), "..", "..", ".scamguardian", "EVIDENCE.md"),
-    path.join(process.cwd(), ".scamguardian", "EVIDENCE.md"),
-  ];
-  for (const p of candidates) {
-    try {
-      return await fs.readFile(p, "utf-8");
-    } catch {
-      // try next
+  const apiBaseUrl = process.env.SCAMGUARDIAN_API_URL ?? "http://127.0.0.1:8000";
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/evidence`, { cache: "no-store" });
+    const data = (await response.json()) as { markdown?: string };
+    if (response.ok && typeof data.markdown === "string") {
+      return data.markdown;
     }
+  } catch {
+    // fall through to local fallback message
   }
   return "# EVIDENCE.md\n\n파일을 찾을 수 없습니다 (`.scamguardian/EVIDENCE.md`).";
 }

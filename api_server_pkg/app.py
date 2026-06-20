@@ -23,14 +23,16 @@ from . import (
     apk_dummy,
     apk_dynamic,
     apk_public,
+    demo_snapshot,
     docs_ui,
     health,
     kakao,
+    live_pcm_http,
     live_stream,
+    live_ws,
     result_token,
     stream_analyze,
     transcribe,
-    v4_stream,
 )
 
 OPENAPI_TAGS = [
@@ -75,14 +77,6 @@ OPENAPI_TAGS = [
         "description": "어드민 사용자 관리 — 마스터 + 승인요청(pending/approved/denied).",
     },
     {
-        "name": "v4 (draft)",
-        "description": (
-            "**Live Call Guard — design preview only, not implemented.** "
-            "실시간 통화 중 사기 탐지 endpoint 설계 미리보기. 모든 호출 `501 Not Implemented`. "
-            "배경: CLAUDE.md `v4 계획` 섹션."
-        ),
-    },
-    {
         "name": "Health",
         "description": "Liveness probe.",
     },
@@ -102,7 +96,7 @@ def create_app() -> FastAPI:
             "- **Public 4 endpoint** (`Public` 태그) — 외부 통합 시작점, `DetectionReport` 응답\n"
             "- **Webhook** (`Webhook` 태그) — 카카오 오픈빌더\n"
             "- **Admin** (3 태그) — 라벨링 / platform / training\n"
-            "- **v4 draft** — Live Call Guard 설계 preview (구현 X)\n\n"
+            "- **Live Call Guard** — `/live`, `/api/live-analyze` 실시간 청크 검출\n\n"
             "통합 가이드: [`docs/INTEGRATION_GUIDE.md`](https://github.com/example/scamguardian-v2/blob/main/docs/INTEGRATION_GUIDE.md)"
         ),
         openapi_tags=OPENAPI_TAGS,
@@ -138,6 +132,9 @@ def create_app() -> FastAPI:
     app.include_router(transcribe.router)
     app.include_router(stream_analyze.router)
     app.include_router(live_stream.router)
+    app.include_router(live_pcm_http.router)
+    app.include_router(live_ws.router)
+    app.include_router(demo_snapshot.router)
     app.include_router(admin_runs.router)
     app.include_router(admin_platform.router)
     app.include_router(admin_training.router)
@@ -147,7 +144,6 @@ def create_app() -> FastAPI:
     app.include_router(apk_public.router)
     app.include_router(apk_dummy.router)
     app.include_router(androzoo_eval.router)
-    app.include_router(v4_stream.router)
 
     # 커스텀 /docs (Swagger UI) + /redoc — Pretendard 폰트 + 가독성 폴리시.
     docs_ui.install_custom_docs(app)

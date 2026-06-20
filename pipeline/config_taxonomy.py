@@ -29,6 +29,41 @@ DEFAULT_SCAM_TYPES: list[str] = [
     "중고거래 사기",
 ]
 
+# ──────────────────────────────────────────────
+# scam_type(12종) → scam_category(6종) 결정적 매핑 — *표시 전용* 레이어
+#
+# 내부 라우팅(엔티티 라벨셋·Serper 쿼리·LLM 프롬프트)은 전부 scam_type 기준 유지.
+# scam_category 는 결과 화면의 대표 유형 표시에만 쓴다. 5-class 학습 모델은
+# OOD 오분류가 확인되어 미적용 — 이 결정적 매핑이 비용 0·오분류 0 대안 (2026-06-13).
+# scripts/make_category_dataset.py 의 학습용 매핑과 단일 출처.
+# ──────────────────────────────────────────────
+SCAM_CATEGORY_FALLBACK = "기타·특수형"
+
+SCAM_CATEGORY_MAP: dict[str, str] = {
+    "스미싱": "링크·문자 유도형",
+    "기관 사칭": "기관·금융 사칭형",
+    "대출 사기": "기관·금융 사칭형",
+    "투자 사기": "투자·가상자산형",
+    "코인 사기": "투자·가상자산형",
+    "로맨스 스캠": "관계·지인 사칭형",
+    "메신저 피싱": "관계·지인 사칭형",
+    "중고거래 사기": "거래·취업형",
+    "취업·알바 사기": "거래·취업형",
+    "부동산 사기": SCAM_CATEGORY_FALLBACK,
+    "건강식품 사기": SCAM_CATEGORY_FALLBACK,
+    "납치·협박형": SCAM_CATEGORY_FALLBACK,
+}
+
+
+def scam_category_for(scam_type: str) -> str:
+    """scam_type → 대표 카테고리. 빈 scam_type(게이트 normal/news_edu 로 분류 skip)
+    은 빈 문자열 — 카테고리 미표시. 런타임 추가 커스텀 유형은 fallback."""
+    st = (scam_type or "").strip()
+    if not st:
+        return ""
+    return SCAM_CATEGORY_MAP.get(st, SCAM_CATEGORY_FALLBACK)
+
+
 # NLI 모델용 설명적 레이블 → 짧은 레이블 매핑
 # mDeBERTa가 의미를 더 잘 구분하도록 구체적 설명 사용
 DEFAULT_SCAM_TYPE_DESCRIPTIONS: dict[str, str] = {
@@ -43,7 +78,7 @@ DEFAULT_SCAM_TYPE_DESCRIPTIONS: dict[str, str] = {
     "재택알바나 채용을 빙자하여 교육비나 선입금을 요구": "취업·알바 사기",
     "가족을 납치했다고 협박하며 즉각적인 송금을 요구": "납치·협박형",
     "문자 링크를 통해 악성앱 설치를 유도하거나 개인정보를 탈취": "스미싱",
-    "중고 물품 거래를 빙자하여 물건을 보내지 않거나 가짜 송금 확인증을 사용": "중고거래 사기",
+    "중고나라·당근마켓·번개장터 등 P2P 개인 간 중고 플랫폼에서 판매자가 물건을 보내지 않거나 직거래·선입금·가짜 안전결제로 유도하여 돈을 가로채는": "중고거래 사기",
 }
 
 # ──────────────────────────────────────────────

@@ -11,6 +11,19 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from db import sqlite_repository
+from db.platform_facade import (
+    aggregate_costs,
+    create_api_key,
+    get_api_key_by_hash,
+    get_monthly_usd_for_key,
+    insert_cost_event,
+    insert_request_log,
+    list_api_keys,
+    request_log_recent,
+    request_log_summary,
+    revoke_api_key,
+    touch_api_key_usage,
+)
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _VECTOR_DIMENSION = 384
@@ -765,72 +778,3 @@ def search_similar_annotated_runs(
             }
         )
     return results
-
-
-
-# ──────────────────────────────────
-# v3 platform facade — 현재 SQLite 만 지원 (Postgres 미지원 시 NotImplementedError)
-# ──────────────────────────────────
-def _require_sqlite(name: str) -> None:
-    if get_db_backend() != "sqlite":
-        raise NotImplementedError(
-            f"{name}() 는 현재 SQLite 백엔드에서만 지원됩니다. "
-            "Postgres 사용 시 별도 마이그레이션 필요."
-        )
-
-
-def create_api_key(**kwargs):
-    _require_sqlite("create_api_key")
-    return sqlite_repository.create_api_key(**kwargs)
-
-
-def get_api_key_by_hash(key_hash: str):
-    _require_sqlite("get_api_key_by_hash")
-    return sqlite_repository.get_api_key_by_hash(key_hash)
-
-
-def list_api_keys(limit: int = 100):
-    _require_sqlite("list_api_keys")
-    return sqlite_repository.list_api_keys(limit)
-
-
-def revoke_api_key(key_id: str) -> bool:
-    _require_sqlite("revoke_api_key")
-    return sqlite_repository.revoke_api_key(key_id)
-
-
-def touch_api_key_usage(key_id: str):
-    _require_sqlite("touch_api_key_usage")
-    return sqlite_repository.touch_api_key_usage(key_id)
-
-
-def get_monthly_usd_for_key(key_id: str) -> float:
-    _require_sqlite("get_monthly_usd_for_key")
-    return sqlite_repository.get_monthly_usd_for_key(key_id)
-
-
-def insert_cost_event(**kwargs) -> None:
-    if get_db_backend() != "sqlite":
-        return  # 비용 추적은 사일런트 (Postgres 환경 운영용)
-    sqlite_repository.insert_cost_event(**kwargs)
-
-
-def aggregate_costs(*, days: int = 30):
-    _require_sqlite("aggregate_costs")
-    return sqlite_repository.aggregate_costs(days=days)
-
-
-def insert_request_log(**kwargs) -> None:
-    if get_db_backend() != "sqlite":
-        return
-    sqlite_repository.insert_request_log(**kwargs)
-
-
-def request_log_recent(limit: int = 100):
-    _require_sqlite("request_log_recent")
-    return sqlite_repository.request_log_recent(limit)
-
-
-def request_log_summary(*, hours: int = 24):
-    _require_sqlite("request_log_summary")
-    return sqlite_repository.request_log_summary(hours=hours)

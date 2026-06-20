@@ -19,6 +19,8 @@ class AnalyzeRequest(BaseModel):
     skip_verification: bool = True
     use_llm: bool = True
     use_rag: bool = False
+    # 심층 분석 — 게이트 라우팅 무시, 풀 파이프라인(분류·추출·LLM·Serper) 무조건 실행
+    deep: bool = False
 
 
 class HumanAnnotationRequest(BaseModel):

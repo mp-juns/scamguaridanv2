@@ -682,16 +682,16 @@ export default function TrainingClient() {
         )}
       </section>
 
-      {/* 게이트(content_label 3-class) 학습 — 평가 전용 */}
+      {/* 게이트(content_label 3-class) 학습 */}
       <section className="rounded-2xl border border-amber-300/25 bg-amber-500/5 p-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="text-xs uppercase tracking-widest text-amber-200">Gate · content_label 3-class</div>
-            <h2 className="mt-1 text-lg font-semibold text-white">게이트 학습 (평가 전용)</h2>
+            <h2 className="mt-1 text-lg font-semibold text-white">게이트 학습</h2>
             <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-300">
               파이프라인 맨 앞단에서 메시지를 <b>정상 / 사기 시도 / 사기 예방·뉴스</b> 3-class 로 거르는 게이트입니다.
-              hard negative(정상 안내문) 추가가 오탐(정상→사기)을 얼마나 줄이는지 측정하는 용도라, 학습은 하되
-              파이프라인에는 <b>적용하지 않습니다</b>(평가 전용).
+              학습 완료 후 <b>🧠 모델 관리(/admin/models)</b>에서 파이프라인에 적용하면 Haiku 호출 대신
+              로컬 모델로 라우팅합니다.
             </p>
           </div>
         </div>
@@ -838,12 +838,7 @@ export default function TrainingClient() {
                       취소
                     </button>
                   )}
-                  {detail.session.status === "completed" && detail.session.kind === "gate" && (
-                    <span className="rounded-xl border border-amber-400/30 bg-amber-500/15 px-4 py-2 text-sm font-semibold text-amber-200">
-                      게이트 · 평가 전용 (적용 불가)
-                    </span>
-                  )}
-                  {detail.session.status === "completed" && detail.session.kind !== "gate" && (
+                  {detail.session.status === "completed" && (
                     <button
                       onClick={() => void activateSession(detail.session.session_id)}
                       className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-200"

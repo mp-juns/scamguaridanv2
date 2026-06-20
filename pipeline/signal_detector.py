@@ -27,6 +27,7 @@ from pipeline.config import (
     FLAG_LABELS_KO,
     FLAG_RATIONALE,
     LLM_FLAG_DETECTION_CONFIDENCE_THRESHOLD,
+    scam_category_for,
 )
 from pipeline.extractor import Entity
 from pipeline.flag_groups import group_detected_flags
@@ -83,6 +84,10 @@ class DetectionReport:
     scam_type_reason: str = ""
     scam_type_classifier: str = ""
     scam_type_classifier_confidence: float = 0.0
+    # 대표 카테고리 — scam_type 의 SCAM_CATEGORY_MAP 결정적 매핑 (표시 전용).
+    # 내부 라우팅은 계속 scam_type 기준. scam_type 비면(게이트 normal 등) 빈 값.
+    scam_category: str = ""
+    scam_category_source: str = ""     # "mapping" | "" — 모델 기반 도입 시 구분용
 
     # 추출 결과
     entities: list[dict[str, Any]] = field(default_factory=list)
@@ -116,6 +121,8 @@ class DetectionReport:
             "scam_type_reason": self.scam_type_reason,
             "scam_type_classifier": self.scam_type_classifier,
             "scam_type_classifier_confidence": round(self.scam_type_classifier_confidence, 4),
+            "scam_category": self.scam_category,
+            "scam_category_source": self.scam_category_source,
             "entities": self.entities,
             "detected_signals": [s.to_dict() for s in self.detected_signals],
             "summary": self.summary,
@@ -363,10 +370,13 @@ def detect(
             ))
 
     summary = (
-        f"위험 신호 {len(detected)}개 검출되었습니다. 자세한 근거는 detected_signals 참고."
+        f"위험 신호 {len(detected)}개 검출되었습니다. 자세한 근거는 탐지된 위험 신호 목록에서 확인할 수 있습니다."
         if detected
-        else "위험 신호가 검출되지 않았습니다. 자세한 분석 컨텍스트는 본문 참고."
+        else "위험 신호가 검출되지 않았습니다."
     )
+
+    # 대표 카테고리 — 결정적 매핑. scam_type 비면(게이트 normal/news_edu 로 분류 skip) 빈 값.
+    scam_category = scam_category_for(classification.scam_type)
 
     return DetectionReport(
         source=source,
@@ -374,6 +384,8 @@ def detect(
         scam_type=classification.scam_type,
         classification_confidence=classification.confidence,
         is_uncertain=classification.is_uncertain,
+        scam_category=scam_category,
+        scam_category_source="mapping" if scam_category else "",
         scam_type_source=scam_type_source,
         scam_type_reason=scam_type_reason,
         scam_type_classifier=(classifier_original.scam_type if classifier_original else classification.scam_type),

@@ -15,7 +15,7 @@ Next.js 16 App Router 기반 웹 어드민 + 결과·methodology·training UI.
 | `/admin/training` | **v3** — Fine-tuning 세션 (시작·진행률·활성화) |
 | `/admin/training/about` | **v3** — 모델 역할 + 파이프라인 위치 + 학습 효과 설명 |
 | `/admin/platform` | **v3.x** — API key 발급·revoke + observability(p50/p95) + 비용 대시보드 |
-| `/methodology` | 점수 산정 방식 — 합산식·등급·플래그·학술 출처 |
+| `/methodology` | 검출 방법론 — 신호 카탈로그·근거·임계값 |
 | `/result/[token]` | 카카오 카드 "자세한 결과 보기" 페이지 (1시간 토큰) |
 
 ### Local Development
@@ -59,7 +59,7 @@ SCAMGUARDIAN_API_URL=http://127.0.0.1:8000
 
 - **`/admin/training`** — recharts 로 학습 메트릭(loss, eval F1, accuracy) 실시간 그래프. 진행 중 세션은 5초 폴링.
 - **`/admin/training/about`** — 분류기·GLiNER 가 파이프라인 어디에 쓰이는지 다이어그램 + before/after 표 + 권장 학습 분량.
-- **결과 페이지 안전성 경고** (`/result/[token]`) — `safety_check.threat_level` 이 malicious/suspicious 면 빨간 카드가 위험도 배지보다 위에 prominent.
+- **결과 페이지 안전성 경고** (`/result/[token]`) — `safety_check.threat_level` 이 malicious/suspicious 면 검출 요약보다 위에 prominent.
 - **AdminRunEditor 미디어 뷰어** — 영상(`<video>`), 오디오(`<audio>`), 이미지(`<img>`), PDF(`<iframe>`) 모두 지원.
 
 ### Deploy

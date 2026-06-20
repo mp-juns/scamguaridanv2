@@ -37,6 +37,7 @@ _VIDEO_HOST_RE = re.compile(
 )
 _IMAGE_URL_RE = re.compile(r"\.(jpg|jpeg|png|webp|gif|bmp)(\?|$)", re.IGNORECASE)
 _PDF_URL_RE = re.compile(r"\.pdf(\?|$)", re.IGNORECASE)
+_AUDIO_URL_RE = re.compile(r"\.(mp3|wav|m4a|aac|ogg|flac|opus)(\?|$)", re.IGNORECASE)
 # 사기범이 링크로 자주 뿌리는 악성 실행파일 확장자 — 다운로드 후 VT 파일 스캔 강제 라우팅
 _EXECUTABLE_URL_RE = re.compile(
     r"\.(apk|exe|dmg|msi|jar|bat|cmd|scr|app|ipa|deb|rpm)(\?|$)", re.IGNORECASE
@@ -58,6 +59,8 @@ def _classify_url_input(url: str) -> kakao_formatter.InputType:
         return InputType.IMAGE
     if _PDF_URL_RE.search(url):
         return InputType.PDF
+    if _AUDIO_URL_RE.search(url):
+        return InputType.AUDIO
     # APK/EXE/DMG 등 실행 파일 — VT 파일 스캔이 필수. 일반 웹페이지(URL) 스캔이 아니라 다운로드 후 검사로 강제.
     if _EXECUTABLE_URL_RE.search(url):
         return InputType.FILE
@@ -78,6 +81,7 @@ def _kakao_detect_input(
     for key in (
         "image", "picture", "photo",  # 이미지
         "pdf", "document",            # PDF/문서
+        "audio", "voice", "sound",    # 음성
         "video", "video_url",         # 영상
         "file", "attachment",         # 일반 파일 (확장자 보고 재분류)
     ):
@@ -95,11 +99,13 @@ def _kakao_detect_input(
             return url, InputType.IMAGE
         if key in ("pdf", "document"):
             return url, InputType.PDF
+        if key in ("audio", "voice", "sound"):
+            return url, InputType.AUDIO
         if key in ("video", "video_url"):
             return url, InputType.VIDEO
         # file/attachment — URL 확장자 보고 분기
         kind = _classify_url_input(url)
-        if kind in (InputType.IMAGE, InputType.PDF):
+        if kind in (InputType.IMAGE, InputType.PDF, InputType.AUDIO):
             return url, kind
         return url, InputType.FILE
 
@@ -115,7 +121,7 @@ def _kakao_detect_input(
         if not url:
             continue
         kind = _classify_url_input(url)
-        if kind in (InputType.IMAGE, InputType.PDF):
+        if kind in (InputType.IMAGE, InputType.PDF, InputType.AUDIO):
             return url, kind
         if _VIDEO_URL_RE.search(url):
             return url, InputType.VIDEO

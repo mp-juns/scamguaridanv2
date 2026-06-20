@@ -9,7 +9,7 @@ YouTube URL, 로컬 파일, 또는 텍스트를 분석한다.
     python run_analysis.py --text "일론 머스크가 화성 이민 프로젝트에..."
     python run_analysis.py --text "..." --skip-verify    # 검증 단계 생략
     python run_analysis.py --text "..." --json           # JSON 출력
-    python run_analysis.py --text "..." --use-llm        # Ollama 보조 판정 추가
+    python run_analysis.py --text "..." --use-llm        # LLM 보조 검출 추가
     python run_analysis.py --text "..." --use-llm --use-rag  # 사람 라벨 사례도 참고
 """
 
@@ -62,7 +62,7 @@ def main():
     parser.add_argument(
         "--use-llm",
         action="store_true",
-        help="Ollama 기반 LLM 보조 판정을 추가 수행",
+        help="LLM 보조 검출을 추가 수행",
     )
     parser.add_argument(
         "--use-rag",

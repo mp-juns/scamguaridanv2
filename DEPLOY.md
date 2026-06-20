@@ -26,6 +26,14 @@ SCAMGUARDIAN_CORS_ORIGINS=https://your-vercel-app.vercel.app
 - Start command: `uvicorn api_server:app --host 0.0.0.0 --port $PORT`
 - Health check path: `/health`
 
+### Live v4 WebSocket (optional)
+
+Browser connects **directly** to FastAPI WebSocket (Next.js cannot proxy WS).
+
+- Backend: `LIVE_WS_ENABLED=1`, `OPENAI_API_KEY`, `LIVE_CHUNK_SEC=3` (정확도 우선이면 `5`)
+- Frontend (Vercel): `NEXT_PUBLIC_LIVE_WS_URL=wss://your-api.onrender.com/ws/live-transcribe`
+- Local dev: `SCAMGUARDIAN_INTERNAL_API_KEY` — Next `/api/live-ws-config` embeds key for browser
+
 ## 2. Deploy Web to Vercel
 
 Create a Vercel project from this repository and set:

@@ -14,19 +14,15 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT_DIR/.scamguardian/logs"
-OLLAMA_MODELS_DIR="$ROOT_DIR/.scamguardian/ollama_models"
-mkdir -p "$LOG_DIR" "$OLLAMA_MODELS_DIR"
+mkdir -p "$LOG_DIR"
 
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-3100}"
-OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 
 CONDA_ENV="${CONDA_ENV:-capstone}"
 ENABLE_FUNNEL="${ENABLE_FUNNEL:-true}"
 ENABLE_NGROK="${ENABLE_NGROK:-true}"
-# Ollama: CLAUDE.md 명시 — Claude API 로 교체되어 더 이상 필수 아님.
-# 켜고 싶으면 ENABLE_OLLAMA=true 로 호출.
-ENABLE_OLLAMA="${ENABLE_OLLAMA:-false}"
+ENABLE_KAKAO_WATCHDOG="${ENABLE_KAKAO_WATCHDOG:-true}"
 NGROK_BIN="${NGROK_BIN:-$HOME/bin/ngrok}"
 NGROK_DOMAIN="${NGROK_DOMAIN:-}"  # 예약 도메인 있으면 지정, 없으면 매번 랜덤
 NGROK_API="http://127.0.0.1:4040/api/tunnels"
@@ -61,13 +57,13 @@ kill_matches "uvicorn api_server:app"
 kill_matches "next dev"
 kill_matches "next-server"
 kill_matches "npm run dev"
-kill_matches "ollama serve"
 kill_matches "ngrok http"
 kill_matches "monitor_resources.sh"
+kill_matches "funnel_watchdog.sh"
+kill_matches "kakao_watchdog.sh"
 kill_matches "apk_dynamic_wsl_bridge"
 kill_port "$BACKEND_PORT"
 kill_port "$FRONTEND_PORT"
-kill_port "$OLLAMA_PORT"
 kill_port "$APK_BRIDGE_PORT"
 kill_port 4040
 
@@ -84,14 +80,6 @@ sleep 0.5
 echo "[start] starting resource monitor (5s sampling)..."
 nohup "$ROOT_DIR/scripts/monitor_resources.sh" >>"$LOG_DIR/start_stack.console.log" 2>&1 &
 sleep 0.5
-
-if [[ "$ENABLE_OLLAMA" == "true" ]]; then
-  echo "[start] starting Ollama..."
-  OLLAMA_MODELS="$OLLAMA_MODELS_DIR" nohup ollama serve >"$LOG_DIR/ollama.log" 2>&1 &
-  sleep 0.5
-else
-  echo "[start] skipping Ollama (ENABLE_OLLAMA=false — Claude API 로 교체됨)"
-fi
 
 echo "[start] starting backend (uvicorn :$BACKEND_PORT) in conda env '$CONDA_ENV'..."
 cd "$ROOT_DIR"
@@ -157,6 +145,16 @@ if [[ "$ENABLE_FUNNEL" == "true" ]] && command -v tailscale >/dev/null 2>&1; the
   echo "[start] enabling tailscale funnel (frontend:$FRONTEND_PORT)..."
   tailscale funnel --bg "http://127.0.0.1:${FRONTEND_PORT}" || true
   tailscale funnel status 2>/dev/null || true
+  # DERP flapping 으로 funnel ingress 세션이 stale 되는 문제 자동 복구 (2026-06-12)
+  echo "[start] starting funnel watchdog (public-path probe, ${FUNNEL_WATCH_INTERVAL:-120}s)..."
+  FRONTEND_PORT="$FRONTEND_PORT" nohup "$ROOT_DIR/scripts/funnel_watchdog.sh" \
+    >>"$LOG_DIR/funnel_watchdog.log" 2>&1 &
+fi
+
+if [[ "$ENABLE_KAKAO_WATCHDOG" == "true" ]]; then
+  echo "[start] starting kakao watchdog (webhook probe + self-heal, ${KAKAO_WATCH_INTERVAL:-20}s)..."
+  BACKEND_PORT="$BACKEND_PORT" FRONTEND_PORT="$FRONTEND_PORT" CONDA_ENV="$CONDA_ENV" \
+    nohup "$ROOT_DIR/scripts/kakao_watchdog.sh" >>"$LOG_DIR/kakao_watchdog.log" 2>&1 &
 fi
 # 카카오 오픈빌더는 .ts.net 도메인을 거부하므로 ngrok 으로 보조 터널 제공
 NGROK_PUBLIC_URL=""
@@ -218,9 +216,8 @@ fi
 
 echo "[start] done."
 echo "[start] tail logs:"
-echo "  tail -f \"$LOG_DIR/ollama.log\""
 echo "  tail -f \"$LOG_DIR/backend.log\""
 echo "  tail -f \"$LOG_DIR/frontend.log\""
 echo "  tail -f \"$LOG_DIR/ngrok.log\""
 echo "  tail -f \"$LOG_DIR/apk-dynamic-bridge.log\""
-
+echo "  tail -f \"$LOG_DIR/kakao_watchdog.log\""

@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "ScamGuardian",
-  description: "텍스트와 유튜브 URL을 분석해 스캠 위험도를 보여주는 웹 대시보드",
+  description: "텍스트와 유튜브 URL에서 스캠 위험 신호를 보여주는 웹 대시보드",
 };
 
 export default function RootLayout({

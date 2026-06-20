@@ -18,7 +18,7 @@ export default function TrainingComparePage() {
           </div>
           <div className="flex flex-wrap gap-2">
             <Link
-              href="/admin/training/models"
+              href="/admin/models"
               className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20"
             >
               모델 관리 →

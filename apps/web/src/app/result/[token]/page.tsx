@@ -261,13 +261,13 @@ export default async function ResultPage({ params }: PageProps) {
           const icon = isMal ? "🚨" : "⚠️";
           const targetLabel = sc.target_kind === "url" ? "URL" : "파일";
           const head = isMal
-            ? `${icon} 위험! 이 ${targetLabel}은 악성으로 확인됐어요`
+            ? `${icon} 이 ${targetLabel}에서 악성 신호가 검출됐어요`
             : `${icon} 주의: 이 ${targetLabel}에 일부 의심 신호가 있어요`;
           return (
             <section className={`rounded-2xl border p-6 shadow-lg ${styles}`}>
               <div className="text-lg font-bold">{head}</div>
               <p className="mt-2 text-sm opacity-90">
-                VirusTotal {sc.detections ?? 0}/{sc.total_engines ?? 0} 엔진이 위험 판정.
+                VirusTotal {sc.detections ?? 0}/{sc.total_engines ?? 0} 엔진이 악성 또는 의심 신호를 검출했습니다.
                 {sc.target_kind === "url"
                   ? " 클릭하지 마시고 차단·신고를 권장합니다."
                   : " 실행하지 마시고 즉시 삭제하세요."}
@@ -338,7 +338,7 @@ export default async function ResultPage({ params }: PageProps) {
               </span>
             </div>
             <p className="mb-4 text-xs text-fuchsia-200/70">
-              아래 정보는 분석가(Claude)가 사기 여부 판단에 직접 참고했어요.
+              아래 정보는 분석가(Claude)가 검출 맥락을 보강할 때 참고했어요.
             </p>
             <ol className="space-y-3">
               {(user_context?.qa_pairs ?? []).map((qa, idx) => (

@@ -15,7 +15,5 @@ echo "[logs] stop: Ctrl+C"
 echo
 
 tail -n 200 -F \
-  "$LOG_DIR/ollama.log" \
   "$LOG_DIR/backend.log" \
   "$LOG_DIR/frontend.log"
-

@@ -1,0 +1,70 @@
+{
+  "checkpoint": "/home/mpwsl2/a-eye/idea_2/scamguardian-v2/.scamguardian/training_sessions/content_label_gate_20260610/output/checkpoint-5610",
+  "data": "/home/mpwsl2/a-eye/idea_2/scamguardian-v2/data/generated/user_samples_augmented.jsonl",
+  "split": {
+    "seed": 17,
+    "val_ratio": 0.1,
+    "method": "group_split"
+  },
+  "labels": [
+    "normal",
+    "scam_attempt",
+    "scam_news_edu"
+  ],
+  "n": 437,
+  "correct": 428,
+  "wrong": 9,
+  "accuracy": 0.979405,
+  "macro_f1": 0.960006,
+  "weighted_f1": 0.979489,
+  "macro_precision": 0.951741,
+  "macro_recall": 0.970901,
+  "per_label": {
+    "normal": {
+      "precision": 0.972603,
+      "recall": 0.922078,
+      "f1": 0.946667,
+      "tp": 71,
+      "fp": 2,
+      "fn": 6,
+      "support": 77
+    },
+    "scam_attempt": {
+      "precision": 0.99373,
+      "recall": 0.990625,
+      "f1": 0.992175,
+      "tp": 317,
+      "fp": 2,
+      "fn": 3,
+      "support": 320
+    },
+    "scam_news_edu": {
+      "precision": 0.888889,
+      "recall": 1.0,
+      "f1": 0.941176,
+      "tp": 40,
+      "fp": 5,
+      "fn": 0,
+      "support": 40
+    }
+  },
+  "confusion_matrix": {
+    "normal": {
+      "normal": 71,
+      "scam_attempt": 2,
+      "scam_news_edu": 4
+    },
+    "scam_attempt": {
+      "normal": 2,
+      "scam_attempt": 317,
+      "scam_news_edu": 1
+    },
+    "scam_news_edu": {
+      "normal": 0,
+      "scam_attempt": 0,
+      "scam_news_edu": 40
+    }
+  },
+  "normal_false_positive_rate": 0.077922,
+  "news_edu_misclassified_as_scam_attempt": 0
+}

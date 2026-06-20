@@ -39,6 +39,8 @@ from pipeline.kakao_dialog import (  # noqa: F401
     format_reset,
     format_welcome,
     format_help,
+    format_mode_guide,
+    format_live_session_link,
     format_question,
     format_context_done_waiting,
     format_result_ready_announce,

@@ -41,6 +41,7 @@ _REQUIRE_KEY_PATTERNS = [
     re.compile(r"^/api/transcribe-upload$"),
     re.compile(r"^/api/analyze-stream$"),
     re.compile(r"^/api/live-analyze$"),
+    re.compile(r"^/api/live-pcm-chunk$"),
     re.compile(r"^/api/analyze-apk$"),
 ]
 # API key 선택 (있으면 기록만)
@@ -64,6 +65,9 @@ _SKIP_PATTERNS = [
     re.compile(r"^/docs"),
     re.compile(r"^/openapi"),
     re.compile(r"^/redoc"),
+    re.compile(r"^/ws/"),  # WebSocket — live_ws.py 에서 API key 검증
+    re.compile(r"^/api/demo/"),  # 공개 시연 스냅샷 (읽기 전용)
+    re.compile(r"^/api/live-ws-token$"),  # 브라우저 WS 세션 토큰 발급
     # 더미 APK 다운로드 — 파이프라인/kakao 가 외부 URL 처럼 토큰으로 fetch (무해 prebuilt 더미)
     re.compile(r"^/api/apk-dummy/"),
 ]

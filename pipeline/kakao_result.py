@@ -23,6 +23,7 @@ class InputType(str, Enum):
     TEXT = "text"
     URL = "url"
     VIDEO = "video"
+    AUDIO = "audio"
     FILE = "file"
     IMAGE = "image"   # v3 — 사진·캡쳐
     PDF = "pdf"       # v3 — PDF 문서
@@ -127,6 +128,12 @@ _QUICK_REPLY_RESULT_CHECK = {
     "messageText": "결과확인",
 }
 
+_QUICK_REPLY_LIVE_PHISHING = {
+    "label": "라이브 보이스피싱",
+    "action": "message",
+    "messageText": "라이브 보이스피싱",
+}
+
 # 결과확인 버튼이 우선 노출돼야 하는 phase — 사용자가 결과를 기다리는 상황
 _PHASES_WITH_RESULT_CHECK = frozenset({
     "polling",
@@ -143,8 +150,13 @@ def quick_replies(phase: str = "default") -> list[dict[str, str]]:
     그 외 phase 에서는 [사용법, 분석 초기화] 두 개만 반환한다.
     """
     if phase in _PHASES_WITH_RESULT_CHECK:
-        return [_QUICK_REPLY_RESULT_CHECK, _QUICK_REPLY_HELP, _QUICK_REPLY_RESET]
-    return [_QUICK_REPLY_HELP, _QUICK_REPLY_RESET]
+        return [
+            _QUICK_REPLY_RESULT_CHECK,
+            _QUICK_REPLY_LIVE_PHISHING,
+            _QUICK_REPLY_HELP,
+            _QUICK_REPLY_RESET,
+        ]
+    return [_QUICK_REPLY_LIVE_PHISHING, _QUICK_REPLY_HELP, _QUICK_REPLY_RESET]
 
 
 def _entity_lines(entities: list[dict[str, Any]], max_count: int = 6) -> str:
@@ -208,6 +220,7 @@ def _build_result_card(
         InputType.TEXT: "💬 텍스트 검출",
         InputType.URL: "🔗 링크 검출",
         InputType.VIDEO: "🎬 영상 검출",
+        InputType.AUDIO: "🎙️ 음성 검출",
         InputType.FILE: "📎 파일 검출",
         InputType.IMAGE: "🖼 이미지 검출",
         InputType.PDF: "📄 PDF 검출",
@@ -225,7 +238,7 @@ def _build_result_card(
     transcript = report.get("transcript_text", "")
     if transcript:
         # VIDEO/FILE 만 음성 전사. URL 은 링크 자체 또는 페이지 텍스트라 "입력 본문" 으로 통일.
-        label = "음성 전사" if input_type in (InputType.VIDEO, InputType.FILE) else "입력 본문"
+        label = "음성 전사" if input_type in (InputType.VIDEO, InputType.AUDIO, InputType.FILE) else "입력 본문"
         body_parts.append(f"[{label}]\n{_truncate(transcript, 150)}")
 
     # LLM 한 줄 요약이 있으면 우선 노출 — 사용자가 핵심 빠르게 파악 가능
@@ -307,7 +320,7 @@ def _build_safety_warning_block(report: dict[str, Any]) -> dict[str, Any] | None
     kind_label = "URL" if target_kind == "url" else "파일"
     icon = "🚨" if level == "malicious" else "⚠️"
     if level == "malicious":
-        head = f"{icon} 위험! 이 {kind_label}은 악성으로 확인됐어요."
+        head = f"{icon} 이 {kind_label}에서 악성 신호가 검출됐어요."
     else:
         head = f"{icon} 주의: 이 {kind_label}에 일부 의심 신호가 있어요."
     lines = [head]

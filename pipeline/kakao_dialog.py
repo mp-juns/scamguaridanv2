@@ -19,6 +19,7 @@ def format_analyzing(input_type: InputType = InputType.TEXT) -> dict[str, Any]:
         InputType.TEXT: "🔍 텍스트를 분석 중입니다...",
         InputType.URL: "🔗 링크 안전성 검사 중입니다...\nVirusTotal 조회 후 페이지 내용을 분석합니다.",
         InputType.VIDEO: "🎬 영상을 분석 중입니다...\n음성 인식(STT) 후 사기 여부를 판별합니다.",
+        InputType.AUDIO: "🎙️ 음성을 분석 중입니다...\n음성 인식(STT) 후 사기 여부를 판별합니다.",
         InputType.FILE: "📎 파일을 분석 중입니다...",
         InputType.IMAGE: "🖼 이미지를 분석 중입니다...\nOCR + 시각 단서를 같이 봅니다.",
         InputType.PDF: "📄 PDF를 분석 중입니다...\n페이지별로 OCR + 시각 단서를 추출합니다.",
@@ -31,6 +32,7 @@ def format_queued(input_type: InputType = InputType.URL) -> dict[str, Any]:
     msgs = {
         InputType.URL: "🔗 링크 분석을 시작했습니다.\nVirusTotal 검사 + 페이지 내용 분석.\n완료되면 '결과확인'을 입력해 주세요.",
         InputType.VIDEO: "🎬 영상 분석을 시작했습니다.\n완료되면 '결과확인'을 입력해 주세요.",
+        InputType.AUDIO: "🎙️ 음성 분석을 시작했습니다.\n완료되면 '결과확인'을 입력해 주세요.",
         InputType.FILE: "📎 파일 분석을 시작했습니다.\n완료되면 '결과확인'을 입력해 주세요.",
         InputType.TEXT: "🔍 분석을 시작했습니다.\n완료되면 '결과확인'을 입력해 주세요.",
         InputType.IMAGE: "🖼 이미지 분석을 시작했습니다.\nOCR 후 사기 여부를 판별합니다.\n완료되면 '결과확인'을 입력해 주세요.",
@@ -187,7 +189,7 @@ def format_welcome() -> dict[str, Any]:
                             "안녕하세요! 저는 ScamGuardian이에요. 🛡️\n"
                             "어떤 일로 오셨어요?\n\n"
                             "의심되는 메시지·영상·URL이 있으면 그대로 보내주세요.\n"
-                            "받자마자 함께 살펴보고 위험도를 알려드릴게요.\n\n"
+                            "받자마자 함께 살펴보고 위험 신호를 알려드릴게요.\n\n"
                             "(자세한 사용법은 '사용법'을 입력하세요)"
                         )
                     }
@@ -209,17 +211,89 @@ def format_help() -> dict[str, Any]:
                         "text": (
                             "📌 ScamGuardian 사용법\n\n"
                             "이렇게 보내주시면 돼요:\n\n"
-                            "1️⃣  의심 문자/통화 내용을 텍스트로 붙여넣기\n"
-                            "2️⃣  YouTube · 영상 URL 보내기\n"
-                            "3️⃣  의심 영상·음성 파일 직접 전송\n\n"
+                            "1️⃣  의심 문자/통화 내용을 텍스트로 붙여넣기 (콘텐츠 분석)\n"
+                            "2️⃣  APK/EXE/DMG 링크·파일 보내기 (APK/실행파일 분석)\n"
+                            "3️⃣  YouTube/영상 URL 또는 음성 파일 보내기 (보이스 분석)\n\n"
                             "💬 받자마자 분석 정확도를 높일 정보를 몇 가지\n"
                             "    여쭤볼게요 (어디서 받으셨는지, 어떤 게 의심됐는지 등).\n"
                             "    답변하기 어려우시면 언제든 '결과확인'을 눌러주세요.\n\n"
                             "✅ 투자·건강식품·기관 사칭·로맨스·스미싱 등\n"
-                            "    다양한 유형을 자동 분류하고 위험도를 점수로 알려드려요."
+                            "    다양한 유형을 자동 분류하고 검출된 위험 신호를 알려드려요."
                         )
                     }
                 }
+            ],
+            "quickReplies": quick_replies("help"),
+        },
+    }
+
+
+def format_mode_guide(mode: str) -> dict[str, Any]:
+    """모드별 빠른 안내 응답 (apk/voice/content)."""
+    mode_key = (mode or "").strip().lower()
+    if mode_key == "apk":
+        text = (
+            "📱 APK 분석 모드\n\n"
+            "이렇게 보내주세요:\n"
+            "1) APK/EXE/DMG 파일 링크\n"
+            "2) 파일 직접 업로드(가능한 채널)\n\n"
+            "ScamGuardian 이 파일을 받아\n"
+            "VT + 정적/동적 신호를 순서대로 검출해요.\n"
+            "보내실 때는 링크나 파일 원문 그대로 주세요."
+        )
+    elif mode_key == "voice":
+        text = (
+            "🎙️ 보이스(음성) 분석 모드\n\n"
+            "이렇게 보내주세요:\n"
+            "1) 음성 파일 URL(mp3/wav/m4a 등)\n"
+            "2) YouTube/영상 URL\n"
+            "3) 통화 내용 텍스트\n\n"
+            "음성은 STT 전사 후 위험 신호를 검출합니다."
+        )
+    else:
+        text = (
+            "💬 콘텐츠 분석 모드\n\n"
+            "이렇게 보내주세요:\n"
+            "1) 문자/카톡 원문 텍스트\n"
+            "2) 의심 URL\n"
+            "3) 이미지/PDF 캡처\n\n"
+            "받은 내용을 기준으로 사기 신호를 검출해 드립니다."
+        )
+
+    return {
+        "version": "2.0",
+        "template": {
+            "outputs": [{"simpleText": {"text": text}}],
+            "quickReplies": quick_replies("help"),
+        },
+    }
+
+
+def format_live_session_link(session_url: str, ttl_min: int = 60) -> dict[str, Any]:
+    """라이브 보이스피싱 전용 세션 링크 안내."""
+    text = (
+        "📞 라이브 보이스피싱 전용 세션을 만들었어요.\n"
+        f"{ttl_min}분 동안 유효한 1회용 링크이며, 입장 후 재사용할 수 없어요.\n\n"
+        "아래 버튼을 눌러 바로 시작하세요."
+    )
+    return {
+        "version": "2.0",
+        "template": {
+            "outputs": [
+                {"simpleText": {"text": text}},
+                {
+                    "basicCard": {
+                        "title": "라이브 보이스피싱 전용 세션",
+                        "description": "실시간으로 통화 내용을 전사하고 위험 신호를 즉시 검출합니다.",
+                        "buttons": [
+                            {
+                                "label": "라이브 세션 시작",
+                                "action": "webLink",
+                                "webLinkUrl": session_url,
+                            }
+                        ],
+                    }
+                },
             ],
             "quickReplies": quick_replies("help"),
         },
@@ -241,11 +315,12 @@ def format_question(
     """
     outputs: list[dict[str, Any]] = []
     if is_first_turn:
-        if input_type in (InputType.URL, InputType.VIDEO, InputType.FILE, InputType.IMAGE, InputType.PDF):
+        if input_type in (InputType.URL, InputType.VIDEO, InputType.AUDIO, InputType.FILE, InputType.IMAGE, InputType.PDF):
             # 영상/URL/이미지/PDF: vision/STT + 1차 분석이 백그라운드로 돌고 있고, 채팅으로 정보 수집
             kind = {
                 InputType.URL: "🔗 링크",
                 InputType.VIDEO: "🎬 영상",
+                InputType.AUDIO: "🎙️ 음성",
                 InputType.FILE: "📎 파일",
                 InputType.IMAGE: "🖼 이미지",
                 InputType.PDF: "📄 PDF",

@@ -63,6 +63,146 @@
         "title": "AnalyzeRequest",
         "type": "object"
       },
+      "AugmentStartRequest": {
+        "description": "데이터 증강 세션 시작 — 씨앗 파일을 Claude 로 병렬 패러프레이즈.",
+        "properties": {
+          "concurrency": {
+            "default": 8,
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "content_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Label"
+          },
+          "limit": {
+            "default": 0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "model": {
+            "default": "claude-sonnet-4-6",
+            "title": "Model",
+            "type": "string"
+          },
+          "rounds": {
+            "default": 1,
+            "title": "Rounds",
+            "type": "integer"
+          },
+          "scam_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scam Type"
+          },
+          "seed_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed File"
+          },
+          "variants": {
+            "default": 5,
+            "title": "Variants",
+            "type": "integer"
+          }
+        },
+        "title": "AugmentStartRequest",
+        "type": "object"
+      },
+      "BenchmarkRequest": {
+        "properties": {
+          "count": {
+            "default": 5,
+            "title": "Count",
+            "type": "integer"
+          },
+          "min_vt": {
+            "default": 10,
+            "title": "Min Vt",
+            "type": "integer"
+          },
+          "pkg_grep": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pkg Grep"
+          }
+        },
+        "title": "BenchmarkRequest",
+        "type": "object"
+      },
+      "Body_analyze_apk_api_analyze_apk_post": {
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "contentMediaType": "application/octet-stream",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "sample": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample"
+          }
+        },
+        "title": "Body_analyze_apk_api_analyze_apk_post",
+        "type": "object"
+      },
+      "Body_analyze_stream_api_analyze_stream_post": {
+        "properties": {
+          "chunk_seconds": {
+            "default": 60,
+            "title": "Chunk Seconds",
+            "type": "integer"
+          },
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_analyze_stream_api_analyze_stream_post",
+        "type": "object"
+      },
       "Body_analyze_upload_api_analyze_upload_post": {
         "properties": {
           "file": {
@@ -97,6 +237,83 @@
         "title": "Body_analyze_upload_api_analyze_upload_post",
         "type": "object"
       },
+      "Body_apk_dynamic_analyze_api_admin_apk_dynamic_analyze_post": {
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "contentMediaType": "application/octet-stream",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "force_dynamic": {
+            "default": false,
+            "title": "Force Dynamic",
+            "type": "boolean"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "title": "Body_apk_dynamic_analyze_api_admin_apk_dynamic_analyze_post",
+        "type": "object"
+      },
+      "Body_live_analyze_api_live_analyze_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "seq": {
+            "default": 0,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "window_sec": {
+            "default": 0,
+            "title": "Window Sec",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_live_analyze_api_live_analyze_post",
+        "type": "object"
+      },
+      "Body_transcribe_upload_api_transcribe_upload_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "whisper_model": {
+            "default": "medium",
+            "title": "Whisper Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_transcribe_upload_api_transcribe_upload_post",
+        "type": "object"
+      },
       "ClaimRunRequest": {
         "properties": {
           "labeler": {
@@ -108,6 +325,77 @@
           "labeler"
         ],
         "title": "ClaimRunRequest",
+        "type": "object"
+      },
+      "CompareAnalysisRequest": {
+        "properties": {
+          "classifier_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classifier Session Id"
+          },
+          "compare_scope": {
+            "default": "both",
+            "title": "Compare Scope",
+            "type": "string"
+          },
+          "gliner_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gliner Session Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "whisper_model": {
+            "default": "medium",
+            "title": "Whisper Model",
+            "type": "string"
+          }
+        },
+        "title": "CompareAnalysisRequest",
         "type": "object"
       },
       "CreateApiKeyRequest": {
@@ -138,6 +426,49 @@
         "title": "CreateApiKeyRequest",
         "type": "object"
       },
+      "DummyLinkRequest": {
+        "description": "더미 피싱앱 다운로드 링크 발급 — APK 검출 e2e 테스트용.",
+        "properties": {
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "ttl_seconds": {
+            "default": 3600,
+            "title": "Ttl Seconds",
+            "type": "integer"
+          },
+          "variant_id": {
+            "title": "Variant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "variant_id"
+        ],
+        "title": "DummyLinkRequest",
+        "type": "object"
+      },
+      "EmailBody": {
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "EmailBody",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -153,6 +484,11 @@
       },
       "HumanAnnotationRequest": {
         "properties": {
+          "content_label": {
+            "default": "",
+            "title": "Content Label",
+            "type": "string"
+          },
           "entities_gt": {
             "items": {
               "additionalProperties": true,
@@ -177,9 +513,26 @@
             "title": "Notes",
             "type": "string"
           },
+          "sample_kind": {
+            "default": "",
+            "title": "Sample Kind",
+            "type": "string"
+          },
           "scam_type_gt": {
+            "default": "",
             "title": "Scam Type Gt",
             "type": "string"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Ref"
           },
           "stt_quality": {
             "anyOf": [
@@ -214,9 +567,6 @@
             "type": "array"
           }
         },
-        "required": [
-          "scam_type_gt"
-        ],
         "title": "HumanAnnotationRequest",
         "type": "object"
       },
@@ -254,6 +604,36 @@
         "title": "ScamTypeCatalogRequest",
         "type": "object"
       },
+      "SeedCreateRequest": {
+        "description": "관리자가 직접 작성하는 씨앗 1개 (굶은 유형 보강용).",
+        "properties": {
+          "content_label": {
+            "default": "scam_attempt",
+            "title": "Content Label",
+            "type": "string"
+          },
+          "scam_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scam Type"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SeedCreateRequest",
+        "type": "object"
+      },
       "StartTrainingRequest": {
         "properties": {
           "base_model": {
@@ -271,6 +651,16 @@
             "default": 8,
             "title": "Batch Size",
             "type": "integer"
+          },
+          "early_stopping_patience": {
+            "default": 2,
+            "title": "Early Stopping Patience",
+            "type": "integer"
+          },
+          "early_stopping_threshold": {
+            "default": 0.0,
+            "title": "Early Stopping Threshold",
+            "type": "number"
           },
           "epochs": {
             "default": 3,
@@ -297,6 +687,20 @@
             "title": "Model",
             "type": "string"
           },
+          "models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Models"
+          },
           "seed": {
             "default": 17,
             "title": "Seed",
@@ -312,266 +716,6 @@
           "model"
         ],
         "title": "StartTrainingRequest",
-        "type": "object"
-      },
-      "StreamChunkRequest": {
-        "description": "v4.0 — 5초 PCM chunk 업로드 (draft).\n\n실제 구현은 multipart/form-data 또는 WebSocket binary frame 로 전환 가능.",
-        "properties": {
-          "audio_base64": {
-            "description": "16kHz mono PCM 또는 wav, base64",
-            "title": "Audio Base64",
-            "type": "string"
-          },
-          "chunk_index": {
-            "minimum": 0.0,
-            "title": "Chunk Index",
-            "type": "integer"
-          },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "session_id",
-          "chunk_index",
-          "audio_base64"
-        ],
-        "title": "StreamChunkRequest",
-        "type": "object"
-      },
-      "StreamChunkResponse": {
-        "description": "chunk 검출 즉답 — 의도 분류 + 누적 신호 개수 (draft).\n\nIdentity: 점수·등급 X. 검출된 메타인식·민감정보·송금동의 신호 누적 개수만.",
-        "properties": {
-          "alert": {
-            "description": "임계 초과 여부 — true 면 클라이언트가 경보 트리거",
-            "title": "Alert",
-            "type": "boolean"
-          },
-          "alert_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "경보 사유 (alert=true 일 때만)",
-            "title": "Alert Reason"
-          },
-          "chunk_index": {
-            "title": "Chunk Index",
-            "type": "integer"
-          },
-          "cumulative_signal_count": {
-            "description": "현재까지 누적된 위험 신호 총 개수 (v4.1 슬라이딩 윈도우)",
-            "minimum": 0.0,
-            "title": "Cumulative Signal Count",
-            "type": "integer"
-          },
-          "label": {
-            "description": "experiments/v4_intent Haiku 분류기",
-            "enum": [
-              "META_AWARE",
-              "SENSITIVE_INFO",
-              "TRANSFER_AGREE",
-              "NORMAL"
-            ],
-            "title": "Label",
-            "type": "string"
-          },
-          "transcript": {
-            "description": "5초 chunk Whisper 결과",
-            "title": "Transcript",
-            "type": "string"
-          }
-        },
-        "required": [
-          "chunk_index",
-          "transcript",
-          "label",
-          "cumulative_signal_count",
-          "alert"
-        ],
-        "title": "StreamChunkResponse",
-        "type": "object"
-      },
-      "StreamEndResponse": {
-        "description": "통화 종료 후 사후 검출 결과 (draft).\n\nPhase 4 (Serper 검증) 까지 수행한 DetectionReport 와 동등.\nIdentity: 점수·등급 X — detected_signals[] 만 보고. 통합 기업이 자체 판정.",
-        "properties": {
-          "alert_count": {
-            "description": "통화 도중 발동된 경보 횟수",
-            "title": "Alert Count",
-            "type": "integer"
-          },
-          "analysis_run_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "DB 저장된 경우 — `/api/result/{token}` 으로 카드 조회 가능",
-            "title": "Analysis Run Id"
-          },
-          "detected_signals": {
-            "description": "시간순 검출 신호 list (각 신호의 학술/법적 근거 포함)",
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Detected Signals",
-            "type": "array"
-          },
-          "disclaimer": {
-            "description": "ScamGuardian 은 사기 판정을 내리지 않습니다 안내",
-            "title": "Disclaimer",
-            "type": "string"
-          },
-          "full_transcript": {
-            "title": "Full Transcript",
-            "type": "string"
-          },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "summary": {
-            "description": "'위험 신호 N개 검출되었습니다.' 류 요약",
-            "title": "Summary",
-            "type": "string"
-          }
-        },
-        "required": [
-          "session_id",
-          "full_transcript",
-          "detected_signals",
-          "alert_count",
-          "summary",
-          "disclaimer"
-        ],
-        "title": "StreamEndResponse",
-        "type": "object"
-      },
-      "StreamSessionDetail": {
-        "description": "세션 상태 조회 응답 (draft). 점수·등급 표면 X.",
-        "properties": {
-          "chunks_received": {
-            "title": "Chunks Received",
-            "type": "integer"
-          },
-          "cumulative_signal_count": {
-            "description": "현재까지 누적된 위험 신호 총 개수",
-            "minimum": 0.0,
-            "title": "Cumulative Signal Count",
-            "type": "integer"
-          },
-          "last_chunk_at": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Chunk At"
-          },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "started_at": {
-            "title": "Started At",
-            "type": "number"
-          },
-          "status": {
-            "enum": [
-              "active",
-              "ended",
-              "expired"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "transcript_so_far": {
-            "title": "Transcript So Far",
-            "type": "string"
-          }
-        },
-        "required": [
-          "session_id",
-          "status",
-          "chunks_received",
-          "cumulative_signal_count",
-          "started_at",
-          "last_chunk_at",
-          "transcript_so_far"
-        ],
-        "title": "StreamSessionDetail",
-        "type": "object"
-      },
-      "StreamStartRequest": {
-        "description": "v4.0 — 통화 세션 생성 요청 (draft).",
-        "properties": {
-          "chunk_sec": {
-            "default": 5,
-            "description": "Whisper chunk 길이. v4.0 권장 5s",
-            "maximum": 30.0,
-            "minimum": 1.0,
-            "title": "Chunk Sec",
-            "type": "integer"
-          },
-          "locale": {
-            "default": "ko",
-            "description": "STT 언어 코드 (기본 ko)",
-            "title": "Locale",
-            "type": "string"
-          },
-          "user_id": {
-            "description": "카카오 user.id 또는 외부 식별자",
-            "title": "User Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_id"
-        ],
-        "title": "StreamStartRequest",
-        "type": "object"
-      },
-      "StreamStartResponse": {
-        "properties": {
-          "expires_at": {
-            "description": "epoch sec — 세션 자동 종료 시각",
-            "title": "Expires At",
-            "type": "number"
-          },
-          "issued_at": {
-            "description": "epoch sec",
-            "title": "Issued At",
-            "type": "number"
-          },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "upload_url": {
-            "description": "chunk POST 대상 (보통 같은 호스트)",
-            "title": "Upload Url",
-            "type": "string"
-          }
-        },
-        "required": [
-          "session_id",
-          "issued_at",
-          "expires_at",
-          "upload_url"
-        ],
-        "title": "StreamStartResponse",
         "type": "object"
       },
       "ValidationError": {
@@ -617,7 +761,7 @@
     }
   },
   "info": {
-    "description": "**한국어 사기 신호 검출 reference implementation** — 음성·텍스트·이미지·PDF·URL 입력에서 위험 신호를 검출하고 각 신호의 학술/법적 근거를 transparent 하게 보고한다.\n\n⚠️ **Identity Boundary** (CLAUDE.md): ScamGuardian 은 *사기 판정을 내리지 않는다*. VirusTotal 이 70개 백신의 검출 결과를 보고만 하는 모델과 동일. 판정 logic 은 통합한 기업(통신사·은행·메신저 앱)이 자기 risk tolerance 에 따라 구현한다.\n\n- **Public 4 endpoint** (`Public` 태그) — 외부 통합 시작점, `DetectionReport` 응답\n- **Webhook** (`Webhook` 태그) — 카카오 오픈빌더\n- **Admin** (3 태그) — 라벨링 / platform / training\n- **v4 draft** — Live Call Guard 설계 preview (구현 X)\n\n통합 가이드: [`docs/INTEGRATION_GUIDE.md`](https://github.com/example/scamguardian-v2/blob/main/docs/INTEGRATION_GUIDE.md)",
+    "description": "**한국어 사기 신호 검출 reference implementation** — 음성·텍스트·이미지·PDF·URL 입력에서 위험 신호를 검출하고 각 신호의 학술/법적 근거를 transparent 하게 보고한다.\n\n⚠️ **Identity Boundary** (CLAUDE.md): ScamGuardian 은 *사기 판정을 내리지 않는다*. VirusTotal 이 70개 백신의 검출 결과를 보고만 하는 모델과 동일. 판정 logic 은 통합한 기업(통신사·은행·메신저 앱)이 자기 risk tolerance 에 따라 구현한다.\n\n- **Public 4 endpoint** (`Public` 태그) — 외부 통합 시작점, `DetectionReport` 응답\n- **Webhook** (`Webhook` 태그) — 카카오 오픈빌더\n- **Admin** (3 태그) — 라벨링 / platform / training\n- **Live Call Guard** — `/live`, `/api/live-analyze` 실시간 청크 검출\n\n통합 가이드: [`docs/INTEGRATION_GUIDE.md`](https://github.com/example/scamguardian-v2/blob/main/docs/INTEGRATION_GUIDE.md)",
     "title": "ScamGuardian Signal Detection API",
     "version": "0.1.0"
   },
@@ -707,6 +851,50 @@
         "summary": "사용자 차단 해제",
         "tags": [
           "Admin — Platform"
+        ]
+      }
+    },
+    "/api/admin/access/check": {
+      "post": {
+        "description": "NextAuth signIn 콜백이 호출. master/approved 면 allowed, 모르는 계정은 pending 생성 후 거부.",
+        "operationId": "access_check_api_admin_access_check_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Access Check Api Admin Access Check Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "로그인 허용 여부 확인 (로그인 전, unauth)",
+        "tags": [
+          "Admin — Users"
         ]
       }
     },
@@ -848,6 +1036,945 @@
         "summary": "API key revoke",
         "tags": [
           "Admin — Platform"
+        ]
+      }
+    },
+    "/api/admin/apk-dynamic/analyze": {
+      "post": {
+        "description": "APK 를 multipart 파일 업로드 *또는* 다운로드 링크(`url`)로 받아 분석 잡을 백그라운드로 시작한다.\n\n- `file` — APK 파일 업로드, *또는* `url` — APK 다운로드 링크(확장자 없어도 Content-Type 으로 판단).\n- `force_dynamic=false` (기본) — 전체 파이프라인(Lv1 정적 → Lv2 bytecode → Lv3 동적-if-needed).\n- `force_dynamic=true` — 정적 게이트 우회, VM 동적 분석 직접 실행 (검증/데모).\n\nVM 이 꺼져 있으면 동적 결과는 `disabled`/`error` 로 온다 — 먼저 `/vm/start` 로 기동.",
+        "operationId": "apk_dynamic_analyze_api_admin_apk_dynamic_analyze_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_apk_dynamic_analyze_api_admin_apk_dynamic_analyze_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Apk Dynamic Analyze Api Admin Apk Dynamic Analyze Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "APK 아님 / 빈 파일 / 크기 초과 / 다운로드 실패"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "APK 업로드 → 동적 분석 잡 시작",
+        "tags": [
+          "Admin — APK Dynamic"
+        ]
+      }
+    },
+    "/api/admin/apk-dynamic/androzoo/benchmark": {
+      "post": {
+        "description": "AndroZoo 에서 vt_detection >= `min_vt` 인 실제 악성 APK 를 `count` 개 받아 정적(Lv1)+bytecode(Lv2) 검출 신호를 추출하고 vt_detection 과 비교한다. `ANDROZOO_API_KEY` 필요. 결과는 `/benchmark/{id}` 로 폴링.",
+        "operationId": "androzoo_benchmark_start_api_admin_apk_dynamic_androzoo_benchmark_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BenchmarkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Androzoo Benchmark Start Api Admin Apk Dynamic Androzoo Benchmark Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "AndroZoo 무작위 악성 샘플 벤치마크 시작",
+        "tags": [
+          "Admin — APK Dynamic"
+        ]
+      }
+    },
+    "/api/admin/apk-dynamic/androzoo/benchmark/cancel": {
+      "post": {
+        "operationId": "androzoo_benchmark_cancel_api_admin_apk_dynamic_androzoo_benchmark_cancel_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Androzoo Benchmark Cancel Api Admin Apk Dynamic Androzoo Benchmark Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "현재 활성 벤치마크 취소 (멈춘 잡 정리)",
+        "tags": [
+          "Admin — APK Dynamic"
+        ]
+      }
+    },
+    "/api/admin/apk-dynamic/androzoo/benchmark/{benchmark_id}": {
+      "get": {
+        "operationId": "androzoo_benchmark_status_api_admin_apk_dynamic_androzoo_benchmark__benchmark_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Androzoo Benchmark Status Api Admin Apk Dynamic Androzoo Benchmark  Benchmark Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "벤치마크 진행/결과 폴링",
+        "tags": [
+          "Admin — APK Dynamic"
+        ]
+      }
+    },
+    "/api/admin/apk-dynamic/dummy/catalog": {
+      "get": {
+        "description": "data_examples/apk 의 무해 prebuilt 더미 목록 + 각 더미가 트립하는 검출 신호.",
+        "operationId": "dummy_catalog_api_admin_apk_dynamic_dummy_catalog_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Dummy Catalog Api Admin Apk Dynamic Dummy Catalog Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "더미 APK 카탈로그",
+        "tags": [
+          "Admin — APK Dummy"
+        ]
+      }
+    },
+    "/api/admin/apk-dynamic/dummy/link": {
+      "post": {
+        "description": "만료되는 공개 토큰 URL 발급. 발급 URL 을 메인 분석/kakao 에 붙여넣어 e2e 테스트.",
+        "operationId": "dummy_link_api_admin_apk_dynamic_dummy_link_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DummyLinkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Dummy Link Api Admin Apk Dynamic Dummy Link Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "404": {
+            "description": "변종 없음"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "더미 다운로드 링크 발급",
+        "tags": [
+          "Admin — APK Dummy"
+        ]
+      }
+    },
+    "/api/admin/apk-dynamic/dummy/links": {
+      "get": {
+        "description": "만료되지 않은 발급 링크들.",
+        "operationId": "dummy_links_api_admin_apk_dynamic_dummy_links_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Dummy Links Api Admin Apk Dynamic Dummy Links Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "활성 더미 링크 목록",
+        "tags": [
+          "Admin — APK Dummy"
+        ]
+      }
+    },
+    "/api/admin/apk-dynamic/jobs/{job_id}": {
+      "get": {
+        "description": "분석 잡 status + 완료 시 `DetectionReport`(또는 force_dynamic 결과) 폴링.",
+        "operationId": "apk_dynamic_job_api_admin_apk_dynamic_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Apk Dynamic Job Api Admin Apk Dynamic Jobs  Job Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "404": {
+            "description": "job 없음"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "분석 잡 진행/결과 조회",
+        "tags": [
+          "Admin — APK Dynamic"
+        ]
+      }
+    },
+    "/api/admin/apk-dynamic/ops/{op_id}": {
+      "get": {
+        "description": "start/stop op 의 status + 로그 tail 폴링.",
+        "operationId": "apk_dynamic_op_api_admin_apk_dynamic_ops__op_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "op_id",
+            "required": true,
+            "schema": {
+              "title": "Op Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Apk Dynamic Op Api Admin Apk Dynamic Ops  Op Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "404": {
+            "description": "op 없음"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "VM op 진행 조회",
+        "tags": [
+          "Admin — APK Dynamic"
+        ]
+      }
+    },
+    "/api/admin/apk-dynamic/vm": {
+      "get": {
+        "description": "`vm_ctl.sh status-json` 으로 VM/redroid/frida/server 상태 조회 (VM 을 켜지 않음, 단기 캐시).",
+        "operationId": "apk_dynamic_vm_status_api_admin_apk_dynamic_vm_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Apk Dynamic Vm Status Api Admin Apk Dynamic Vm Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "APK 동적 분석 VM 상태",
+        "tags": [
+          "Admin — APK Dynamic"
+        ]
+      }
+    },
+    "/api/admin/apk-dynamic/vm/start": {
+      "post": {
+        "description": "Multipass VM + redroid + frida-server + apk_dynamic_server + WSL bridge 를 기동한다 (백그라운드 op).",
+        "operationId": "apk_dynamic_vm_start_api_admin_apk_dynamic_vm_start_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Apk Dynamic Vm Start Api Admin Apk Dynamic Vm Start Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "409": {
+            "description": "이미 VM 작업 진행 중"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "VM 기동",
+        "tags": [
+          "Admin — APK Dynamic"
+        ]
+      }
+    },
+    "/api/admin/apk-dynamic/vm/stop": {
+      "post": {
+        "description": "VM 을 정지하고 WSL bridge 를 종료한다 (VM 삭제는 안 함, 백그라운드 op).",
+        "operationId": "apk_dynamic_vm_stop_api_admin_apk_dynamic_vm_stop_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Apk Dynamic Vm Stop Api Admin Apk Dynamic Vm Stop Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "409": {
+            "description": "이미 VM 작업 진행 중"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "VM 정지",
+        "tags": [
+          "Admin — APK Dynamic"
+        ]
+      }
+    },
+    "/api/admin/augment/seed-stats": {
+      "get": {
+        "description": "data/processed 씨앗을 scam_type 별로 집계 — 굶은 유형(≤3) 노출.",
+        "operationId": "augment_seed_stats_api_admin_augment_seed_stats_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Augment Seed Stats Api Admin Augment Seed Stats Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "씨앗 유형별 분포 + 커버리지 갭",
+        "tags": [
+          "Admin — Augment"
+        ]
+      }
+    },
+    "/api/admin/augment/seeds": {
+      "get": {
+        "operationId": "augment_seeds_list_api_admin_augment_seeds_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Augment Seeds List Api Admin Augment Seeds Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "관리자 작성 씨앗 목록",
+        "tags": [
+          "Admin — Augment"
+        ]
+      },
+      "post": {
+        "operationId": "augment_seeds_create_api_admin_augment_seeds_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeedCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Augment Seeds Create Api Admin Augment Seeds Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "유효성 실패"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "씨앗 1개 추가 (굶은 유형 보강)",
+        "tags": [
+          "Admin — Augment"
+        ]
+      }
+    },
+    "/api/admin/augment/seeds/{idx}": {
+      "delete": {
+        "operationId": "augment_seeds_delete_api_admin_augment_seeds__idx__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "idx",
+            "required": true,
+            "schema": {
+              "title": "Idx",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Augment Seeds Delete Api Admin Augment Seeds  Idx  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "404": {
+            "description": "씨앗 인덱스 없음"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "작성 씨앗 삭제",
+        "tags": [
+          "Admin — Augment"
+        ]
+      }
+    },
+    "/api/admin/augment/sessions": {
+      "get": {
+        "operationId": "augment_list_api_admin_augment_sessions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Augment List Api Admin Augment Sessions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "증강 세션 목록",
+        "tags": [
+          "Admin — Augment"
+        ]
+      },
+      "post": {
+        "description": "subprocess 로 `scripts.run_augment_session` spawn — `.scamguardian/augmentation_sessions/{id}/` 에 status/metrics/run.log/output.jsonl 출력.",
+        "operationId": "augment_start_api_admin_augment_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AugmentStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Augment Start Api Admin Augment Sessions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "유효성 실패"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "증강 세션 시작 (병렬)",
+        "tags": [
+          "Admin — Augment"
+        ]
+      }
+    },
+    "/api/admin/augment/sessions/{session_id}": {
+      "get": {
+        "operationId": "augment_detail_api_admin_augment_sessions__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Augment Detail Api Admin Augment Sessions  Session Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "404": {
+            "description": "session not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "증강 세션 상세 + metrics + log tail",
+        "tags": [
+          "Admin — Augment"
+        ]
+      }
+    },
+    "/api/admin/augment/sessions/{session_id}/cancel": {
+      "post": {
+        "operationId": "augment_cancel_api_admin_augment_sessions__session_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Augment Cancel Api Admin Augment Sessions  Session Id  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "409": {
+            "description": "취소할 수 없는 상태"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "증강 세션 취소",
+        "tags": [
+          "Admin — Augment"
+        ]
+      }
+    },
+    "/api/admin/augment/sessions/{session_id}/promote": {
+      "post": {
+        "description": "세션 output.jsonl 을 data/generated/{target}.jsonl 로 병합 → training extra_jsonl 로 사용.",
+        "operationId": "augment_promote_api_admin_augment_sessions__session_id__promote_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "target",
+            "required": false,
+            "schema": {
+              "default": "user_samples_augmented",
+              "title": "Target",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Augment Promote Api Admin Augment Sessions  Session Id  Promote Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "내보낼 수 없는 상태"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "404": {
+            "description": "session not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "증강 산출물을 학습 데이터로 내보내기",
+        "tags": [
+          "Admin — Augment"
         ]
       }
     },
@@ -1198,7 +2325,7 @@
     },
     "/api/admin/runs/search": {
       "get": {
-        "description": "transcript / scam_type / risk_level / 라벨 여부로 필터링. `labeled=true` 면 사람 라벨 있는 것만, `false` 면 미라벨만.",
+        "description": "transcript / scam_type / 라벨 여부로 필터링. `labeled=true` 면 사람 라벨 있는 것만, `false` 면 미라벨만.",
         "operationId": "admin_search_runs_api_admin_runs_search_get",
         "parameters": [
           {
@@ -1231,22 +2358,6 @@
                 }
               ],
               "title": "Scam Type"
-            }
-          },
-          {
-            "in": "query",
-            "name": "risk_level",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Risk Level"
             }
           },
           {
@@ -1441,7 +2552,7 @@
     },
     "/api/admin/runs/{run_id}/annotations": {
       "post": {
-        "description": "검수자의 정답 라벨을 저장. 기존 annotation 있으면 덮어쓰기.\n\n**Body** (`HumanAnnotationRequest`): scam_type_gt, entities_gt, triggered_flags_gt, transcript_corrected_text(선택), stt_quality(1~5), notes.",
+        "description": "검수자의 정답 라벨을 저장. 기존 annotation 있으면 덮어쓰기.\n\n**Body** (`HumanAnnotationRequest`): content_label, scam_type_gt(scam_attempt 일 때만 필수), entities_gt, triggered_flags_gt, transcript_corrected_text(선택), stt_quality(1~5), notes, sample_kind, source_ref. content_label 미지정 시 학습 로더가 fallback 적용.",
         "operationId": "admin_save_annotation_api_admin_runs__run_id__annotations_post",
         "parameters": [
           {
@@ -1712,7 +2823,7 @@
     },
     "/api/admin/stats": {
       "get": {
-        "description": "총 run 수 / 라벨 진행률 / scam_type 분포 / risk_level 분포 등 대시보드 카운터.",
+        "description": "총 run 수 / 라벨 진행률 / scam_type 분포 등 대시보드 카운터.",
         "operationId": "admin_stats_api_admin_stats_get",
         "responses": {
           "200": {
@@ -1740,6 +2851,59 @@
         "summary": "대시보드 통계",
         "tags": [
           "Admin — Labeling"
+        ]
+      }
+    },
+    "/api/admin/training/compare-analysis": {
+      "post": {
+        "description": "텍스트나 링크를 받아 같은 transcript 에 대해 기존 raw classifier, Claude/LLM 분석, fine-tuned classifier checkpoint 결과를 나란히 반환한다.",
+        "operationId": "admin_training_compare_analysis_api_admin_training_compare_analysis_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompareAnalysisRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Training Compare Analysis Api Admin Training Compare Analysis Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "비교 요청 오류"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "입력 기반 모델 비교 분석",
+        "tags": [
+          "Admin — Training"
         ]
       }
     },
@@ -1825,7 +2989,7 @@
         ]
       },
       "post": {
-        "description": "subprocess 로 학습 세션 spawn — `.scamguardian/training_sessions/{id}/` 에 `status.json` / `metrics.jsonl` / `train.log` 출력.\n\n**Body** (`StartTrainingRequest`):\n- `model` — `classifier` (mDeBERTa) 또는 `gliner`\n- `epochs` (기본 3), `batch_size` (기본 8), `lora` (LoRA 사용)\n- `extra_jsonl` — 추가 데이터셋 경로\n- `val_ratio` (기본 0.1), `seed` (기본 17), `base_model`",
+        "description": "subprocess 로 학습 세션 spawn — `.scamguardian/training_sessions/{id}/` 에 `status.json` / `metrics.jsonl` / `train.log` 출력.\n\n**Body** (`StartTrainingRequest`):\n- `model` — `classifier` (mDeBERTa) / `gliner` / `gate` (content_label 3-class 평가, 단일 세션)\n- `models` — `['classifier', 'gliner']` 처럼 보내면 선택된 모델을 각각 학습\n- `epochs` (기본 3), `batch_size` (기본 8), `lora` (LoRA 사용)\n- `extra_jsonl` — 추가 데이터셋 경로 (gate 는 평가 입력 JSONL 로 사용)\n- `val_ratio` (기본 0.1), `seed` (기본 17), `base_model`",
         "operationId": "admin_training_start_api_admin_training_sessions_post",
         "requestBody": {
           "content": {
@@ -2041,6 +3205,351 @@
         ]
       }
     },
+    "/api/admin/training/sessions/{session_id}/compare": {
+      "post": {
+        "description": "완료된 classifier 세션의 output checkpoint 를 로드해, 같은 smoke 문장 세트에서 raw zero-shot classifier 와 fine-tuned classifier 의 예측을 비교한다.",
+        "operationId": "admin_training_compare_classifier_api_admin_training_sessions__session_id__compare_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Training Compare Classifier Api Admin Training Sessions  Session Id  Compare Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "비교 불가 세션"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "404": {
+            "description": "session not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "raw classifier 와 fine-tuned classifier 비교",
+        "tags": [
+          "Admin — Training"
+        ]
+      }
+    },
+    "/api/admin/training/synthetic-summary": {
+      "get": {
+        "description": "직접 실행한 synthetic classifier 학습 산출물을 스캔해 초심자용 시각화에 필요한 데이터셋 분포, 시도별 평가 지표, 활성화 보류 이유를 반환한다.",
+        "operationId": "admin_training_synthetic_summary_api_admin_training_synthetic_summary_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Training Synthetic Summary Api Admin Training Synthetic Summary Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        },
+        "summary": "synthetic classifier 학습 결과 요약",
+        "tags": [
+          "Admin — Training"
+        ]
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "operationId": "list_users_api_admin_users_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-admin-email",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Email"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Users Api Admin Users Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "403": {
+            "description": "마스터 전용 작업"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "admin 사용자 목록 (masters + pending/approved/denied)",
+        "tags": [
+          "Admin — Users"
+        ]
+      }
+    },
+    "/api/admin/users/approve": {
+      "post": {
+        "operationId": "approve_user_api_admin_users_approve_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-admin-email",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Email"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Approve User Api Admin Users Approve Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "403": {
+            "description": "마스터 전용 작업"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "사용자 승인 (마스터 전용)",
+        "tags": [
+          "Admin — Users"
+        ]
+      }
+    },
+    "/api/admin/users/deny": {
+      "post": {
+        "operationId": "deny_user_api_admin_users_deny_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-admin-email",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Email"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Deny User Api Admin Users Deny Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "403": {
+            "description": "마스터 전용 작업"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "사용자 거부 (마스터 전용)",
+        "tags": [
+          "Admin — Users"
+        ]
+      }
+    },
+    "/api/admin/users/revoke": {
+      "post": {
+        "operationId": "revoke_user_api_admin_users_revoke_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-admin-email",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Email"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revoke User Api Admin Users Revoke Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "어드민 토큰 누락 또는 무효"
+          },
+          "403": {
+            "description": "마스터 전용 작업"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "승인 취소 (마스터 전용) — denied 로 전환",
+        "tags": [
+          "Admin — Users"
+        ]
+      }
+    },
     "/api/analyze": {
       "post": {
         "description": "ScamGuardian 의 메인 검출 엔드포인트. 한국어 텍스트 또는 URL/YouTube/음성·영상·이미지·PDF 파일 경로를 받아 Phase 0 (안전성) → Phase 0.5 (sandbox) → Phase 1 (STT/OCR) → Phase 2-5 (분류·추출·검증·검출) 전체 파이프라인을 수행한다.\n\n⚠️ **Identity Boundary** (CLAUDE.md): ScamGuardian 은 **사기 판정을 내리지 않는다**. 검출된 위험 신호 list 와 각 신호의 학술/법적 근거만 transparent 하게 보고한다. VirusTotal 이 70개 백신의 검출 결과를 보고만 하는 모델과 동일. 최종 판정 logic 은 통합 기업이 자체 risk tolerance 에 따라 구현한다.\n\n**Request body** (`AnalyzeRequest`):\n- `source` *or* `text` — 둘 중 하나는 필수. URL 도 `source` 로 전달\n- `whisper_model` — `tiny|base|small|medium|large` (음성 입력 시에만 영향)\n- `skip_verification` — true 면 Phase 4 (Serper) 건너뜀, 응답 빨라짐\n- `use_llm` — 무시됨 (서버에서 강제 true)\n- `use_rag` — 과거 라벨 사례 RAG 검색 여부\n\n**응답 핵심 필드** (`DetectionReport`):\n- `scam_type` — 분류된 스캠 유형 (검출 컨텍스트, 판정 X)\n- `detected_signals` — `[{flag, label_ko, rationale, source, evidence, description, detection_source}]` 검출된 위험 신호 list. 각 신호마다 학술/법적 근거(`rationale`) 와 출처(`source`) 포함\n- `summary` — `\"위험 신호 N개 검출되었습니다. 자세한 근거는 detected_signals 참고.\"`\n- `disclaimer` — 통합 기업 판정 logic 안내 문구\n- `entities` — `[{label, text, score, source}]` 추출된 엔티티\n- `transcript_text` — 본문 (URL/파일 입력 시 STT/OCR 결과)\n- `analysis_run_id` — DB 저장된 경우 UUID\n\n❌ 응답에 `total_score`, `risk_level`, `is_scam`, `agent_verdict` 등 *판정* 필드는 **없다**.\n\n**인증**: API key 필수 (`Authorization: Bearer sg_...` 또는 `X-API-Key`).\n\n**에러**:\n- `400` — 빈 입력 / 어뷰즈 가드 reject (REPETITIVE / GIBBERISH / DUPLICATE)\n- `401` — API key 누락 또는 무효\n- `403` — API key revoked\n- `423` — 어뷰즈 가드 BLOCKED (위반 누적 차단)\n- `429` — RPM 또는 월 USD/호출 cap 초과 (`Retry-After` 헤더)\n- `500` — 파이프라인 내부 오류\n\n**curl** (텍스트):\n```bash\ncurl -X POST https://api.example.com/api/analyze \\\n  -H \"Authorization: Bearer sg_xxx\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"text\": \"검찰청입니다. 즉시 300만원 송금하세요.\"}'\n```\n\n**curl** (YouTube URL):\n```bash\ncurl -X POST https://api.example.com/api/analyze \\\n  -H \"Authorization: Bearer sg_xxx\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"source\": \"https://youtu.be/abcd1234\"}'\n```",
@@ -2097,6 +3606,101 @@
         ]
       }
     },
+    "/api/analyze-apk": {
+      "post": {
+        "description": "안드로이드 설치 파일(.apk)을 업로드하면 정적 분석으로 위험 신호를 검출한다.\n\n- Lv1 정적(manifest 권한·서명·패키지명) + Lv2 bytecode(DEX xref·string) — host-safe, *읽기만*.\n- VirusTotal 파일 스캔 (VIRUSTOTAL_API_KEY 있을 때).\n- Lv3 동적(격리 VM 실행)은 기본 비활성 — 검출 사실만 보고, 판정은 통합 기업.\n\n최대 100MB. 로컬에서 APK 를 *실행하지 않는다*.",
+        "operationId": "analyze_apk_api_analyze_apk_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_analyze_apk_api_analyze_apk_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Analyze Apk Api Analyze Apk Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "APK 아님 / 빈 파일 / 크기 초과 / 해석 실패"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "APK 정적 분석 (Lv1 manifest + Lv2 bytecode + VT)",
+        "tags": [
+          "Public"
+        ]
+      }
+    },
+    "/api/analyze-stream": {
+      "post": {
+        "description": "긴 음성 파일을 `chunk_seconds` 단위로 잘라 각 chunk 의 STT + 키워드 alert 결과를 NDJSON 으로 즉시 흘려준다.\n\n**Form fields**:\n- `file` — 음성/영상 파일 (필수)\n- `chunk_seconds` — 청크 길이 초 단위 (기본 60)\n\n**응답**: `application/x-ndjson` — 각 줄이 한 개의 JSON 이벤트 (`start` / `chunk` / `done` / `error`)\n\n**인증**: API key 필수.",
+        "operationId": "analyze_stream_api_analyze_stream_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_analyze_stream_api_analyze_stream_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "파일 비어있음 / 코덱 오류"
+          },
+          "401": {
+            "description": "API key 누락 또는 무효"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Rate limit 초과"
+          }
+        },
+        "summary": "긴 음성 파일 chunk 스트리밍 분석 (NDJSON)",
+        "tags": [
+          "Public"
+        ]
+      }
+    },
     "/api/analyze-upload": {
       "post": {
         "description": "음성·영상·이미지·PDF 파일을 multipart/form-data 로 업로드받아 위험 신호를 검출한다. 이미지/PDF 는 Claude vision OCR, 음성/영상은 ffmpeg + Whisper 로 transcript 추출.\n\n⚠️ **Identity**: 검출만, 판정 X. 응답 schema 는 `/api/analyze` 와 동일 (`DetectionReport`).\n\n**Form fields**:\n- `file` — 파일 본문 (필수). 100MB 이하 권장. 지원 확장자: `.mp4 .mov .webm .mkv .m4a .mp3 .wav .ogg .aac .jpg .jpeg .png .webp .gif .bmp .pdf`\n- `whisper_model` — `tiny|base|small|medium|large` (기본 medium)\n- `skip_verification` — 기본 true\n- `use_llm` — 무시됨 (강제 true)\n- `use_rag` — 기본 false\n\n**응답**: `/api/analyze` 와 동일한 `DetectionReport` JSON (`detected_signals[]` + `summary` + `disclaimer`). 업로드 원본은 라벨링용으로 `.scamguardian/uploads/{run_id}/source.{ext}` 에 보존된다.\n\n**인증**: API key 필수.\n\n**에러**:\n- `400` — 빈 파일 / 코덱 추출 실패 / 어뷰즈 reject\n- `401/403/423/429` — `/api/analyze` 와 동일\n- `500` — 파이프라인 내부 오류\n\n**curl**:\n```bash\ncurl -X POST https://api.example.com/api/analyze-upload \\\n  -H \"Authorization: Bearer sg_xxx\" \\\n  -F \"file=@suspect_call.m4a\" \\\n  -F \"whisper_model=medium\"\n```",
@@ -2145,6 +3749,193 @@
           }
         },
         "summary": "파일 업로드 검출 (multipart) — Signal Detection",
+        "tags": [
+          "Public"
+        ]
+      }
+    },
+    "/api/apk-dummy/{token}": {
+      "get": {
+        "description": "발급 토큰으로 무해 더미 APK 를 받는다. 파이프라인/kakao 가 외부 URL 처럼 fetch.",
+        "operationId": "dummy_download_api_apk_dummy__token__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "토큰 없음"
+          },
+          "410": {
+            "description": "토큰 만료"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "더미 APK 다운로드 (공개)",
+        "tags": [
+          "Admin — APK Dummy"
+        ]
+      }
+    },
+    "/api/apk-dynamic-status": {
+      "get": {
+        "description": "사용자 화면 LED 용 — 동적(Lv3) 분석을 *실제로 실행 가능한지* 만 노출 (제어 X).\n\n`enabled`(APK_DYNAMIC_ENABLED) + `ready`(격리 VM/브릿지 /health 도달). VM 이 부팅돼도 브릿지가 끊겨 api_server 가 못 닿으면 ready=false 로 정직하게 표시.",
+        "operationId": "apk_dynamic_status_api_apk_dynamic_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Apk Dynamic Status Api Apk Dynamic Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "동적 분석 VM 가동 상태 (읽기 전용 LED)",
+        "tags": [
+          "Public"
+        ]
+      }
+    },
+    "/api/apk-samples": {
+      "get": {
+        "description": "AndroZoo 실제 악성앱 + 패밀리 샘플 풀에서 무작위 10개를 반환. 업로드 없이 바로 분석할 수 있다.",
+        "operationId": "apk_samples_api_apk_samples_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Apk Samples Api Apk Samples Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "테스트용 실제 APK 샘플 (무작위 10개)",
+        "tags": [
+          "Public"
+        ]
+      }
+    },
+    "/api/config/runtime": {
+      "get": {
+        "description": "현재 음성 전사에 사용 중인 백엔드를 노출. UI 배지 용도.\n\n- `stt_backend`: `openai_whisper` 또는 `claude` — `pipeline/stt.py` 의 `STT_BACKEND` 분기와 동일 라벨\n- `*_key_present`: 해당 백엔드 키가 환경에 존재하는지 (실제 키 값은 노출 X)\n\n**인증**: 불필요",
+        "operationId": "get_runtime_config_api_config_runtime_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Runtime Config Api Config Runtime Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "런타임 STT 백엔드 표시",
+        "tags": [
+          "Public"
+        ]
+      }
+    },
+    "/api/evidence": {
+      "get": {
+        "description": "`.scamguardian/EVIDENCE.md` 정본을 반환한다. 웹 `/evidence` 페이지가 이 endpoint를 runtime fetch 하므로 Next.js 빌드가 repository 밖 파일을 trace하지 않는다.\n\n**인증**: 불필요",
+        "operationId": "get_evidence_api_evidence_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Evidence Api Evidence Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "검출 신호 근거 문서 원문",
+        "tags": [
+          "Public"
+        ]
+      }
+    },
+    "/api/live-analyze": {
+      "post": {
+        "description": "브라우저 마이크 누적 오디오(통화 시작~현재)를 받아 전사·화자분리·화자별 위험 신호·tier 를 반환한다. 클라이언트가 주기적으로(예: 7초) 호출해 실시간처럼 갱신.\n\n**Form fields**: `file`(누적 오디오), `seq`(옵션, 호출 순번 로깅용)\n\n**응답**: `{transcript_text, turns, matches, tier, latency_ms}`\n\n**인증**: API key 필수.",
+        "operationId": "live_analyze_api_live_analyze_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_live_analyze_api_live_analyze_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Live Analyze Api Live Analyze Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "실시간 마이크 누적 오디오 분석 (Live Voice MVP)",
         "tags": [
           "Public"
         ]
@@ -2225,15 +4016,15 @@
         ]
       }
     },
-    "/api/v4/stream/chunk": {
+    "/api/transcribe-upload": {
       "post": {
-        "description": "한 chunk 단위로 STT (`whisper-1` 또는 로컬) + Haiku 의도 분류 (`META_AWARE | SENSITIVE_INFO | TRANSFER_AGREE | NORMAL`) 수행.\n\n임계 초과 시 응답에 `alert=true` + `alert_reason` 포함 → 클라이언트가 경보음·진동 트리거. 구현 시 WebSocket push 로 양방향 채널 권장.\n\n⚠️ **v4 draft — design preview only, not yet implemented.** 호출 시 `501 Not Implemented` 반환. schema 검토 + 외부 클라이언트 통합 설계용.",
-        "operationId": "stream_chunk_api_v4_stream_chunk_post",
+        "description": "음성·영상 파일을 multipart 로 업로드받아 **전사 결과만** 반환한다. 분석 (`/api/analyze-upload`) 와 같은 시점에 병렬로 호출 가능.\n\n**응답**:\n- `transcript_text` — 전사된 한국어 본문\n- `language` — 감지 언어 코드 (가능한 경우)\n- `source_type` — `file` / `youtube` 등\n- `latency_ms` — STT 소요 시간\n- `duration_seconds` — 오디오 길이 (선택)\n\n**Form fields**: `analyze-upload` 와 동일 (`file`, `whisper_model` 옵션).\n\n**인증**: API key 필수 (`/api/analyze-upload` 와 동일).",
+        "operationId": "transcribe_upload_api_transcribe_upload_post",
         "requestBody": {
           "content": {
-            "application/json": {
+            "multipart/form-data": {
               "schema": {
-                "$ref": "#/components/schemas/StreamChunkRequest"
+                "$ref": "#/components/schemas/Body_transcribe_upload_api_transcribe_upload_post"
               }
             }
           },
@@ -2244,11 +4035,19 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StreamChunkResponse"
+                  "additionalProperties": true,
+                  "title": "Response Transcribe Upload Api Transcribe Upload Post",
+                  "type": "object"
                 }
               }
             },
             "description": "Successful Response"
+          },
+          "400": {
+            "description": "파일 비어있음 / 코덱 오류"
+          },
+          "401": {
+            "description": "API key 누락 또는 무효"
           },
           "422": {
             "content": {
@@ -2260,150 +4059,13 @@
             },
             "description": "Validation Error"
           },
-          "501": {
-            "description": "v4 미구현 — design preview"
+          "429": {
+            "description": "Rate limit 초과"
           }
         },
-        "summary": "[draft] 5초 chunk 업로드 + 즉시 의도 분류",
+        "summary": "음성 파일 → 텍스트 전사 (STT only, Phase 1)",
         "tags": [
-          "v4 (draft)"
-        ]
-      }
-    },
-    "/api/v4/stream/end": {
-      "post": {
-        "description": "사용자가 통화 종료 → 누적 transcript 로 Phase 4 (Serper 교차 검증) + Phase 5 (스코어링) 수행. 결과는 `analysis_run_id` 로 DB 저장되어 `/api/result/{token}` 카드 발급 가능.\n\n⚠️ **v4 draft — design preview only, not yet implemented.** 호출 시 `501 Not Implemented` 반환. schema 검토 + 외부 클라이언트 통합 설계용.",
-        "operationId": "stream_end_api_v4_stream_end_post",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "title": "Session Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StreamEndResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          },
-          "501": {
-            "description": "v4 미구현 — design preview"
-          }
-        },
-        "summary": "[draft] 통화 종료 + 사후 분석",
-        "tags": [
-          "v4 (draft)"
-        ]
-      }
-    },
-    "/api/v4/stream/start": {
-      "post": {
-        "description": "통화 시작 시점에 호출 — session_id 발급 + chunk 업로드 endpoint 안내.\n\n구현 시 웹앱이 `getUserMedia` → AudioWorklet 으로 16kHz mono PCM 5초 buffer 생성 후 `/api/v4/stream/chunk` 로 순차 전송.\n\n⚠️ **v4 draft — design preview only, not yet implemented.** 호출 시 `501 Not Implemented` 반환. schema 검토 + 외부 클라이언트 통합 설계용.",
-        "operationId": "stream_start_api_v4_stream_start_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StreamStartRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StreamStartResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          },
-          "501": {
-            "description": "v4 미구현 — design preview"
-          }
-        },
-        "summary": "[draft] Live Call 세션 시작",
-        "tags": [
-          "v4 (draft)"
-        ]
-      }
-    },
-    "/api/v4/stream/{session_id}": {
-      "get": {
-        "description": "현재 누적 transcript / 누적 위험도 / chunk 개수. 폴링 또는 모니터링 UI 용.\n\n⚠️ **v4 draft — design preview only, not yet implemented.** 호출 시 `501 Not Implemented` 반환. schema 검토 + 외부 클라이언트 통합 설계용.",
-        "operationId": "stream_get_api_v4_stream__session_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "title": "Session Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StreamSessionDetail"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          },
-          "501": {
-            "description": "v4 미구현 — design preview"
-          }
-        },
-        "summary": "[draft] 세션 상태 조회",
-        "tags": [
-          "v4 (draft)"
+          "Public"
         ]
       }
     },
@@ -2483,8 +4145,20 @@
       "name": "Admin — Training"
     },
     {
-      "description": "**Live Call Guard — design preview only, not implemented.** 실시간 통화 중 사기 탐지 endpoint 설계 미리보기. 모든 호출 `501 Not Implemented`. 배경: CLAUDE.md `v4 계획` 섹션.",
-      "name": "v4 (draft)"
+      "description": "데이터 증강 세션 — 씨앗 작성 + Claude 병렬 패러프레이즈로 굶은 유형 보강.",
+      "name": "Admin — Augment"
+    },
+    {
+      "description": "APK Lv3 동적 분석 — 격리 VM(redroid+Frida) 라이프사이클 제어 + 분석 잡.",
+      "name": "Admin — APK Dynamic"
+    },
+    {
+      "description": "무해 prebuilt 더미 APK 를 만료 공개 토큰 URL 로 발급 — 검출 e2e 테스트용.",
+      "name": "Admin — APK Dummy"
+    },
+    {
+      "description": "어드민 사용자 관리 — 마스터 + 승인요청(pending/approved/denied).",
+      "name": "Admin — Users"
     },
     {
       "description": "Liveness probe.",
