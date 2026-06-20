@@ -16,12 +16,26 @@ function appendQuery(url: string, key: string, value: string): string {
   return `${url}${sep}${key}=${encodeURIComponent(value)}`;
 }
 
-export async function GET() {
+function inferPublicWsUrlFromRequest(request: Request): string {
+  const reqUrl = new URL(request.url);
+  const proto = reqUrl.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${reqUrl.host}/ws/live-transcribe`;
+}
+
+function isLocalWsUrl(url: string): boolean {
   try {
-    const [runtimeResp, tokenResp] = await Promise.all([
-      fetch(`${API_BASE_URL}/api/config/runtime`, { cache: "no-store" }),
-      fetch(`${API_BASE_URL}/api/live-ws-token`, { cache: "no-store" }),
-    ]);
+    const parsed = new URL(url);
+    return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
+  } catch {
+    return false;
+  }
+}
+
+export async function GET(request: Request) {
+  try {
+    const sessionToken = new URL(request.url).searchParams.get("session_token")?.trim() || "";
+    const inferredPublicWsUrl = inferPublicWsUrlFromRequest(request);
+    const runtimeResp = await fetch(`${API_BASE_URL}/api/config/runtime`, { cache: "no-store" });
     const runtime = runtimeResp.ok ? await runtimeResp.json() : {};
     const chunkSec = typeof runtime.live_chunk_sec === "number" ? runtime.live_chunk_sec : 5;
     const wsEnabled = runtime.live_ws_enabled !== false;
@@ -31,13 +45,45 @@ export async function GET() {
       wsUrl = buildWsUrl(API_BASE_URL);
     }
 
-    if (tokenResp.ok) {
-      const tokenData = (await tokenResp.json()) as { token?: string };
-      if (tokenData.token) {
-        wsUrl = appendQuery(wsUrl, "live_token", tokenData.token);
+    if (sessionToken) {
+      const sessionResp = await fetch(
+        `${API_BASE_URL}/api/live-session/${encodeURIComponent(sessionToken)}?consume=true`,
+        { cache: "no-store" },
+      );
+      if (!sessionResp.ok) {
+        const body = (await sessionResp.json().catch(() => ({}))) as { detail?: string };
+        return NextResponse.json(
+          { detail: body.detail ?? "라이브 세션 검증에 실패했습니다." },
+          { status: sessionResp.status },
+        );
       }
-    } else if (INTERNAL_API_KEY) {
-      wsUrl = appendQuery(wsUrl, "api_key", INTERNAL_API_KEY);
+      const sessionData = (await sessionResp.json()) as { ws_token?: string; ws_url?: string };
+      if (sessionData.ws_url) {
+        wsUrl = sessionData.ws_url;
+      }
+      if (isLocalWsUrl(wsUrl)) {
+        wsUrl = inferredPublicWsUrl;
+      }
+      if (sessionData.ws_token) {
+        wsUrl = appendQuery(wsUrl, "live_token", sessionData.ws_token);
+        wsUrl = appendQuery(wsUrl, "live_session_token", sessionToken);
+      }
+    } else {
+      const tokenResp = await fetch(`${API_BASE_URL}/api/live-ws-token`, { cache: "no-store" });
+      if (tokenResp.ok) {
+        const tokenData = (await tokenResp.json()) as { token?: string };
+        if (tokenData.token) {
+          if (isLocalWsUrl(wsUrl)) {
+            wsUrl = inferredPublicWsUrl;
+          }
+          wsUrl = appendQuery(wsUrl, "live_token", tokenData.token);
+        }
+      } else if (INTERNAL_API_KEY) {
+        if (isLocalWsUrl(wsUrl)) {
+          wsUrl = inferredPublicWsUrl;
+        }
+        wsUrl = appendQuery(wsUrl, "api_key", INTERNAL_API_KEY);
+      }
     }
 
     return NextResponse.json({

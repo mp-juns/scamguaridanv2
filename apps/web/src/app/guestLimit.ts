@@ -1,7 +1,7 @@
 // 비회원 일일 분석 한도 — 홈(텍스트/URL/파일) + 라이브 음성 분석 합산.
-// localStorage 기반(같은 브라우저/기기 기준). 시크릿창·스토리지 삭제로 우회 가능한
-// "데모 수준 마찰" — 엄격한 서버측 강제는 별도 guest id + 백엔드 카운팅이 필요(후속).
+// 현재는 요청에 따라 하드 한도 체크를 비활성화한다.
 export const GUEST_DAILY_LIMIT = 5;
+export const GUEST_DAILY_LIMIT_ENABLED = false;
 
 const PREFIX = "sg_guest_daily_";
 
@@ -23,6 +23,7 @@ export function guestDailyCount(): number {
 
 // 오늘 한도를 이미 모두 소진했는지 (이번 실행을 막아야 하는지)
 export function guestOverDailyLimit(): boolean {
+  if (!GUEST_DAILY_LIMIT_ENABLED) return false;
   return guestDailyCount() >= GUEST_DAILY_LIMIT;
 }
 

@@ -17,6 +17,28 @@ export type DetectedSignal = {
   description?: string;
 };
 
+export type SignalGroup = {
+  group_id?: string;
+  label_ko?: string;
+  description?: string;
+  summary?: string;
+  count?: number;
+  flags?: string[];
+};
+
+export type SafetyCheck = {
+  target_kind?: string;
+  target?: string;
+  scanner?: string;
+  threat_level?: string;
+  detections?: number;
+  suspicious?: number;
+  total_engines?: number;
+  threat_categories?: string[];
+  permalink?: string | null;
+  error?: string | null;
+};
+
 export type LlmSuggestedEntity = {
   text: string;
   label: string;
@@ -67,6 +89,8 @@ export type AnalysisReport = {
   transcript_preview: string;
   transcript_text?: string;
   detected_signals: DetectedSignal[];
+  signal_groups?: SignalGroup[];
+  safety_check?: SafetyCheck | null;
   summary?: string;
   disclaimer?: string;
   entities: Entity[];

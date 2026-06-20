@@ -52,7 +52,8 @@ def _validate_api_key(plaintext: str | None) -> bool:
 
 def _ws_auth_ok(websocket: WebSocket) -> bool:
     live_token = websocket.query_params.get("live_token", "").strip()
-    if validate_live_ws_token(live_token):
+    live_session_token = websocket.query_params.get("live_session_token", "").strip()
+    if validate_live_ws_token(live_token, session_token=live_session_token):
         return True
     api_key = _extract_api_key(websocket)
     return _validate_api_key(api_key) or _internal_key_allowed(api_key)

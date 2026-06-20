@@ -47,7 +47,7 @@ def _safe_content_type(gate: dict[str, Any] | None) -> dict[str, str] | None:
 def get_public_base_url() -> str:
     """결과 링크 베이스 URL 동적 조회.
 
-    우선순위: env(`SCAMGUARDIAN_PUBLIC_URL`) → ngrok 4040 API → cloudflared 로그 파일.
+    우선순위: env(`SCAMGUARDIAN_PUBLIC_URL`) → tailscale funnel URL → ngrok 4040 API → cloudflared 로그 파일.
     cloudflared quick tunnel 은 재시작 시 도메인이 매번 바뀌므로 로그에서 최신 hostname 추출.
     60초 캐시 + 로그 mtime 체크로 cloudflared 재시작 즉시 반영.
     """
@@ -71,19 +71,30 @@ def get_public_base_url() -> str:
     env = os.getenv("SCAMGUARDIAN_PUBLIC_URL", "").strip().rstrip("/")
     url = env
 
-    # cloudflared 로그가 현재 워크트리에 있으면 해당 터널이 *이* 백엔드를 가리킴 — 우선 적용.
-    # (다른 워크트리의 ngrok 4040 이 잡혀서 잘못된 도메인 발급되는 사고 방지)
-    if not url and log_mtime > 0:
-        try:
-            import re as _re
-            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-            matches = _re.findall(r"https://[a-z0-9-]+\.trycloudflare\.com", content)
-            if matches:
-                url = matches[-1].rstrip("/")
-        except Exception:
-            pass
+    # Tailscale Funnel 우선 사용 (ngrok 대비 도메인 변경 빈도 낮음).
+    # 기본값은 팀 표준 funnel 도메인, 필요 시 SCAMGUARDIAN_FUNNEL_URL 로 override.
+    if not url:
+        funnel_url = (
+            os.getenv("SCAMGUARDIAN_FUNNEL_URL", "https://scamguardian.tail7e5dfc.ts.net")
+            .strip()
+            .rstrip("/")
+        )
+        if funnel_url:
+            try:
+                import urllib.request as _ureq
+                req = _ureq.Request(funnel_url + "/", method="HEAD")
+                with _ureq.urlopen(req, timeout=1.5) as resp:
+                    if 200 <= int(getattr(resp, "status", 0)) < 400:
+                        url = funnel_url
+            except Exception:
+                pass
 
+    # cloudflared 로그는 "최근 갱신된 경우"에만 신뢰한다.
+    # 오래된 quick tunnel 도메인은 만료될 수 있어 dead-link 를 발급할 수 있다.
+    cloudflared_recent = log_mtime > 0 and (now - log_mtime) <= 600
+
+    # ngrok 우선: 현재 실행 중인 공개 URL을 즉시 반영.
+    # (cloudflared 로그가 stale 인 경우 dead-link 방지)
     if not url:
         try:
             import json as _json
@@ -96,6 +107,17 @@ def get_public_base_url() -> str:
                     if pu.startswith("https"):
                         url = pu.rstrip("/")
                         break
+        except Exception:
+            pass
+
+    if not url and cloudflared_recent:
+        try:
+            import re as _re
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            matches = _re.findall(r"https://[a-z0-9-]+\.trycloudflare\.com", content)
+            if matches:
+                url = matches[-1].rstrip("/")
         except Exception:
             pass
 

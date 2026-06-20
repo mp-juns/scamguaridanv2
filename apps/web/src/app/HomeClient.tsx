@@ -504,8 +504,8 @@ export default function HomeClient({
                 가 필요합니다.
               </p>
               <p className="mt-2 text-xs leading-6 text-[#8b95a1]">
-                LLM 보조 판정은 추가 엔티티를 병합하고, 높은 신뢰도의 플래그
-                후보는 축소 가중치로 총점에 반영합니다.
+                LLM 보조 분석은 추가 엔티티/신호 후보를 제안하고, 결과에는
+                `detected_signals` 중심으로 반영됩니다.
               </p>
               <p className="mt-2 text-xs leading-6 text-[#8b95a1]">
                 RAG는 어드민에서 사람이 확정한 과거 사례를 찾아 LLM 제안에만
@@ -618,16 +618,7 @@ export default function HomeClient({
                 return (
               <div className="space-y-5">
                 <div className="grid gap-4 sm:grid-cols-2">
-                  {ctBadge ? (
-                    (report.detected_signals ?? []).length > 0 && report.content_type?.bucket === "normal" ? (
-                      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                        <div className="text-sm font-medium text-amber-700">위험 판단</div>
-                        <div className="mt-2 text-2xl font-semibold text-amber-800">⚠️ 주의 필요</div>
-                        <div className="mt-2 text-xs text-amber-600">
-                          게이트는 일반 메시지로 분류했으나 위험 신호가 감지되었습니다
-                        </div>
-                      </div>
-                    ) : (
+                    {ctBadge ? (
                     <div className={`rounded-2xl border bg-white p-4 ${ctBadge.chip}`}>
                       <div className="text-sm opacity-80">콘텐츠 유형</div>
                       <div className="mt-2 text-2xl font-semibold">
@@ -635,16 +626,15 @@ export default function HomeClient({
                         {ctBadge.label}
                       </div>
                       <div className="mt-2 text-xs opacity-70">
-                        Stage 1 게이트 분류 — scam_type 분류·검증 단계 skip
+                        Stage 1 게이트 분류 결과입니다.
                       </div>
                     </div>
-                    )
                   ) : (
                     <div className="rounded-2xl border border-[#e5e8eb] bg-white p-4">
                       <div className="text-sm text-[#8b95a1]">스캠 유형</div>
                       <div className="mt-2 text-2xl font-semibold text-[#191f28]">
                         {report.is_uncertain || (report.classification_confidence ?? 0) < 0.3
-                          ? "정상"
+                          ? "미분류 (추가 확인)"
                           : (report.scam_type ?? "").trim() || "미분류"}
                       </div>
                       <div className="mt-2 text-sm text-[#4e5968]">
@@ -832,12 +822,60 @@ export default function HomeClient({
             </div>
 
             <div className="rounded-3xl border border-[#e5e8eb] bg-white p-6 backdrop-blur">
+              {(() => {
+                const sc = report?.safety_check;
+                if (!sc) return null;
+                const level = (sc.threat_level ?? "").toLowerCase();
+                if (level !== "malicious" && level !== "suspicious") return null;
+                const isMal = level === "malicious";
+                return (
+                  <div
+                    className={`mb-4 rounded-2xl border p-4 ${
+                      isMal
+                        ? "border-red-300 bg-red-50 text-red-800"
+                        : "border-amber-300 bg-amber-50 text-amber-800"
+                    }`}
+                  >
+                    <div className="text-sm font-semibold">
+                      {isMal ? "🚨 VirusTotal 악성 신호 검출" : "⚠️ VirusTotal 의심 신호 검출"}
+                    </div>
+                    <p className="mt-1 text-xs">
+                      {sc.target_kind === "url" ? "URL" : "파일"} 기준 {sc.detections ?? 0}/
+                      {sc.total_engines ?? 0} 엔진이 신호를 검출했습니다.
+                    </p>
+                  </div>
+                );
+              })()}
+
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-xl font-semibold text-[#191f28]">검출된 위험 신호</h2>
                 <span className="text-sm text-[#8b95a1]">
                   {report ? `${(report.detected_signals ?? []).length}개` : "0개"}
                 </span>
               </div>
+
+              {(report?.signal_groups ?? []).length ? (
+                <div className="mb-4 space-y-2">
+                  {(report?.signal_groups ?? []).map((group, idx) => (
+                    <div
+                      key={`${group.group_id ?? "group"}-${idx}`}
+                      className="rounded-xl border border-[#e5e8eb] bg-[#f8fafc] px-3 py-2"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-sm font-semibold text-[#191f28]">
+                          {group.label_ko ?? group.group_id ?? "기타 신호"}
+                        </div>
+                        <div className="text-xs text-[#8b95a1]">
+                          {group.count ?? (group.flags?.length ?? 0)}개
+                        </div>
+                      </div>
+                      {group.summary ? (
+                        <p className="mt-1 text-xs leading-5 text-[#4e5968]">{group.summary}</p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
 
               <div className="space-y-3">
                 {(report?.detected_signals ?? []).length ? (
@@ -954,7 +992,7 @@ export default function HomeClient({
 
             <div className="rounded-3xl border border-[#e5e8eb] bg-white p-6 backdrop-blur">
               <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-xl font-semibold text-[#191f28]">LLM 보조 판정</h2>
+                <h2 className="text-xl font-semibold text-[#191f28]">LLM 보조 분석</h2>
                 <span className="text-sm text-[#8b95a1]">
                   {report?.llm_assessment?.model ?? "미사용"}
                 </span>
@@ -1051,7 +1089,7 @@ export default function HomeClient({
                 )
               ) : (
                 <div className="rounded-2xl border border-dashed border-[#e5e8eb] bg-[#f9fafb] px-4 py-8 text-sm text-[#8b95a1]">
-                분석 시 `Claude LLM 보조 판정 사용`을 켜면 이 영역에 결과가
+                분석 시 LLM 보조 분석을 활성화하면 이 영역에 결과가
                 표시됩니다.
               </div>
             )}

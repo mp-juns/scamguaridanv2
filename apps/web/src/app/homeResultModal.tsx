@@ -33,7 +33,7 @@ export function ResultSummaryModal({
   const displayType = deepRecommended
     ? "추가 확인 필요" // 게이트 normal vs 룰 신호 충돌 — 정상 단정 금지
     : report.is_uncertain || (report.classification_confidence ?? 0) < 0.3
-      ? "정상"
+      ? "미분류 (추가 확인)"
       : scamCategory || scamTypeDetail || "미분류";
   const ct = contentTypeBadge(report.content_type);
   const contentLabel = ct?.label ?? report.content_type?.label_ko?.trim();
@@ -101,12 +101,7 @@ export function ResultSummaryModal({
             </div>
           ) : null}
 
-          {signalCount > 0 && report.content_type?.bucket === "normal" ? (
-            <div className="mt-3 flex items-center justify-between gap-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
-              <span className="text-sm font-medium text-amber-700">위험 판단</span>
-              <span className="text-right text-sm font-semibold text-amber-800">⚠️ 주의 필요</span>
-            </div>
-          ) : contentLabel ? (
+          {contentLabel ? (
             <div className="mt-3 flex items-center justify-between gap-4 rounded-2xl bg-[#f2f4f6] px-4 py-3">
               <span className="text-sm text-[#8b95a1]">콘텐츠 유형</span>
               <span className="text-right text-sm font-semibold text-[#191f28]">

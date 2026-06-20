@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 router = APIRouter()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +63,23 @@ def get_runtime_config() -> dict[str, Any]:
     }
 
 
+def _build_live_ws_url() -> str:
+    api_base = (
+        os.getenv("SCAMGUARDIAN_PUBLIC_URL")
+        or os.getenv("SCAMGUARDIAN_FUNNEL_URL")
+        or os.getenv("SCAMGUARDIAN_API_URL")
+        or "http://127.0.0.1:8000"
+    ).rstrip("/")
+    live_ws_url = (os.getenv("NEXT_PUBLIC_LIVE_WS_URL") or os.getenv("LIVE_WS_URL") or "").strip()
+    if live_ws_url:
+        return live_ws_url
+    if api_base.startswith("https://"):
+        return api_base.replace("https://", "wss://", 1) + "/ws/live-transcribe"
+    if api_base.startswith("http://"):
+        return api_base.replace("http://", "ws://", 1) + "/ws/live-transcribe"
+    return ""
+
+
 @router.get(
     "/api/live-ws-token",
     tags=["Public"],
@@ -73,6 +91,53 @@ def get_live_ws_token() -> dict[str, Any]:
 
     token, ttl = mint_live_ws_token()
     return {"token": token, "ttl_sec": ttl}
+
+
+@router.get(
+    "/api/live-session/{token}",
+    tags=["Public"],
+    summary="카카오 라이브 보이스피싱 1회용 세션 검증",
+    description=(
+        "카카오에서 발급한 라이브 전용 1회용 링크 토큰을 검증한다. "
+        "`consume=true`(기본)이면 즉시 1회 사용 처리하고 WS 접속 토큰을 함께 반환한다. "
+        "`consume=false`면 유효성만 확인한다."
+    ),
+)
+def get_live_session(token: str, consume: bool = True) -> dict[str, Any]:
+    from api_server_pkg.live_session_token import consume_live_session_token, get_live_session
+    from api_server_pkg.live_ws_token import mint_live_ws_token
+
+    if consume:
+        entry, reason = consume_live_session_token(token)
+        if reason == "ok" and entry is not None:
+            remaining = max(60, int(float(entry.get("expires_at") or 0) - time.time()))
+            ws_ttl = min(900, remaining)
+            ws_token, ttl = mint_live_ws_token(ttl_sec=ws_ttl, session_token=token)
+            return {
+                "ok": True,
+                "session_token": token,
+                "ws_token": ws_token,
+                "ttl_sec": ttl,
+                "ws_url": _build_live_ws_url(),
+                "consumed": True,
+            }
+        if reason in {"expired", "already_used"}:
+            raise HTTPException(status_code=410, detail="라이브 세션 링크가 만료되었거나 이미 사용되었습니다.")
+        if reason == "user_mismatch":
+            raise HTTPException(status_code=403, detail="해당 사용자에게 발급된 세션이 아닙니다.")
+        raise HTTPException(status_code=404, detail="라이브 세션을 찾을 수 없습니다.")
+
+    entry = get_live_session(token)
+    if not entry:
+        raise HTTPException(status_code=404, detail="라이브 세션을 찾을 수 없습니다.")
+    if entry.get("consumed_at"):
+        raise HTTPException(status_code=410, detail="이미 사용된 라이브 세션입니다.")
+    return {
+        "ok": True,
+        "session_token": token,
+        "expires_at": entry.get("expires_at"),
+        "consumed": False,
+    }
 
 
 @router.get(

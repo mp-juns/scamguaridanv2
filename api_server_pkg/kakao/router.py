@@ -27,8 +27,10 @@ from .. import state
 from .commands import (
     _KAKAO_SKIP_PHRASES,
     _classify_error,
+    _live_session_command,
     _is_result_request,
     _is_system_command,
+    _mode_guide_command,
     _wrap_with_soft_warning,
 )
 from .context_flow import (
@@ -38,6 +40,8 @@ from .context_flow import (
     _kakao_start_context_collection,
 )
 from .detect import _EXECUTABLE_URL_RE, _kakao_detect_input, _kakao_materialize_url
+from ..live_session_token import issue_live_session_token
+from ..result_token import get_public_base_url
 from .tasks import _cleanup_expired_jobs, _kakao_callback_task
 
 router = APIRouter()
@@ -200,7 +204,13 @@ async def _kakao_webhook_impl(body: dict, background_tasks: BackgroundTasks) -> 
             return kakao_formatter.format_abuse_blocked(remaining)
         has_attachment = any(
             action_params.get(k)
-            for k in ("image", "picture", "photo", "pdf", "document", "video", "video_url", "file", "attachment")
+            for k in (
+                "image", "picture", "photo",
+                "pdf", "document",
+                "audio", "voice", "sound",
+                "video", "video_url",
+                "file", "attachment",
+            )
         )
         if utterance and not has_attachment and not _is_system_command(utterance):
             soft_warn_info = _ag.track_short_message(user_id, utterance)
@@ -219,6 +229,35 @@ async def _kakao_webhook_impl(body: dict, background_tasks: BackgroundTasks) -> 
     if utterance in ("사용법", "도움말", "help", "?"):
         log.info("→ 사용법 응답 반환 (특수 명령)")
         return kakao_formatter.format_help()
+    mode_cmd = _mode_guide_command(utterance)
+    if mode_cmd is not None:
+        log.info("→ 모드 가이드 응답 반환: %s", mode_cmd)
+        return kakao_formatter.format_mode_guide(mode_cmd)
+    if _live_session_command(utterance):
+        if not user_id:
+            log.warning("→ 라이브 세션 요청 실패: user_id 없음")
+            return kakao_formatter.format_error(
+                kakao_formatter.ErrorCode.UNKNOWN,
+                "라이브 세션 사용자 식별 정보가 없습니다. 다시 시도해 주세요.",
+            )
+        token, ttl = issue_live_session_token(user_id=user_id)
+        base_url = get_public_base_url()
+        if not base_url:
+            log.warning("→ 라이브 세션 링크 발급 실패: public base URL 없음")
+            return kakao_formatter.format_error(
+                kakao_formatter.ErrorCode.SERVER_DOWN,
+                "라이브 세션 링크를 만들 수 없습니다. 관리자에게 SCAMGUARDIAN_PUBLIC_URL 설정을 요청해 주세요.",
+            )
+        session_url = f"{base_url}/live/{token}"
+        log.info(
+            "→ 라이브 세션 링크 발급: user=%s token=%s",
+            user_id[:12],
+            token[:8],
+        )
+        return kakao_formatter.format_live_session_link(
+            session_url=session_url,
+            ttl_min=max(1, ttl // 60),
+        )
 
     if utterance in ("분석 초기화", "초기화", "리셋", "reset"):
         had_job = False
@@ -269,7 +308,7 @@ async def _kakao_webhook_impl(body: dict, background_tasks: BackgroundTasks) -> 
 
     source, input_type = _kakao_detect_input(utterance, action_params)
     is_heavy = input_type in (
-        InputType.URL, InputType.VIDEO, InputType.FILE, InputType.IMAGE, InputType.PDF,
+        InputType.URL, InputType.VIDEO, InputType.AUDIO, InputType.FILE, InputType.IMAGE, InputType.PDF,
     )
     log.info(
         "입력 감지: type=%s, heavy=%s, source=%s",
@@ -277,10 +316,12 @@ async def _kakao_webhook_impl(body: dict, background_tasks: BackgroundTasks) -> 
     )
 
     # ── v3 Phase 1: 이미지/PDF/실행파일 → 로컬 다운로드 ──
-    if input_type in (InputType.IMAGE, InputType.PDF, InputType.FILE) and source.startswith("http"):
+    if input_type in (InputType.IMAGE, InputType.PDF, InputType.AUDIO, InputType.FILE) and source.startswith("http"):
         try:
             if input_type == InputType.PDF:
                 suffix_hint = ".pdf"
+            elif input_type == InputType.AUDIO:
+                suffix_hint = ""
             elif input_type == InputType.FILE:
                 m = _EXECUTABLE_URL_RE.search(source)
                 suffix_hint = f".{m.group(1).lower()}" if m else ""

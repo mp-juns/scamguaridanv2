@@ -35,6 +35,11 @@ type WsFinalMessage = {
   tier?: number;
 };
 
+const MAX_AUTO_RECONNECTS = 3;
+const STUCK_WINDOW = 4;      // consecutive identical short chunks = stuck
+const STUCK_MAX_LEN = 30;    // only track short phrases (hallucination is short)
+const STUCK_BACKOFF_MS = 3000; // 3s, 6s, 9s per retry
+
 export function useLiveWebSocket() {
   const [phase, setPhase] = useState<LiveWsPhase>("idle");
   const [error, setError] = useState("");
@@ -43,6 +48,7 @@ export function useLiveWebSocket() {
   const [tier, setTier] = useState(0);
   const [latencyMs, setLatencyMs] = useState(0);
   const [transport, setTransport] = useState<string>("websocket");
+  const [reconnecting, setReconnecting] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -50,12 +56,22 @@ export function useLiveWebSocket() {
   const matchesRef = useRef<StreamMatch[]>([]);
   const notifiedRef = useRef(false);
   const phaseRef = useRef<LiveWsPhase>("idle");
+  // Auto-reconnect state (refs to avoid stale closures)
+  const reconnectCountRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recentChunksRef = useRef<string[]>([]); // ring buffer for stuck detection
+  const startRef = useRef<() => Promise<boolean>>(async () => false);
+  const triggerReconnectRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
 
   const cleanup = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     wsRef.current?.close();
     wsRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -64,13 +80,61 @@ export function useLiveWebSocket() {
     audioCtxRef.current = null;
   }, []);
 
+  // Keep triggerReconnect fresh so it always captures the latest cleanup reference.
+  useEffect(() => {
+    triggerReconnectRef.current = () => {
+      recentChunksRef.current = [];
+      reconnectCountRef.current += 1;
+      if (reconnectCountRef.current > MAX_AUTO_RECONNECTS) {
+        setError("라이브 기능에 오류가 반복됩니다. 잠시 후 다시 시작해 주세요.");
+        phaseRef.current = "error";
+        setPhase("error");
+        setReconnecting(false);
+        return;
+      }
+      setError(
+        `라이브 기능에 오류 났습니다 — 자동 재연결 중 (${reconnectCountRef.current}/${MAX_AUTO_RECONNECTS})...`,
+      );
+      setReconnecting(true);
+      // Set phase to "connecting" before cleanup so ws.onclose won't flip to "idle"
+      phaseRef.current = "connecting";
+      setPhase("connecting");
+      cleanup();
+      const delay = STUCK_BACKOFF_MS * reconnectCountRef.current;
+      reconnectTimerRef.current = setTimeout(() => {
+        void startRef.current();
+      }, delay);
+    };
+  }, [cleanup]);
+
   useEffect(() => () => cleanup(), [cleanup]);
 
   const handleChunk = useCallback((msg: WsChunkMessage) => {
     setLatencyMs(msg.latency_ms ?? 0);
-    if (msg.full_transcript) setTranscript(msg.full_transcript);
-    else if (msg.transcript) {
-      setTranscript((prev) => (prev ? `${prev} ${msg.transcript}` : msg.transcript ?? ""));
+
+    const chunkText = (msg.transcript ?? "").trim();
+    if (msg.full_transcript) {
+      setTranscript(msg.full_transcript);
+    } else if (chunkText) {
+      setTranscript((prev) => (prev ? `${prev} ${chunkText}` : chunkText));
+    }
+
+    // Stuck detection: Whisper silence hallucination produces the same short phrase repeatedly.
+    if (chunkText && chunkText.length <= STUCK_MAX_LEN) {
+      recentChunksRef.current = [
+        ...recentChunksRef.current.slice(-(STUCK_WINDOW - 1)),
+        chunkText,
+      ];
+      if (
+        recentChunksRef.current.length >= STUCK_WINDOW &&
+        recentChunksRef.current.every((t) => t === chunkText)
+      ) {
+        triggerReconnectRef.current();
+        return; // skip match processing for hallucinated chunk
+      }
+    } else if (chunkText) {
+      // Substantive transcript resets the stuck window
+      recentChunksRef.current = [];
     }
 
     const incoming = Array.isArray(msg.matches) ? msg.matches : [];
@@ -87,14 +151,19 @@ export function useLiveWebSocket() {
   }, []);
 
   const start = useCallback(async () => {
+    // Fresh user-initiated start resets the reconnect counter; auto-reconnect keeps it.
+    if (!reconnecting) {
+      reconnectCountRef.current = 0;
+      setTranscript("");
+      setMatches([]);
+      setTier(0);
+      matchesRef.current = [];
+      notifiedRef.current = false;
+    }
+    recentChunksRef.current = [];
     cleanup();
     setError("");
-    setTranscript("");
-    setMatches([]);
-    setTier(0);
     setLatencyMs(0);
-    matchesRef.current = [];
-    notifiedRef.current = false;
     setPhase("connecting");
 
     let config: LiveWsConfig;
@@ -106,18 +175,21 @@ export function useLiveWebSocket() {
     } catch (err) {
       setPhase("error");
       setError(err instanceof Error ? err.message : "WebSocket 설정 오류");
+      setReconnecting(false);
       return false;
     }
 
     if (!config.ws_url) {
       setPhase("error");
       setError("live_ws_url 이 설정되지 않았습니다.");
+      setReconnecting(false);
       return false;
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setPhase("error");
       setError("마이크를 지원하지 않는 브라우저입니다.");
+      setReconnecting(false);
       return false;
     }
 
@@ -155,6 +227,7 @@ export function useLiveWebSocket() {
               setMatches(fin.cumulative_matches);
             }
             setTier((prev) => Math.max(prev, fin.tier ?? 0));
+            setReconnecting(false);
             setPhase("idle");
             cleanup();
           }
@@ -168,6 +241,7 @@ export function useLiveWebSocket() {
       };
 
       ws.onclose = () => {
+        // Only transition to idle for normal live→stop; ignore during reconnect (phase=connecting)
         if (phaseRef.current === "live") setPhase("idle");
       };
 
@@ -193,16 +267,31 @@ export function useLiveWebSocket() {
 
       ws.send(JSON.stringify({ type: "start" }));
       setPhase("live");
+      setReconnecting(false);
       return true;
     } catch (err) {
       cleanup();
       setPhase("error");
       setError(err instanceof Error ? err.message : "Live v4 시작 실패");
+      setReconnecting(false);
       return false;
     }
-  }, [cleanup, handleChunk]);
+  }, [cleanup, handleChunk, reconnecting]);
+
+  // Keep startRef current so triggerReconnect can call it without stale closure.
+  useEffect(() => {
+    startRef.current = start;
+  }, [start]);
 
   const stop = useCallback(() => {
+    // Manual stop cancels any pending auto-reconnect
+    reconnectCountRef.current = 0;
+    recentChunksRef.current = [];
+    setReconnecting(false);
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     setPhase("finalizing");
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -221,6 +310,7 @@ export function useLiveWebSocket() {
     tier,
     latencyMs,
     transport,
+    reconnecting,
     start,
     stop,
     cleanup,

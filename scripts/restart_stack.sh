@@ -8,6 +8,7 @@ mkdir -p "$LOG_DIR"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-3100}"
 ENABLE_FUNNEL="${ENABLE_FUNNEL:-true}"
+ENABLE_KAKAO_WATCHDOG="${ENABLE_KAKAO_WATCHDOG:-true}"
 CONDA_ENV="${CONDA_ENV:-capstone}"
 
 echo "[restart] root=$ROOT_DIR"
@@ -29,6 +30,7 @@ echo "[restart] stopping processes..."
 kill_matches "uvicorn api_server:app"
 kill_matches "next dev .*--port ${FRONTEND_PORT}"
 kill_matches "next-server"
+kill_matches "kakao_watchdog.sh"
 kill_port "$BACKEND_PORT"
 kill_port "$FRONTEND_PORT"
 
@@ -53,7 +55,14 @@ if [[ "$ENABLE_FUNNEL" == "true" ]] && command -v tailscale >/dev/null 2>&1; the
   tailscale funnel status 2>/dev/null || true
 fi
 
+if [[ "$ENABLE_KAKAO_WATCHDOG" == "true" ]]; then
+  echo "[restart] starting kakao watchdog (webhook probe + self-heal, ${KAKAO_WATCH_INTERVAL:-20}s)..."
+  BACKEND_PORT="$BACKEND_PORT" FRONTEND_PORT="$FRONTEND_PORT" CONDA_ENV="$CONDA_ENV" \
+    nohup "$ROOT_DIR/scripts/kakao_watchdog.sh" >>"$LOG_DIR/kakao_watchdog.log" 2>&1 &
+fi
+
 echo "[restart] done."
 echo "[restart] tail logs:"
 echo "  tail -f \"$LOG_DIR/backend.log\""
 echo "  tail -f \"$LOG_DIR/frontend.log\""
+echo "  tail -f \"$LOG_DIR/kakao_watchdog.log\""

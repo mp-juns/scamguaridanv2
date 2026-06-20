@@ -32,7 +32,15 @@ import {
 import { useLivePcmHttp } from "./useLivePcmHttp";
 import { useLiveWebSocket } from "./useLiveWebSocket";
 
-export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean }) {
+export default function LiveVoiceUpload({
+  isGuest = false,
+  liveSessionToken,
+  liveOnly = false,
+}: {
+  isGuest?: boolean;
+  liveSessionToken?: string;
+  liveOnly?: boolean;
+}) {
   const [guestBlocked, setGuestBlocked] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   // 업로드한 파일의 blob URL — turn 별 ▶️ 재생용 (단일 모드)
@@ -97,20 +105,42 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
   const [liveChunkSec, setLiveChunkSec] = useState(3);
 
   useEffect(() => {
+    if (!liveOnly) return;
+    setMode("live");
+  }, [liveOnly]);
+
+  useEffect(() => {
     let cancelled = false;
-    fetch("/api/live-ws-config")
-      .then((r) => (r.ok ? r.json() : null))
+    const configUrl = liveSessionToken
+      ? `/api/live-ws-config?session_token=${encodeURIComponent(liveSessionToken)}`
+      : "/api/live-ws-config";
+    fetch(configUrl)
+      .then(async (r) => {
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}));
+          throw new Error(
+            typeof body?.detail === "string"
+              ? body.detail
+              : "라이브 세션을 준비할 수 없습니다.",
+          );
+        }
+        return r.json();
+      })
       .then((d) => {
         if (cancelled || !d) return;
         setWsEnabled(d.ws_enabled !== false);
         setLiveTransport(d.transport ?? "websocket");
         if (typeof d.chunk_sec === "number") setLiveChunkSec(d.chunk_sec);
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (cancelled) return;
+        setWsEnabled(false);
+        setLiveError(err instanceof Error ? err.message : "라이브 세션 설정 조회 실패");
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [liveSessionToken]);
 
   useEffect(() => {
     if (!liveStarting && !liveActive) {
@@ -142,7 +172,7 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
       finalAnalyzeStartedRef.current = true;
       void analyzeLiveFinalTranscript(liveWs.transcript);
     }
-    if (liveWs.error) setLiveError(liveWs.error);
+    setLiveError(liveWs.error); // always sync — clears automatically when reconnect succeeds
     if (liveWs.phase === "live" || liveWs.phase === "connecting") setLiveActive(true);
     if (liveWs.phase === "idle" || liveWs.phase === "error") setLiveActive(false);
   }, [
@@ -724,37 +754,43 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
       </div>
       <p className="mt-2 text-xs leading-6 text-[#8b95a1]">
         핵심은 <strong>통화 중 실시간 감지</strong> — Live v4는 <strong>3초 chunk WebSocket STT</strong>로 더 빠르게 전사합니다.{" "}
-        녹음 파일은 <strong>1분씩 스트리밍</strong> 또는 <strong>전체 분석</strong>으로 테스트할 수 있어요.
+        {liveOnly ? (
+          <>이 전용 세션에서는 <strong>실시간 마이크</strong>만 활성화됩니다.</>
+        ) : (
+          <>녹음 파일은 <strong>1분씩 스트리밍</strong> 또는 <strong>전체 분석</strong>으로 테스트할 수 있어요.</>
+        )}
       </p>
 
-      <div className="mt-4 inline-flex flex-wrap rounded-full border border-[#bbf7d0] bg-white p-1 text-xs">
-        {(
-          [
-            { v: "live" as Mode, label: "🎤 실시간 마이크" },
-            { v: "stream" as Mode, label: "🔴 1분씩 스트리밍 + 화면 경고" },
-            { v: "single" as Mode, label: "🔍 전체 분석" },
-          ] as const
-        ).map((opt) => (
-          <button
-            key={opt.v}
-            type="button"
-            disabled={submitting}
-            onClick={() => {
-              setMode(opt.v);
-              reset();
-            }}
-            className={`rounded-full px-4 py-1.5 transition ${
-              mode === opt.v
-                ? "bg-[#16a34a] text-white shadow"
-                : "text-[#4e5968] hover:text-[#191f28]"
-            } disabled:cursor-not-allowed disabled:opacity-50`}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
+      {!liveOnly && (
+        <div className="mt-4 inline-flex flex-wrap rounded-full border border-[#bbf7d0] bg-white p-1 text-xs">
+          {(
+            [
+              { v: "live" as Mode, label: "🎤 실시간 마이크" },
+              { v: "stream" as Mode, label: "🔴 1분씩 스트리밍 + 화면 경고" },
+              { v: "single" as Mode, label: "🔍 전체 분석" },
+            ] as const
+          ).map((opt) => (
+            <button
+              key={opt.v}
+              type="button"
+              disabled={submitting}
+              onClick={() => {
+                setMode(opt.v);
+                reset();
+              }}
+              className={`rounded-full px-4 py-1.5 transition ${
+                mode === opt.v
+                  ? "bg-[#16a34a] text-white shadow"
+                  : "text-[#4e5968] hover:text-[#191f28]"
+              } disabled:cursor-not-allowed disabled:opacity-50`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {mode !== "live" && (
+      {!liveOnly && mode !== "live" && (
       <form onSubmit={handleSubmit} className="mt-5 space-y-4">
         <label className="flex flex-col gap-2 text-sm text-[#333d4b]">
           <span className="font-medium text-[#15803d]">
@@ -851,7 +887,7 @@ export default function LiveVoiceUpload({ isGuest = false }: { isGuest?: boolean
                   <div className="text-[10px] font-bold uppercase tracking-wide text-[#8b95a1]">상태</div>
                   <div className="mt-1 flex items-center gap-2 text-sm font-bold text-[#191f28]">
                     <span className={`h-2.5 w-2.5 rounded-full ${liveActive ? "animate-pulse bg-rose-500" : "bg-amber-400"}`} />
-                    {liveActive ? "듣는 중" : "연결 중"}
+                    {liveWs.reconnecting ? "재연결 중" : liveActive ? "듣는 중" : "연결 중"}
                   </div>
                 </div>
                 <div className="border-b border-[#e5e8eb] p-4 sm:border-b-0 sm:border-r">

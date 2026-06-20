@@ -452,13 +452,19 @@ class ScamGuardianPipeline:
         # deep 모드에서 gate=normal/scam_news_edu 70%+ 이고 텍스트 룰 신호가 전혀 없는데
         # 분류기만 스캠 유형을 반환한 경우 — NLI 키워드 혼동으로 간주하고 scam_type 제거.
         # LLM 이 명시적으로 스캠이라 판정했으면 유지 (scam_type_source == "llm" 예외).
+        # LLM 도 스미싱 지시자 없으면 같은 안전장치 적용 (요구 5)
+        _llm_also_no_signal = (
+            scam_type_source == "llm"
+            and classification.scam_type == "스미싱"
+            and not classifier._has_smishing_indicators(text)
+        )
         if (
             deep
             and gate_result.bucket in {GATE_NORMAL, GATE_SCAM_NEWS_EDU}
             and gate_result.confidence >= 0.70
             and not text_rule_results
             and classification.scam_type
-            and scam_type_source != "llm"
+            and (scam_type_source != "llm" or _llm_also_no_signal)
         ):
             print(
                 f"      [안전장치] 게이트 고신뢰({gate_result.confidence:.0%}) "

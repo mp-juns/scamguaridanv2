@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 
 import { signIn } from "../auth";
 import { GUEST_COOKIE, GUEST_MAX_AGE, GUEST_VALUE } from "./guest";
-import { GUEST_DAILY_LIMIT } from "./guestLimit";
+import { GUEST_DAILY_LIMIT, GUEST_DAILY_LIMIT_ENABLED } from "./guestLimit";
 
 // 홈 첫 진입 시 랜딩 전에 뜨는 선택 게이트.
 //  · 비회원으로 둘러보기 → 쿠키 기억 후 랜딩 (익명 사용 경로 보존)
@@ -65,7 +65,9 @@ export default function EntryGate() {
         </div>
 
         <p className="mt-5 text-xs leading-6 text-[#8b95a1]">
-          비회원은 하루 {GUEST_DAILY_LIMIT}회까지 분석할 수 있어요. 로그인 시 권한에 따라 회원 / 관리자가 자동으로 구분됩니다.
+          {GUEST_DAILY_LIMIT_ENABLED
+            ? `비회원은 하루 ${GUEST_DAILY_LIMIT}회까지 분석할 수 있어요. 로그인 시 권한에 따라 회원 / 관리자가 자동으로 구분됩니다.`
+            : "현재 비회원 일일 사용 한도는 임시 비활성화 상태입니다. 로그인 시 권한에 따라 회원 / 관리자가 자동으로 구분됩니다."}
         </p>
       </section>
     </main>

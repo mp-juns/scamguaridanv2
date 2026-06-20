@@ -22,6 +22,7 @@ FRONTEND_PORT="${FRONTEND_PORT:-3100}"
 CONDA_ENV="${CONDA_ENV:-capstone}"
 ENABLE_FUNNEL="${ENABLE_FUNNEL:-true}"
 ENABLE_NGROK="${ENABLE_NGROK:-true}"
+ENABLE_KAKAO_WATCHDOG="${ENABLE_KAKAO_WATCHDOG:-true}"
 NGROK_BIN="${NGROK_BIN:-$HOME/bin/ngrok}"
 NGROK_DOMAIN="${NGROK_DOMAIN:-}"  # 예약 도메인 있으면 지정, 없으면 매번 랜덤
 NGROK_API="http://127.0.0.1:4040/api/tunnels"
@@ -59,6 +60,7 @@ kill_matches "npm run dev"
 kill_matches "ngrok http"
 kill_matches "monitor_resources.sh"
 kill_matches "funnel_watchdog.sh"
+kill_matches "kakao_watchdog.sh"
 kill_matches "apk_dynamic_wsl_bridge"
 kill_port "$BACKEND_PORT"
 kill_port "$FRONTEND_PORT"
@@ -148,6 +150,12 @@ if [[ "$ENABLE_FUNNEL" == "true" ]] && command -v tailscale >/dev/null 2>&1; the
   FRONTEND_PORT="$FRONTEND_PORT" nohup "$ROOT_DIR/scripts/funnel_watchdog.sh" \
     >>"$LOG_DIR/funnel_watchdog.log" 2>&1 &
 fi
+
+if [[ "$ENABLE_KAKAO_WATCHDOG" == "true" ]]; then
+  echo "[start] starting kakao watchdog (webhook probe + self-heal, ${KAKAO_WATCH_INTERVAL:-20}s)..."
+  BACKEND_PORT="$BACKEND_PORT" FRONTEND_PORT="$FRONTEND_PORT" CONDA_ENV="$CONDA_ENV" \
+    nohup "$ROOT_DIR/scripts/kakao_watchdog.sh" >>"$LOG_DIR/kakao_watchdog.log" 2>&1 &
+fi
 # 카카오 오픈빌더는 .ts.net 도메인을 거부하므로 ngrok 으로 보조 터널 제공
 NGROK_PUBLIC_URL=""
 if [[ "$ENABLE_NGROK" == "true" ]] && [[ -x "$NGROK_BIN" ]]; then
@@ -212,3 +220,4 @@ echo "  tail -f \"$LOG_DIR/backend.log\""
 echo "  tail -f \"$LOG_DIR/frontend.log\""
 echo "  tail -f \"$LOG_DIR/ngrok.log\""
 echo "  tail -f \"$LOG_DIR/apk-dynamic-bridge.log\""
+echo "  tail -f \"$LOG_DIR/kakao_watchdog.log\""

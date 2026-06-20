@@ -99,3 +99,14 @@ def test_exe_url_routes_to_file():
 def test_dmg_url_routes_to_file():
     src, kind = _detect("https://example.com/installer.dmg", {})
     assert kind.value == "file"
+
+
+def test_audio_url_in_utterance_routes_to_audio():
+    src, kind = _detect("이거 들어봐 https://example.com/call_record.m4a", {})
+    assert kind.value == "audio"
+    assert src == "https://example.com/call_record.m4a"
+
+
+def test_audio_action_param_routes_to_audio():
+    src, kind = _detect("", {"audio": "https://k.kakaocdn.net/voice_001.mp3"})
+    assert kind.value == "audio"
